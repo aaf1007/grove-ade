@@ -1,0 +1,267 @@
+name: CI
+
+# Manual runs only, since Nov 14, 2026: the month's Actions minutes ran out, and every push
+# made a run GitHub refused to start. The reviewer runs the same gates on this Mac (issue #253).
+# Bring back pull_request and push to main when minutes come back.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the run still going for that pull request.
+# main is left out: a push has no pull request number, so each run on main gets a group of its
+# own and always finishes. It is the integration check and the only run that saves the Rust cache.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust:
+    # Both jobs pin the image, so it changes only when we choose. ubuntu-latest moves on its own.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # The app crate builds Tauri, which links WebKitGTK on Linux. The login shell tests run zsh.
+      APT_PACKAGES: libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev zsh
+      # The step group that needs them. The apt steps run when it does: the output apt_packages
+      # of the step-groups step repeats that group's output.
+      APT_PACKAGES_STEP_GROUP: rust
+      # Smaller test binaries and cache. Panics and backtraces still show file and line.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      # A pull request run checks out the merge of the pull request into main. Depth 2 also
+      # fetches that merge's parents, which the next step compares.
+      - &checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      # Sets the outputs rust, fixtures and ts, one per step group. An output is true when this
+      # run needs its group's steps, and each step of the group has it in its `if`.
+      # A pull request needs a group only when it changed a path the group's steps read. The
+      # paths are listed in step_groups_to_run.py. A push to main needs every group, and so does
+      # a pull request whose changed files cannot be listed.
+      # Only steps are skipped, never a job. main requires both jobs, and a required check that
+      # never reports blocks the merge.
+      - &step-groups
+        name: Find the step groups this run needs
+        id: step-groups
+        # Runs after a failed script test too, so the other steps still run and show their failures.
+        if: ${{ !cancelled() }}
+        run: |
+          # No listed file runs every group. The first parent of the merge is main, so the
+          # diff against it is what the pull request changes. Only a merge has a second parent.
+          changed_files_list="$RUNNER_TEMP/changed_files"
+          if [ "$GITHUB_EVENT_NAME" != pull_request ] ||
+            ! git rev-parse --verify --quiet HEAD^2 > /dev/null ||
+            ! git diff --name-only --no-renames -z HEAD^1 HEAD > "$changed_files_list"; then
+            : > "$changed_files_list"
+          fi
+          python3 .github/scripts/step_groups_to_run.py "$APT_PACKAGES_STEP_GROUP" \
+            < "$changed_files_list" >> "$GITHUB_OUTPUT"
+      # Installs the channel and components pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
+        if: ${{ steps.step-groups.outputs.rust == 'true' }}
+      # Caches only dependencies, and drops the ones Cargo.lock no longer uses before saving.
+      # The old cache kept every build and outgrew the runner's disk (#208).
+      # Only main saves. A pull request restores main's cache and writes none of its own.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: ${{ steps.step-groups.outputs.rust == 'true' }}
+        with:
+          save-if: ${{ github.event_name == 'push' }}
+          cache-bin: false
+      # The .deb files change with the runner image, so the key does too.
+      # A new image restores the last cache and downloads only what changed.
+      - &apt-cache-key
+        name: Apt cache key
+        id: apt-cache-key
+        if: ${{ steps.step-groups.outputs.apt_packages == 'true' }}
+        run: |
+          packages_hash=$(echo "$APT_PACKAGES" | sha256sum | cut -c1-16)
+          echo "prefix=apt-$ImageOS-$packages_hash-" >> "$GITHUB_OUTPUT"
+          echo "key=apt-$ImageOS-$packages_hash-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - &apt-cache
+        name: Apt cache
+        if: ${{ steps.step-groups.outputs.apt_packages == 'true' }}
+        uses: actions/cache@v6
+        with:
+          path: ~/apt-archives/*.deb
+          key: ${{ steps.apt-cache-key.outputs.key }}
+          restore-keys: ${{ steps.apt-cache-key.outputs.prefix }}
+      # A slow mirror fails this step on its own timeout, not the job's.
+      # The .deb files live in a user dir the cache can read and image cleanup never touches.
+      # security.ubuntu.com is one host with no mirror, and a slow day there used up the timeout.
+      # Some runner images fetch the <codename>-security suite from it, so point that source at the
+      # mirror list the main archive uses. Images that already do this pass the check unchanged.
+      - &apt-install
+        name: Install apt packages
+        if: ${{ steps.step-groups.outputs.apt_packages == 'true' }}
+        timeout-minutes: 5
+        run: |
+          apt_sources_file=/etc/apt/sources.list.d/ubuntu.sources
+          apt_mirror_list_file=/etc/apt/apt-mirrors.txt
+          mirror_list_uris_line="URIs: mirror+file:$apt_mirror_list_file"
+          sudo sed -i -E "s|^URIs: https?://security\.ubuntu\.com/ubuntu/?$|$mirror_list_uris_line|" "$apt_sources_file"
+          if [ ! -s "$apt_mirror_list_file" ] || ! awk -v RS= -v mirror_list_uris_line="$mirror_list_uris_line" '
+            /(^|\n)Suites:[^\n]*[a-z]+-security/ {
+              security_source_found = 1
+              if (index("\n" $0 "\n", "\n" mirror_list_uris_line "\n") == 0) security_source_off_mirror_list = 1
+            }
+            END { exit !(security_source_found && !security_source_off_mirror_list) }
+          ' "$apt_sources_file"; then
+            echo "::error::Could not point the <codename>-security source at $apt_mirror_list_file. $apt_sources_file or the mirror list changed form on this runner image. Update the rewrite in ci.yml."
+            cat "$apt_sources_file" || true
+            exit 1
+          fi
+          mkdir -p ~/apt-archives/partial
+          apt=(sudo apt-get -o Acquire::Retries=3 -o Dir::Cache::Archives="$HOME/apt-archives")
+          read -ra packages <<< "$APT_PACKAGES"
+          "${apt[@]}" update
+          "${apt[@]}" install -y --no-install-recommends "${packages[@]}"
+          "${apt[@]}" autoclean
+      - run: cargo fmt --check
+        if: ${{ steps.step-groups.outputs.rust == 'true' }}
+      - run: cargo clippy --all-targets -- -D warnings
+        if: ${{ steps.step-groups.outputs.rust == 'true' }}
+      # A prebuilt binary, pinned by version and checksum. Change both together.
+      # The checksum is the one GitHub shows for the x86_64-unknown-linux-gnu.tar.gz release asset.
+      - name: Install cargo-nextest
+        if: ${{ steps.step-groups.outputs.rust == 'true' }}
+        env:
+          CARGO_NEXTEST_VERSION: 0.9.151
+          CARGO_NEXTEST_ARCHIVE_SHA256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+        run: |
+          nextest_archive="$RUNNER_TEMP/cargo-nextest.tar.gz"
+          curl -LsSf --retry 3 -o "$nextest_archive" "https://get.nexte.st/$CARGO_NEXTEST_VERSION/linux"
+          echo "$CARGO_NEXTEST_ARCHIVE_SHA256  $nextest_archive" | sha256sum --check
+          tar zxf "$nextest_archive" -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+      # The ci profile in .config/nextest.toml retries a failed test twice. One that then passes
+      # is flaky and does not fail the run.
+      - name: cargo nextest run
+        id: nextest
+        if: ${{ steps.step-groups.outputs.rust == 'true' }}
+        run: cargo nextest run --profile ci
+      - name: List flaky tests in the job summary
+        if: ${{ !cancelled() && steps.nextest.conclusion != 'skipped' }}
+        run: python3 .github/scripts/flaky_tests_summary.py target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY"
+      # nextest does not run doctests.
+      - run: cargo test --doc
+        if: ${{ steps.step-groups.outputs.rust == 'true' }}
+      - name: Report disk use
+        if: ${{ !cancelled() && steps.step-groups.outputs.rust == 'true' }}
+        run: |
+          df -h /
+          du -sh target ~/.cargo
+
+  ts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      # The load session replay runs through pv.
+      APT_PACKAGES: pv
+      APT_PACKAGES_STEP_GROUP: fixtures
+    steps:
+      - *checkout
+      # The test of the script the next step runs. It takes well under a second, so it is in
+      # every run.
+      - run: python3 -m unittest discover .github/scripts
+      - *step-groups
+      # The fixture checks used to be a job of their own. A job is billed by the whole minute, and
+      # these take about half of one (#223). They run first: they are quick and need no install.
+      # One that fails skips the fixture checks after it, as it always did. The TypeScript steps
+      # below still run.
+      - run: python3 fixtures/diff-repo/check.py
+        if: ${{ steps.step-groups.outputs.fixtures == 'true' }}
+      - run: python3 -m unittest discover fixtures/fake-agents
+        if: ${{ steps.step-groups.outputs.fixtures == 'true' }}
+      - run: python3 fixtures/chat-session/check.py
+        if: ${{ steps.step-groups.outputs.fixtures == 'true' }}
+      # The hook that blocks agents from merging. Ubuntu's sh is dash and its awk is mawk, so
+      # this also checks the hook beyond macOS.
+      - run: sh .claude/hooks/block-merge.test.sh
+        if: ${{ steps.step-groups.outputs.fixtures == 'true' }}
+      - *apt-cache-key
+      - *apt-cache
+      - *apt-install
+      - run: python3 fixtures/load-session/check.py
+        if: ${{ steps.step-groups.outputs.fixtures == 'true' }}
+
+      # The TypeScript steps. Each one says when it runs, so a failed fixture check above does not
+      # skip them, and a failed tsc does not skip eslint or vitest. One push shows every failure.
+      # Only setup-node names the ts step group. Each later step needs the outcome of one before
+      # it, so skipping setup-node skips them all.
+      # No `cache: npm` here. It restores ~/.npm, which only npm ci reads, and npm ci now runs
+      # only when node_modules is not in the cache.
+      - uses: actions/setup-node@v7
+        id: setup-node
+        if: ${{ !cancelled() && steps.step-groups.outputs.ts == 'true' }}
+        with:
+          node-version: 24
+      # What node_modules depends on besides the package files: the OS, the CPU and the exact
+      # Node version, which also fixes the npm version. $ImageVersion is left out on purpose: no
+      # package compiles against system libraries, and it changes about once a week.
+      - name: node_modules cache key
+        id: node-modules-cache-key
+        if: ${{ !cancelled() && steps.setup-node.outcome == 'success' }}
+        run: echo "prefix=node-modules-$ImageOS-$RUNNER_ARCH-node-$(node --version)" >> "$GITHUB_OUTPUT"
+
+      # app/. package.json is in the key next to the lockfile: a hit skips npm ci, and npm ci is
+      # the step that fails when the two disagree. So a change to either one runs it.
+      - name: Restore app/node_modules
+        id: app-node-modules
+        if: ${{ !cancelled() && steps.node-modules-cache-key.outcome == 'success' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: app/node_modules
+          key: ${{ steps.node-modules-cache-key.outputs.prefix }}-app-${{ hashFiles('app/package.json', 'app/package-lock.json') }}
+      - name: npm ci in app
+        id: app-npm-ci
+        if: ${{ !cancelled() && steps.app-node-modules.outcome == 'success' && steps.app-node-modules.outputs.cache-hit != 'true' }}
+        run: npm ci
+        working-directory: app
+      # Saved right after a full npm ci, before any check writes into node_modules, and even when
+      # a check fails later. So the cache only ever holds a complete, untouched install.
+      - name: Save app/node_modules
+        if: ${{ !cancelled() && steps.app-npm-ci.outcome == 'success' }}
+        uses: actions/cache/save@v6
+        with:
+          path: app/node_modules
+          key: ${{ steps.app-node-modules.outputs.cache-primary-key }}
+      - run: npx tsc --noEmit
+        if: ${{ !cancelled() && (steps.app-node-modules.outputs.cache-hit == 'true' || steps.app-npm-ci.outcome == 'success') }}
+        working-directory: app
+      - run: npx eslint .
+        if: ${{ !cancelled() && (steps.app-node-modules.outputs.cache-hit == 'true' || steps.app-npm-ci.outcome == 'success') }}
+        working-directory: app
+      - run: npx vitest run
+        if: ${{ !cancelled() && (steps.app-node-modules.outputs.cache-hit == 'true' || steps.app-npm-ci.outcome == 'success') }}
+        working-directory: app
+
+      # The Claude sidecar, the same way.
+      - name: Restore sidecar/claude/node_modules
+        id: sidecar-node-modules
+        if: ${{ !cancelled() && steps.node-modules-cache-key.outcome == 'success' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: sidecar/claude/node_modules
+          key: ${{ steps.node-modules-cache-key.outputs.prefix }}-sidecar-claude-${{ hashFiles('sidecar/claude/package.json', 'sidecar/claude/package-lock.json') }}
+      - name: npm ci in sidecar/claude
+        id: sidecar-npm-ci
+        if: ${{ !cancelled() && steps.sidecar-node-modules.outcome == 'success' && steps.sidecar-node-modules.outputs.cache-hit != 'true' }}
+        run: npm ci
+        working-directory: sidecar/claude
+      - name: Save sidecar/claude/node_modules
+        if: ${{ !cancelled() && steps.sidecar-npm-ci.outcome == 'success' }}
+        uses: actions/cache/save@v6
+        with:
+          path: sidecar/claude/node_modules
+          key: ${{ steps.sidecar-node-modules.outputs.cache-primary-key }}
+      - run: npx tsc --noEmit
+        if: ${{ !cancelled() && (steps.sidecar-node-modules.outputs.cache-hit == 'true' || steps.sidecar-npm-ci.outcome == 'success') }}
+        working-directory: sidecar/claude
+      - run: npx eslint .
+        if: ${{ !cancelled() && (steps.sidecar-node-modules.outputs.cache-hit == 'true' || steps.sidecar-npm-ci.outcome == 'success') }}
+        working-directory: sidecar/claude
+      - run: npx vitest run
+        if: ${{ !cancelled() && (steps.sidecar-node-modules.outputs.cache-hit == 'true' || steps.sidecar-npm-ci.outcome == 'success') }}
+        working-directory: sidecar/claude

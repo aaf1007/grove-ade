@@ -1,0 +1,18 @@
+{
+ "about": "Hand-written. The summary comment holds a limit notice for the head commit, and the only review is of an older commit.",
+ "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "head_committed_at": "2026-01-01T10:00:00Z",
+ "comments": [
+  {
+   "user": "coderabbitai[bot]",
+   "updated_at": "2026-01-01T10:00:10Z",
+   "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\nSample summary of the change.\n<!-- end of auto-generated comment: summarize by coderabbit.ai -->\n\n<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\nReview limit reached. Sample notice.\n- **Commit**: [aaaaaaa](<https://github.com/example/project/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa>)\n<!-- end of auto-generated comment: rate limited by coderabbit.ai -->"
+  }
+ ],
+ "reviews": [
+  {
+   "user": "coderabbitai[bot]",
+   "commit_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+ ]
+}

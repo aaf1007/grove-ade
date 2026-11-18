@@ -1,0 +1,64 @@
+.ui-agent-state {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-4);
+  font: var(--text-label);
+  white-space: nowrap;
+}
+
+.ui-agent-state svg {
+  width: var(--icon);
+  height: var(--icon);
+  stroke-width: 1.75;
+}
+
+.ui-agent-state-source {
+  color: var(--faint);
+  font-weight: 400;
+}
+
+.ui-agent-state-working {
+  color: var(--working);
+}
+
+.ui-agent-state-approval {
+  color: var(--needs);
+}
+
+.ui-agent-state-question {
+  color: var(--question);
+}
+
+.ui-agent-state-failed {
+  color: var(--failed);
+}
+
+.ui-agent-state-done {
+  color: var(--done);
+}
+
+.ui-agent-state-idle {
+  color: var(--idle);
+}
+
+.ui-agent-state-exited {
+  color: var(--faint);
+}
+
+/* Only Working moves: its icon pulses between full and half opacity. */
+.ui-agent-state-working svg {
+  animation: ui-agent-state-pulse 2s steps(6) infinite;
+}
+
+@keyframes ui-agent-state-pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-agent-state-working svg {
+    animation: none;
+  }
+}

@@ -1,0 +1,79 @@
+{
+ "cases": [
+  {
+   "fix": "6c307aa52c9673d8d709cd4e7b8bf8388922dcb3",
+   "issue": 236,
+   "subject": "#236 fix: read reset palette slots as numbers"
+  },
+  {
+   "fix": "b9227506dbf79da4d3dae840a6b454847fb577cb",
+   "issue": 236,
+   "subject": "#236 fix: keep only palette slots 0 to 255"
+  },
+  {
+   "fix": "181f45d38304458c70bea5907d8caeb4ad221d47",
+   "issue": 235,
+   "subject": "#235 fix: Tab closes a menu and skips its items"
+  },
+  {
+   "fix": "80bb99e512f7480ac560f993ca926325d9d895aa",
+   "issue": 158,
+   "subject": "#158 fix: a session that ends before the reload keeps its panel"
+  },
+  {
+   "fix": "fad80b858a627b646ea979b12c6acf2d34a37f67",
+   "issue": 174,
+   "subject": "#174 fix: a queued save does not write over a save made elsewhere"
+  },
+  {
+   "fix": "7042b6b78e6c28a67187f10cba75c8d06bc81843",
+   "issue": 168,
+   "subject": "#168 fix: Start waits while run sessions are listed again"
+  },
+  {
+   "fix": "2c5479d742a0846b20a47cd1590594eccf033a2e",
+   "issue": 168,
+   "subject": "#168 fix: a run session that exits while its listing is out says stopped"
+  },
+  {
+   "fix": "d29fe08c62b8aea836240ac8072573743bb5364e",
+   "issue": 129,
+   "subject": "#129 fix: merge an agent's profile change into the file as it is on disk"
+  },
+  {
+   "fix": "5c2cfb5946c6c50b25baed9ffbea12fa0da49e1a",
+   "issue": 60,
+   "subject": "#60 fix: guard panel kills, stop a cancelled wait, kill on quit"
+  },
+  {
+   "fix": "e980ec4d2ca1828e70d15abc6e5c97849daa8634",
+   "issue": 174,
+   "subject": "#174 fix: set_repo_settings sends RepoSettingsChanged for its repo"
+  },
+  {
+   "fix": "7ce91e3dead4d141d7c1982b54515b650cc40526",
+   "issue": 89,
+   "subject": "Fix the retry lock order and warn after a failed Delete"
+  },
+  {
+   "fix": "22ab90de13c596bf6d28c1b7c62c8b338342cf05",
+   "issue": 158,
+   "subject": "#158 fix: a session switching mode keeps its panel in the workspace"
+  },
+  {
+   "fix": "93969bfc004ce36f321e5cac7ecf7505e99058e6",
+   "issue": 114,
+   "subject": "Start a turn on the main agent's message_start when none is running"
+  },
+  {
+   "fix": "a0a2af829bdb77ab43a53196f6e78ef0a9ba676c",
+   "issue": 114,
+   "subject": "Start the next turn for any message no result answered"
+  },
+  {
+   "fix": "6dade97f8f68d32efa2ffc1e364a65c91f58e750",
+   "issue": 126,
+   "subject": "Keep set_mode and a resumed history safe from bad input and dropped callers"
+  }
+ ]
+}

@@ -1,0 +1,22 @@
+{
+ "about": "Hand-written. The summary comment links the head commit outside any notice block, and the reviews are of older commits.",
+ "head": "dddddddddddddddddddddddddddddddddddddddd",
+ "head_committed_at": "2026-01-02T10:00:00Z",
+ "comments": [
+  {
+   "user": "coderabbitai[bot]",
+   "updated_at": "2026-01-02T10:08:00Z",
+   "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\nSample summary of the change.\n<!-- end of auto-generated comment: summarize by coderabbit.ai -->\n\nSample review details.\n- **Commit**: [ddddddd](<https://github.com/example/project/commit/dddddddddddddddddddddddddddddddddddddddd>)"
+  }
+ ],
+ "reviews": [
+  {
+   "user": "coderabbitai[bot]",
+   "commit_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  {
+   "user": "coderabbitai[bot]",
+   "commit_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  }
+ ]
+}

@@ -1,0 +1,8 @@
+{
+  "session_id": "{{session_id}}",
+  "transcript_path": "{{home}}/.claude/projects/{{project}}/{{session_id}}.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "195e09a0-c4f7-4970-bd24-2b6e9cfc7232",
+  "hook_event_name": "SessionEnd",
+  "reason": "prompt_input_exit"
+}

@@ -1,0 +1,13 @@
+{
+ "about": "Hand-written. The summary comment holds a review-in-progress notice for the head commit, and there is no review yet.",
+ "head": "ffffffffffffffffffffffffffffffffffffffff",
+ "head_committed_at": "2026-01-03T10:00:00Z",
+ "comments": [
+  {
+   "user": "coderabbitai[bot]",
+   "updated_at": "2026-01-03T10:17:00Z",
+   "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\nSample summary of the change.\n<!-- end of auto-generated comment: summarize by coderabbit.ai -->\n\n<!-- This is an auto-generated comment: review in progress by coderabbit.ai -->\nReview in progress. Sample notice.\n- **Commit**: [fffffff](<https://github.com/example/project/commit/ffffffffffffffffffffffffffffffffffffffff>)\n<!-- end of auto-generated comment: review in progress by coderabbit.ai -->"
+  }
+ ],
+ "reviews": []
+}

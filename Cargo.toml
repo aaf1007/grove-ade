@@ -1,0 +1,7 @@
+[workspace]
+members = ["crates/*", "app/src-tauri"]
+resolver = "3"
+
+[workspace.package]
+license = "MIT"
+repository = "https://github.com/aaf1007/grove-ade"

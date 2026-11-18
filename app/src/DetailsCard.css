@@ -1,0 +1,129 @@
+/* A line of no height at the top of the chat area, which the card hangs from at the right. */
+.details-holder {
+  position: relative;
+  z-index: 5;
+  flex: none;
+  height: 0;
+}
+
+.details-card {
+  position: absolute;
+  top: var(--space-8);
+  right: var(--space-8);
+  width: min(calc(var(--sidebar-width) * 1.375), calc(100% - 2 * var(--space-8)));
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-menu);
+}
+
+/* The rows menu hangs over the card's edge when few rows are shown, so the card must not clip it.
+   The body scrolls instead. */
+.details-card .ui-card {
+  overflow: visible;
+  background: var(--panel);
+}
+
+.details-card .ui-card-body {
+  display: flex;
+  max-height: calc(100vh - var(--topbar) - var(--space-48) * 2);
+  flex-direction: column;
+  gap: var(--space-8);
+  overflow-y: auto;
+}
+
+.details-row {
+  display: grid;
+  grid-template-columns: calc(var(--space-48) + var(--space-16)) minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-8);
+}
+
+.details-label {
+  color: var(--muted);
+  font: var(--text-label);
+}
+
+.details-value {
+  min-width: 0;
+  font: var(--text-meta);
+}
+
+.details-line {
+  display: flex;
+  min-width: 0;
+  min-height: var(--control-xs);
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.details-wrap {
+  flex-wrap: wrap;
+  row-gap: 0;
+}
+
+.details-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.details-list .details-line .ui-button {
+  margin-left: auto;
+}
+
+.details-code {
+  min-width: 0;
+  overflow: hidden;
+  font: var(--text-code-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A ghost button's text lines up with the values above and below it. */
+.details-value > .ui-button-ghost {
+  margin-left: calc(-1 * var(--space-8));
+}
+
+.details-path {
+  flex: 1;
+}
+
+.details-muted {
+  color: var(--muted);
+}
+
+.details-faint {
+  margin: 0;
+  color: var(--faint);
+}
+
+.details-state {
+  color: var(--faint);
+  font: var(--text-label);
+}
+
+.details-state.running {
+  color: var(--done);
+}
+
+.details-add,
+.details-del {
+  font: var(--text-code-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.details-add {
+  color: var(--add);
+}
+
+.details-del {
+  color: var(--del);
+}
+
+.details-error {
+  margin: 0;
+  color: var(--failed);
+  font: var(--text-meta);
+}

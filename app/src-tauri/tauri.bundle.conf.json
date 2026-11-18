@@ -1,0 +1,5 @@
+{
+  "bundle": {
+    "externalBin": ["binaries/grove-hook", "binaries/grove-mcp", "binaries/claude-sidecar"]
+  }
+}

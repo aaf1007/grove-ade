@@ -1,0 +1,7 @@
+{"steps": [
+  {"wait_message": "turn/start"},
+  {"send": {"method": "turn/started", "params": {"threadId": "{{thread_id}}", "turn": {"id": "{{turn_id}}", "status": "inProgress"}}}},
+  {"send": {"id": 0, "method": "item/commandExecution/requestApproval", "params": {"threadId": "{{thread_id}}", "turnId": "{{turn_id}}", "itemId": "call_verify", "command": "touch verified.txt"}}},
+  {"wait_message": "response"},
+  {"send": {"method": "turn/completed", "params": {"threadId": "{{thread_id}}", "turn": {"id": "{{turn_id}}", "status": "completed"}}}}
+]}

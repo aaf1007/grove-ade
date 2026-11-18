@@ -1,0 +1,73 @@
+.ui-panel-tabs {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--tabbar);
+  padding: 0 var(--space-8);
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+
+/* A tab and its close mark share one fill. */
+.ui-panel-tab {
+  display: inline-flex;
+  align-items: center;
+  max-width: 160px;
+  height: var(--control-xs);
+  border-radius: var(--radius-md);
+  color: var(--muted);
+}
+
+.ui-panel-tab:hover,
+.ui-panel-tab:has([aria-selected="true"]) {
+  background: var(--hover);
+}
+
+.ui-panel-tab:has([aria-selected="true"]) {
+  color: var(--fg);
+}
+
+.ui-panel-tab [role="tab"] {
+  display: inline-flex;
+  min-width: 0;
+  height: 100%;
+  align-items: center;
+  gap: var(--space-6);
+  padding: 0 var(--space-4) 0 var(--space-8);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  font: var(--text-label);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ui-panel-tab [role="tab"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.ui-panel-tab [role="tab"] svg {
+  width: var(--icon);
+  height: var(--icon);
+  stroke-width: 1.75;
+}
+
+/* The close mark shows on the selected tab, on hover and on focus. */
+.ui-panel-tab .ui-icon-button {
+  width: var(--control-xs);
+  color: inherit;
+  opacity: 0;
+}
+
+.ui-panel-tab:hover .ui-icon-button,
+.ui-panel-tab:has([aria-selected="true"]) .ui-icon-button,
+.ui-panel-tab .ui-icon-button:focus-visible {
+  opacity: 1;
+}
+
+.ui-panel-tab .ui-icon-button:hover {
+  background: transparent;
+}

@@ -1,0 +1,326 @@
+{
+ "args": [
+  "app-server",
+  "-c",
+  "hooks.PreToolUse=[{matcher=\"*\",hooks=[{type=\"command\",command=\"grove-hook codex\",timeout=1}]}]",
+  "-c",
+  "hooks.PermissionRequest=[{matcher=\"*\",hooks=[{type=\"command\",command=\"grove-hook codex\",timeout=1}]}]",
+  "-c",
+  "hooks.PostToolUse=[{matcher=\"*\",hooks=[{type=\"command\",command=\"grove-hook codex\",timeout=1}]}]",
+  "-c",
+  "hooks.PreCompact=[{hooks=[{type=\"command\",command=\"grove-hook codex\",timeout=1}]}]",
+  "-c",
+  "hooks.PostCompact=[{hooks=[{type=\"command\",command=\"grove-hook codex\",timeout=1}]}]",
+  "-c",
+  "hooks.SessionStart=[{hooks=[{type=\"command\",command=\"grove-hook codex\",timeout=1}]}]",
+  "-c",
+  "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"grove-hook codex\",timeout=1}]}]",
+  "-c",
+  "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command=\"grove-hook codex\",timeout=1}]}]",
+  "-c",
+  "hooks.SubagentStart=[{hooks=[{type=\"command\",command=\"grove-hook codex\",timeout=1}]}]",
+  "-c",
+  "hooks.SubagentStop=[{hooks=[{type=\"command\",command=\"grove-hook codex\",timeout=1}]}]",
+  "-c",
+  "hooks.Stop=[{hooks=[{type=\"command\",command=\"grove-hook codex\",timeout=1}]}]",
+  "-c",
+  "hooks.Interrupt=[{hooks=[{type=\"command\",command=\"grove-hook codex\",timeout=1}]}]",
+  "-c",
+  "mcp_servers.grove={command=\"grove-mcp\",env_vars=[\"GROVE_SESSION_ID\"]}",
+  "-c",
+  "shell_environment_policy.set.GROVE_SESSION_ID=\"grove-policy-1111\""
+ ],
+ "messages": [
+  {
+   "client": {
+    "id": 1,
+    "method": "initialize",
+    "params": {
+     "clientInfo": {
+      "name": "grove",
+      "version": "0"
+     }
+    }
+   }
+  },
+  {
+   "server": {
+    "id": 1,
+    "result": {
+     "userAgent": "grove/0.158.0 (Mac OS 26.6.2; arm64) xterm-256color (grove; 0)",
+     "codexHome": "{{codex_home}}",
+     "platformFamily": "unix",
+     "platformOs": "macos"
+    }
+   }
+  },
+  {
+   "client": {
+    "method": "initialized"
+   }
+  },
+  {
+   "client": {
+    "id": 2,
+    "method": "hooks/list",
+    "params": {}
+   }
+  },
+  {
+   "server": {
+    "method": "remoteControl/status/changed",
+    "params": {
+     "status": "disabled",
+     "serverName": "fixture-host",
+     "installationId": "2263756c-0d9c-425e-a2a0-79fd2418ec98",
+     "environmentId": null
+    },
+    "emittedAtMs": 1793200088840
+   }
+  },
+  {
+   "server": {
+    "id": 2,
+    "result": {
+     "data": [
+      {
+       "cwd": "{{cwd}}",
+       "hooks": [
+        {
+         "key": "/<session-flags>/config.toml:pre_tool_use:0:0",
+         "eventName": "preToolUse",
+         "handlerType": "command",
+         "command": "grove-hook codex",
+         "async": false,
+         "matcher": "*",
+         "timeoutSec": 1,
+         "statusMessage": null,
+         "additionalContextLimit": null,
+         "sourcePath": "/<session-flags>/config.toml",
+         "source": "sessionFlags",
+         "pluginId": null,
+         "displayOrder": 0,
+         "enabled": true,
+         "isManaged": false,
+         "currentHash": "sha256:09264af19596020d4dbf443f5928a0bc6f1ce68419cb9da8f3afbed1a1501376",
+         "trustStatus": "trusted"
+        },
+        {
+         "key": "/<session-flags>/config.toml:permission_request:0:0",
+         "eventName": "permissionRequest",
+         "handlerType": "command",
+         "command": "grove-hook codex",
+         "async": false,
+         "matcher": "*",
+         "timeoutSec": 1,
+         "statusMessage": null,
+         "additionalContextLimit": null,
+         "sourcePath": "/<session-flags>/config.toml",
+         "source": "sessionFlags",
+         "pluginId": null,
+         "displayOrder": 1,
+         "enabled": true,
+         "isManaged": false,
+         "currentHash": "sha256:7e04fa834cb5cfbdad2c6bbdd2d63e28330cabce8bc3b25d9a26efcf800dfe56",
+         "trustStatus": "trusted"
+        },
+        {
+         "key": "/<session-flags>/config.toml:post_tool_use:0:0",
+         "eventName": "postToolUse",
+         "handlerType": "command",
+         "command": "grove-hook codex",
+         "async": false,
+         "matcher": "*",
+         "timeoutSec": 1,
+         "statusMessage": null,
+         "additionalContextLimit": null,
+         "sourcePath": "/<session-flags>/config.toml",
+         "source": "sessionFlags",
+         "pluginId": null,
+         "displayOrder": 2,
+         "enabled": true,
+         "isManaged": false,
+         "currentHash": "sha256:5bb24ec1ee780c0ad9e5f34a36d5c396bf161d2d76e28f1e460ff64f31805d7d",
+         "trustStatus": "trusted"
+        },
+        {
+         "key": "/<session-flags>/config.toml:pre_compact:0:0",
+         "eventName": "preCompact",
+         "handlerType": "command",
+         "command": "grove-hook codex",
+         "async": false,
+         "matcher": null,
+         "timeoutSec": 1,
+         "statusMessage": null,
+         "additionalContextLimit": null,
+         "sourcePath": "/<session-flags>/config.toml",
+         "source": "sessionFlags",
+         "pluginId": null,
+         "displayOrder": 3,
+         "enabled": true,
+         "isManaged": false,
+         "currentHash": "sha256:9f8ad0d468eb9fa4e5a71ff6567f159975666e5e7bcab5082a809c54ea6aef36",
+         "trustStatus": "trusted"
+        },
+        {
+         "key": "/<session-flags>/config.toml:post_compact:0:0",
+         "eventName": "postCompact",
+         "handlerType": "command",
+         "command": "grove-hook codex",
+         "async": false,
+         "matcher": null,
+         "timeoutSec": 1,
+         "statusMessage": null,
+         "additionalContextLimit": null,
+         "sourcePath": "/<session-flags>/config.toml",
+         "source": "sessionFlags",
+         "pluginId": null,
+         "displayOrder": 4,
+         "enabled": true,
+         "isManaged": false,
+         "currentHash": "sha256:3c0afd18c5b4715c602f5387f270e4d2c5651f209ab9f3da91b414a8fdc5b02b",
+         "trustStatus": "trusted"
+        },
+        {
+         "key": "/<session-flags>/config.toml:session_start:0:0",
+         "eventName": "sessionStart",
+         "handlerType": "command",
+         "command": "grove-hook codex",
+         "async": false,
+         "matcher": null,
+         "timeoutSec": 1,
+         "statusMessage": null,
+         "additionalContextLimit": null,
+         "sourcePath": "/<session-flags>/config.toml",
+         "source": "sessionFlags",
+         "pluginId": null,
+         "displayOrder": 5,
+         "enabled": true,
+         "isManaged": false,
+         "currentHash": "sha256:81948e35368922dcb2b6b4ba783c0b74ad9ab9ea0b8d34ecca02e899b5d3b9ce",
+         "trustStatus": "trusted"
+        },
+        {
+         "key": "/<session-flags>/config.toml:session_end:0:0",
+         "eventName": "sessionEnd",
+         "handlerType": "command",
+         "command": "grove-hook codex",
+         "async": false,
+         "matcher": null,
+         "timeoutSec": 1,
+         "statusMessage": null,
+         "additionalContextLimit": null,
+         "sourcePath": "/<session-flags>/config.toml",
+         "source": "sessionFlags",
+         "pluginId": null,
+         "displayOrder": 6,
+         "enabled": true,
+         "isManaged": false,
+         "currentHash": "sha256:23dbd73284f7e9bf6582a1bf41ce21528eed9b81bacf2a7a1325dca0787e24ec",
+         "trustStatus": "trusted"
+        },
+        {
+         "key": "/<session-flags>/config.toml:user_prompt_submit:0:0",
+         "eventName": "userPromptSubmit",
+         "handlerType": "command",
+         "command": "grove-hook codex",
+         "async": false,
+         "matcher": null,
+         "timeoutSec": 1,
+         "statusMessage": null,
+         "additionalContextLimit": null,
+         "sourcePath": "/<session-flags>/config.toml",
+         "source": "sessionFlags",
+         "pluginId": null,
+         "displayOrder": 7,
+         "enabled": true,
+         "isManaged": false,
+         "currentHash": "sha256:651a582383a1304ce0035a1c1ee33d3201dfe1237b33c97c50f2a71c6ec96f64",
+         "trustStatus": "trusted"
+        },
+        {
+         "key": "/<session-flags>/config.toml:subagent_start:0:0",
+         "eventName": "subagentStart",
+         "handlerType": "command",
+         "command": "grove-hook codex",
+         "async": false,
+         "matcher": null,
+         "timeoutSec": 1,
+         "statusMessage": null,
+         "additionalContextLimit": null,
+         "sourcePath": "/<session-flags>/config.toml",
+         "source": "sessionFlags",
+         "pluginId": null,
+         "displayOrder": 8,
+         "enabled": true,
+         "isManaged": false,
+         "currentHash": "sha256:d4bafbd89ea888fe271ffbff45f3d8b3804948fde92317c407ca0df2312462b1",
+         "trustStatus": "trusted"
+        },
+        {
+         "key": "/<session-flags>/config.toml:subagent_stop:0:0",
+         "eventName": "subagentStop",
+         "handlerType": "command",
+         "command": "grove-hook codex",
+         "async": false,
+         "matcher": null,
+         "timeoutSec": 1,
+         "statusMessage": null,
+         "additionalContextLimit": null,
+         "sourcePath": "/<session-flags>/config.toml",
+         "source": "sessionFlags",
+         "pluginId": null,
+         "displayOrder": 9,
+         "enabled": true,
+         "isManaged": false,
+         "currentHash": "sha256:a76e5670bfe06fcdcfec085f60c21c5cd02b3951fa9e843b14753c42de68af37",
+         "trustStatus": "trusted"
+        },
+        {
+         "key": "/<session-flags>/config.toml:stop:0:0",
+         "eventName": "stop",
+         "handlerType": "command",
+         "command": "grove-hook codex",
+         "async": false,
+         "matcher": null,
+         "timeoutSec": 1,
+         "statusMessage": null,
+         "additionalContextLimit": null,
+         "sourcePath": "/<session-flags>/config.toml",
+         "source": "sessionFlags",
+         "pluginId": null,
+         "displayOrder": 10,
+         "enabled": true,
+         "isManaged": false,
+         "currentHash": "sha256:d4c3a29d67ea03184aa2973f96a749a0634402f58ae496f33e3e7fc0215f9f29",
+         "trustStatus": "trusted"
+        },
+        {
+         "key": "/<session-flags>/config.toml:interrupt:0:0",
+         "eventName": "interrupt",
+         "handlerType": "command",
+         "command": "grove-hook codex",
+         "async": false,
+         "matcher": null,
+         "timeoutSec": 1,
+         "statusMessage": null,
+         "additionalContextLimit": null,
+         "sourcePath": "/<session-flags>/config.toml",
+         "source": "sessionFlags",
+         "pluginId": null,
+         "displayOrder": 11,
+         "enabled": true,
+         "isManaged": false,
+         "currentHash": "sha256:39a53604ee15a10353ac7fc906a09755793a976622c4ae23d554b1e10220b22f",
+         "trustStatus": "trusted"
+        }
+       ],
+       "warnings": [],
+       "errors": []
+      }
+     ]
+    }
+   }
+  }
+ ]
+}

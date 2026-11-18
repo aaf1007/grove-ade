@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit reviews every PR and push. It advises; it never gates a merge or pushes code.
+language: en-US
+reviews:
+  profile: chill
+  # No request-changes reviews and no approvals. The user merges.
+  auto_approvals:
+    enabled: false
+  fail_commit_status: false
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+    # Review drafts and PRs against any base branch, not only main.
+    drafts: true
+    base_branches:
+      - ".*"
+  # Nothing that commits, opens PRs, or edits code.
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+  path_instructions:
+    - path: "crates/grove-core/**"
+      instructions: |
+        - Errors use `thiserror`. No `anyhow`.
+        - No `unwrap()` outside tests.
+        - Never block a tokio worker. PTY readers run on std threads and forward through channels.
+        - Worktree add and remove use the git CLI. Diffs use git2.
+    - path: "app/src-tauri/**"
+      instructions: |
+        - No business logic. This crate only maps commands to the Core API and forwards core events (ADR 0002).
+        - `anyhow` is allowed here.
+    - path: "app/src/**"
+      instructions: |
+        - PTY output reaches the UI only through a batched channel, never one event per chunk.
+    - path: "**/*.md"
+      instructions: |
+        - Plain and short. No em dashes.
+        - Use GLOSSARY.md terms exactly.
+        - Flag any change that reopens a decision in docs/adr/ without adding a new ADR.
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - CLAUDE.md
+      - GLOSSARY.md
+      - docs/adr/*.md
+      - docs/acceptance.md

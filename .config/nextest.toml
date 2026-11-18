@@ -1,0 +1,25 @@
+# cargo-nextest settings. Only CI uses nextest. The local gate is still `cargo test`.
+# A local `cargo nextest run` uses the default profile, which never retries.
+
+# The watch tests time events against the limits in docs/acceptance.md. Under `cargo test` a
+# lock in the file runs them one at a time. nextest runs each test in its own process, where
+# that lock does nothing, so each of them runs with no other test beside it.
+[[profile.default.overrides]]
+filter = 'binary_id(grove-core::watch)'
+threads-required = "num-test-threads"
+
+# CI runs `cargo nextest run --profile ci`. A test that fails and then passes is reported as
+# flaky and the run stays green. A test that fails all three tries fails the run.
+[profile.ci]
+retries = 2
+# Run every test after a failure, so one run reports every failing and flaky test.
+fail-fast = false
+# A try still running after 60 s is stopped and counts as a failed try. It is retried like any
+# other: a test that then passes is flaky, and the job summary says the try timed out. A test
+# that hangs on all three tries fails the job in minutes with its name, not at the job timeout.
+# On CI the slowest test binary takes about 17 s for all its tests.
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+# Written to target/nextest/ci/junit.xml. The CI job summary lists the flaky tests from it.
+[profile.ci.junit]
+path = "junit.xml"

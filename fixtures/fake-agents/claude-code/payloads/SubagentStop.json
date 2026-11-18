@@ -1,0 +1,26 @@
+{
+  "session_id": "{{session_id}}",
+  "transcript_path": "{{home}}/.claude/projects/{{project}}/{{session_id}}.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "0e501c8a-94e0-4543-a5c0-251926186001",
+  "permission_mode": "default",
+  "agent_id": "a2b48c265361e11a0",
+  "agent_type": "general-purpose",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "{{home}}/.claude/projects/{{project}}/{{session_id}}/subagents/agent-a2b48c265361e11a0.jsonl",
+  "last_assistant_message": "Hi.",
+  "background_tasks": [
+    {
+      "id": "a2b48c265361e11a0",
+      "type": "subagent",
+      "status": "running",
+      "description": "Say hi",
+      "agent_type": "general-purpose"
+    }
+  ],
+  "session_crons": []
+}

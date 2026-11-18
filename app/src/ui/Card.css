@@ -1,0 +1,28 @@
+.ui-card {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--code-bg);
+  color: var(--fg);
+}
+
+.ui-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-12);
+  font: var(--text-label);
+}
+
+.ui-card-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-card-body {
+  padding: 0 var(--space-12) var(--space-12);
+  font: var(--text-body);
+}

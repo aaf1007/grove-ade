@@ -1,0 +1,9 @@
+{
+  "session_id": "{{session_id}}",
+  "transcript_path": "{{codex_home}}/sessions/2026/10/28/rollout-2026-10-28T08-07-50-{{session_id}}.jsonl",
+  "cwd": "{{cwd}}",
+  "hook_event_name": "SessionStart",
+  "model": "gpt-fixture",
+  "permission_mode": "default",
+  "source": "resume"
+}

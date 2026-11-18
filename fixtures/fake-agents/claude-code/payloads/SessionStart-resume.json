@@ -1,0 +1,11 @@
+{
+  "session_id": "{{session_id}}",
+  "transcript_path": "{{home}}/.claude/projects/{{project}}/{{session_id}}.jsonl",
+  "cwd": "{{cwd}}",
+  "hook_event_name": "SessionStart",
+  "source": "resume",
+  "seconds_since_last_response": 6,
+  "context_tokens": 2,
+  "prompt_cache_likely_expired": false,
+  "estimated_cache_write_usd": 0
+}

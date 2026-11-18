@@ -1,0 +1,10 @@
+{"steps": [
+  {"send": {"type": "account", "account": {"email": "verify@example.com", "organization": null, "plan": "max", "api_key_source": null}}},
+  {"wait_message": "user_message"},
+  {"send": {"type": "turn_start"}},
+  {"send": {"type": "text_delta", "text": "ok"}},
+  {"send": {"type": "approval_request", "id": "toolu_verify", "tool": "Bash", "input": {"command": "touch verified.txt"}}},
+  {"wait_message": "answer"},
+  {"send": {"type": "turn_end"}},
+  {"wait_message": "never"}
+]}

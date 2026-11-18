@@ -1,0 +1,1166 @@
+{
+ "date": "2026-11-16",
+ "stages": [
+  "gates",
+  "code-review",
+  "interrogate",
+  "thermos",
+  "verify-gauntlet"
+ ],
+ "cases": [
+  {
+   "case": {
+    "fix": "6c307aa52c9673d8d709cd4e7b8bf8388922dcb3",
+    "issue": 236,
+    "subject": "#236 fix: read reset palette slots as numbers",
+    "base": "05c79bf3dfe3393c71b82c9c96f70428cf399a56",
+    "fix_files": [
+     "app/src/TerminalPanel.tsx"
+    ],
+    "answer_key": [
+     "app/src/TerminalPanel.test.tsx"
+    ]
+   },
+   "area": "app",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 22.077192000113428,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "caught",
+     "findings": 3,
+     "other_findings": 2,
+     "tokens": 774436,
+     "cost_usd": 0.8849,
+     "judge_cost_usd": 0.0181,
+     "seconds": 234.05523416632786,
+     "note": "Finding 2 identifies that the OSC 104 handler compares raw slot text (e.g. '0007') instead of parsing numbers like OSC 4 does, leaving the slot tracked and restoring the old palette's color, which is exactly the bug the fix addresses.",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "caught",
+     "findings": 6,
+     "other_findings": 5,
+     "tokens": 976139,
+     "cost_usd": 1.0941,
+     "judge_cost_usd": 0.0192,
+     "seconds": 180.21865550009534,
+     "note": "Finding 5 identifies that the OSC 104 handler compares slots as text so a zero-padded slot like '07' fails to clear slot 7, which is exactly the bug fixed by parsing the slots as numbers.",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "caught",
+     "findings": 3,
+     "other_findings": 2,
+     "tokens": 603857,
+     "cost_usd": 0.836,
+     "judge_cost_usd": 0.0184,
+     "seconds": 113.54887358425185,
+     "note": "Finding 3 identifies that OSC 104 reset matching compares slot strings exactly, so a zero-padded reset like 104;0007 fails to clear slot 7, which is the same root cause the fix addresses by parsing slots as numbers.",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  },
+  {
+   "case": {
+    "fix": "b9227506dbf79da4d3dae840a6b454847fb577cb",
+    "issue": 236,
+    "subject": "#236 fix: keep only palette slots 0 to 255",
+    "base": "05c79bf3dfe3393c71b82c9c96f70428cf399a56",
+    "fix_files": [
+     "app/src/TerminalPanel.tsx"
+    ],
+    "answer_key": [
+     "app/src/TerminalPanel.test.tsx"
+    ]
+   },
+   "area": "app",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 16.953583207912743,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "missed",
+     "findings": 3,
+     "other_findings": 3,
+     "tokens": 597804,
+     "cost_usd": 0.9116,
+     "judge_cost_usd": 0.018,
+     "seconds": 141.76093162503093,
+     "note": "None of the findings concern the bug fixed here, which is OSC 4 palette slots outside 0-255 (or non-numeric) being kept across a palette change and leaving undefined entries in the ansi palette; they cover selection background contrast, a doc-change approval, and a test helper.",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  },
+  {
+   "case": {
+    "fix": "181f45d38304458c70bea5907d8caeb4ad221d47",
+    "issue": 235,
+    "subject": "#235 fix: Tab closes a menu and skips its items",
+    "base": "05c79bf3dfe3393c71b82c9c96f70428cf399a56",
+    "fix_files": [
+     "app/src/ui/Menu.tsx"
+    ],
+    "answer_key": [
+     "app/src/Workspace.test.tsx",
+     "app/src/ui/ui.test.tsx"
+    ]
+   },
+   "area": "app",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 26.934147333726287,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "missed",
+     "findings": 3,
+     "other_findings": 3,
+     "tokens": 1252636,
+     "cost_usd": 1.2053,
+     "judge_cost_usd": 0.0197,
+     "seconds": 128.36872812500224,
+     "note": "The bug is that Tab in an open Menu did not close it and menu items were in the Tab order; none of the findings (session naming, raw buttons in DiffView and FilesPanel) concern Menu keyboard handling.",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  },
+  {
+   "case": {
+    "fix": "80bb99e512f7480ac560f993ca926325d9d895aa",
+    "issue": 158,
+    "subject": "#158 fix: a session that ends before the reload keeps its panel",
+    "base": "9ef3a49142b0a4b12772544dc9e154cbf3f6a694",
+    "fix_files": [
+     "app/src/workspace.ts"
+    ],
+    "answer_key": [
+     "app/src/Workspace.test.tsx"
+    ]
+   },
+   "area": "app",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 12.123259583022445,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "missed",
+     "findings": 2,
+     "other_findings": 2,
+     "tokens": 823418,
+     "cost_usd": 0.8596,
+     "judge_cost_usd": 0.0196,
+     "seconds": 132.95961183309555,
+     "note": "The fixed bug is that a session ending before the core's copy is loaded loses its panel in the window (the panel is not restored); neither finding addresses this: finding 1 concerns a stale panel index after an earlier session ends, and finding 2 concerns the Rust place_agent index shifting with simultaneous starts.",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "missed",
+     "findings": 4,
+     "other_findings": 4,
+     "tokens": 926955,
+     "cost_usd": 0.8841,
+     "judge_cost_usd": 0.02,
+     "seconds": 128.79192966595292,
+     "note": "The fixed bug is a session that ends before the core's copy is loaded losing its panel in the UI (the loadKeeping fix-up wasn't applied on the non-after-setup path); none of the findings describe that \u2014 they cover panel index computation before setup, UI save overwriting core placement, Undo state, and panel counting in the core.",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "missed",
+     "findings": 3,
+     "other_findings": 3,
+     "tokens": 888453,
+     "cost_usd": 0.9378,
+     "judge_cost_usd": 0.0197,
+     "seconds": 138.65005412511528,
+     "note": "The fixed bug is that a session ending before the window loads the core's copy loses its panel in the frontend (workspace.ts startAgent); none of the findings address this \u2014 they concern panel index shifts, a stale running-session list in place_agent, and save timing in the core.",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  },
+  {
+   "case": {
+    "fix": "fad80b858a627b646ea979b12c6acf2d34a37f67",
+    "issue": 174,
+    "subject": "#174 fix: a queued save does not write over a save made elsewhere",
+    "base": "bd71669043e8ed3ace6d4a6f534371a65be4c816",
+    "fix_files": [
+     "app/src/ProfilePanel.tsx"
+    ],
+    "answer_key": [
+     "app/src/ProfilePanel.test.tsx"
+    ]
+   },
+   "area": "app",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 12.68717462476343,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "error",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 701141,
+     "cost_usd": 0.8803,
+     "judge_cost_usd": 0.0,
+     "seconds": 220.863034541253,
+     "note": "no findings block in the reply",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  },
+  {
+   "case": {
+    "fix": "7042b6b78e6c28a67187f10cba75c8d06bc81843",
+    "issue": 168,
+    "subject": "#168 fix: Start waits while run sessions are listed again",
+    "base": "fa7fcacf279ce0851bf6e8ebbdbbf3b7610b7d61",
+    "fix_files": [
+     "app/src/ProfilePanel.tsx"
+    ],
+    "answer_key": [
+     "app/src/ProfilePanel.test.tsx"
+    ]
+   },
+   "area": "app",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 38.85284983413294,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "missed",
+     "findings": 4,
+     "other_findings": 4,
+     "tokens": 994636,
+     "cost_usd": 1.0345,
+     "judge_cost_usd": 0.0204,
+     "seconds": 117.3882003328763,
+     "note": "The fix disables the Start button in ProfilePanel while run sessions are being re-listed after a profile or override change (stale-listing race), and none of the findings address that; they concern core API changes, duplicate session spawning, error text matching, and a dead condition.",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  },
+  {
+   "case": {
+    "fix": "2c5479d742a0846b20a47cd1590594eccf033a2e",
+    "issue": 168,
+    "subject": "#168 fix: a run session that exits while its listing is out says stopped",
+    "base": "fa7fcacf279ce0851bf6e8ebbdbbf3b7610b7d61",
+    "fix_files": [
+     "app/src/App.tsx"
+    ],
+    "answer_key": [
+     "app/src/App.test.tsx"
+    ]
+   },
+   "area": "app",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 14.403702666983008,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "missed",
+     "findings": 4,
+     "other_findings": 4,
+     "tokens": 883843,
+     "cost_usd": 1.0255,
+     "judge_cost_usd": 0.0175,
+     "seconds": 127.14948570821434,
+     "note": "The fix addresses a frontend race where a run session listed as running but exited before the listing reply returned was shown as running instead of stopped (App.tsx exited-set check); none of the findings describe this, as they concern Core API changes, a SessionExited ordering race in the backend, error-text matching, and a redundant check.",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  },
+  {
+   "case": {
+    "fix": "d29fe08c62b8aea836240ac8072573743bb5364e",
+    "issue": 129,
+    "subject": "#129 fix: merge an agent's profile change into the file as it is on disk",
+    "base": "a7bcf566a41defaf96ce7b5237b50eb97942f5d1",
+    "fix_files": [
+     "crates/grove-core/src/profile.rs"
+    ],
+    "answer_key": [
+     "crates/grove-mcp/tests/workspace_profile.rs"
+    ]
+   },
+   "area": "rust",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 844.5753941670991,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "missed",
+     "findings": 4,
+     "other_findings": 4,
+     "tokens": 873746,
+     "cost_usd": 0.7993,
+     "judge_cost_usd": 0.0228,
+     "seconds": 117.54888324998319,
+     "note": "The fix makes Profiles::change read the file as it is on disk instead of the stale cached copy; none of the findings describe this stale-read overwrite (finding 2 is about losing comments/formatting on re-serialization, a different issue).",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "missed",
+     "findings": 4,
+     "other_findings": 4,
+     "tokens": 1227544,
+     "cost_usd": 1.0068,
+     "judge_cost_usd": 0.0226,
+     "seconds": 617.0766142089851,
+     "note": "The fix makes profile_set merge into the file as it is on disk (a stale-read/lost-edit race with the watcher); finding 1 is about dropping comments/formatting and undo, not about using stale loaded state, and the other findings concern unrelated code.",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "missed",
+     "findings": 4,
+     "other_findings": 4,
+     "tokens": 1050881,
+     "cost_usd": 1.1445,
+     "judge_cost_usd": 0.0229,
+     "seconds": 118.29404616588727,
+     "note": "The bug is that profile_set merged changes into a stale in-memory copy instead of re-reading the file on disk, losing watcher-unseen edits. None of the findings describe this: #1 is about comments being dropped on rewrite, #4 about null meaning keep, and #2 and #3 concern unrelated areas.",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  },
+  {
+   "case": {
+    "fix": "5c2cfb5946c6c50b25baed9ffbea12fa0da49e1a",
+    "issue": 60,
+    "subject": "#60 fix: guard panel kills, stop a cancelled wait, kill on quit",
+    "base": "b455163f78180999c8d73c100a7403a4ffa60f1a",
+    "fix_files": [
+     "crates/grove-core/src/lib.rs",
+     "crates/grove-core/src/panel.rs",
+     "crates/grove-core/src/session.rs",
+     "crates/grove-mcp/src/main.rs"
+    ],
+    "answer_key": [
+     "crates/grove-mcp/tests/panels.rs"
+    ]
+   },
+   "area": "rust",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 519.2134964587167,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "caught",
+     "findings": 4,
+     "other_findings": 3,
+     "tokens": 1404843,
+     "cost_usd": 1.1679,
+     "judge_cost_usd": 0.0492,
+     "seconds": 206.5203341250308,
+     "note": "The fix guards `release_with_leader` so a kept leader pid is dropped or checked when the session is empty or the pid has been reused, which is the stale-leader-pid reuse that finding 2 describes in `end_panel`.",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  },
+  {
+   "case": {
+    "fix": "e980ec4d2ca1828e70d15abc6e5c97849daa8634",
+    "issue": 174,
+    "subject": "#174 fix: set_repo_settings sends RepoSettingsChanged for its repo",
+    "base": "bd71669043e8ed3ace6d4a6f534371a65be4c816",
+    "fix_files": [
+     "crates/grove-core/src/lib.rs",
+     "crates/grove-core/src/run.rs"
+    ],
+    "answer_key": [
+     "crates/grove-core/tests/profiles.rs"
+    ]
+   },
+   "area": "rust",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 409.2841362077743,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "caught",
+     "findings": 4,
+     "other_findings": 3,
+     "tokens": 518104,
+     "cost_usd": 0.5656,
+     "judge_cost_usd": 0.0241,
+     "seconds": 209.46247554104775,
+     "note": "Finding 1 points at set_repo_settings in run.rs and says no CoreEvent::RepoSettingsChanged is sent by set_repo_settings/set_repo_overrides_text, which is exactly the missing event the fix adds.",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  },
+  {
+   "case": {
+    "fix": "7ce91e3dead4d141d7c1982b54515b650cc40526",
+    "issue": 89,
+    "subject": "Fix the retry lock order and warn after a failed Delete",
+    "base": "bd71669043e8ed3ace6d4a6f534371a65be4c816",
+    "fix_files": [
+     "crates/grove-core/src/error.rs",
+     "crates/grove-core/src/remove.rs",
+     "crates/grove-core/src/restore.rs",
+     "crates/grove-core/src/watch.rs",
+     "crates/grove-core/src/worktree.rs"
+    ],
+    "answer_key": [
+     "crates/grove-core/tests/watch.rs"
+    ]
+   },
+   "area": "rust",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 397.5891037923284,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "caught",
+     "findings": 2,
+     "other_findings": 1,
+     "tokens": 596906,
+     "cost_usd": 0.7231,
+     "judge_cost_usd": 0.0352,
+     "seconds": 138.55735208280385,
+     "note": "Finding 1 identifies that remove.rs silently swallows a failed watcher restart after a failed Delete with no warning, which is the 'warn after a failed Delete' bug this commit fixes and the second test checks.",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  },
+  {
+   "case": {
+    "fix": "22ab90de13c596bf6d28c1b7c62c8b338342cf05",
+    "issue": 158,
+    "subject": "#158 fix: a session switching mode keeps its panel in the workspace",
+    "base": "b455163f78180999c8d73c100a7403a4ffa60f1a",
+    "fix_files": [
+     "crates/grove-core/src/workspace.rs"
+    ],
+    "answer_key": [
+     "app/src/Workspace.test.tsx",
+     "app/src/fakeBridge.ts",
+     "crates/grove-core/tests/workspaces.rs"
+    ]
+   },
+   "area": "rust",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 610.8533825408667,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "missed",
+     "findings": 4,
+     "other_findings": 4,
+     "tokens": 1387639,
+     "cost_usd": 1.0973,
+     "judge_cost_usd": 0.0281,
+     "seconds": 172.06155395926908,
+     "note": "The fix is about the core's workspace listing dropping the panel of an agent session momentarily between its two processes during a mode switch; none of the findings address mode switching or this panel-dropping root cause (they concern start-after-setup queueing, changeAgent panel placement, stale indices, and event reload churn).",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  },
+  {
+   "case": {
+    "fix": "93969bfc004ce36f321e5cac7ecf7505e99058e6",
+    "issue": 114,
+    "subject": "Start a turn on the main agent's message_start when none is running",
+    "base": "78cc824f3b381a52ea3e4e3896e9181c5e9bfd78",
+    "fix_files": [
+     "sidecar/claude/src/sidecar.ts"
+    ],
+    "answer_key": [
+     "sidecar/claude/src/sidecar.test.ts"
+    ]
+   },
+   "area": "sidecar",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 5.1535489577800035,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "missed",
+     "findings": 6,
+     "other_findings": 6,
+     "tokens": 949695,
+     "cost_usd": 0.8409,
+     "judge_cost_usd": 0.0179,
+     "seconds": 129.09866358339787,
+     "note": "The fix makes message_start from the main agent start a turn when none is running, so turns a result named no messages for still end; none of the findings (permission answer parsing, build deps, Core API, missing Commands variant, stdin-close abort, duplicate pending id) concern turn start/end handling.",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "missed",
+     "findings": 6,
+     "other_findings": 6,
+     "tokens": 718378,
+     "cost_usd": 0.865,
+     "judge_cost_usd": 0.0182,
+     "seconds": 124.40830550016835,
+     "note": "The fixed bug is that a turn is not started on the main agent's message_start when no turn is running, so a turn a result named nothing for never ends; none of the six findings concern turn start/end handling in sidecar.ts.",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "missed",
+     "findings": 7,
+     "other_findings": 7,
+     "tokens": 577289,
+     "cost_usd": 0.739,
+     "judge_cost_usd": 0.0198,
+     "seconds": 119.9143313751556,
+     "note": "The fix starts a turn on a main-agent message_start when no turn is running, after a result that named no messages; no finding describes that missed-turn-start. Finding 5 concerns a turn started by endTurn after an interrupt, which is a different cause.",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  },
+  {
+   "case": {
+    "fix": "a0a2af829bdb77ab43a53196f6e78ef0a9ba676c",
+    "issue": 114,
+    "subject": "Start the next turn for any message no result answered",
+    "base": "78cc824f3b381a52ea3e4e3896e9181c5e9bfd78",
+    "fix_files": [
+     "sidecar/claude/src/sidecar.ts"
+    ],
+    "answer_key": [
+     "sidecar/claude/src/sidecar.test.ts"
+    ]
+   },
+   "area": "sidecar",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 4.370035625062883,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "missed",
+     "findings": 4,
+     "other_findings": 4,
+     "tokens": 774897,
+     "cost_usd": 0.9099,
+     "judge_cost_usd": 0.0213,
+     "seconds": 156.53708895901218,
+     "note": "The bug is that a user message arriving after claude counted its queue is missed, so the next turn never starts; none of the four findings (permission fallthrough, bun dependency, Core API change, PROTOCOL.md edit) address turn-boundary tracking of unanswered messages.",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "not run",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  },
+  {
+   "case": {
+    "fix": "6dade97f8f68d32efa2ffc1e364a65c91f58e750",
+    "issue": 126,
+    "subject": "Keep set_mode and a resumed history safe from bad input and dropped callers",
+    "base": "3d86b9140e45c5f85aee5cfe0182c95122fb8a90",
+    "fix_files": [
+     "crates/grove-core/src/agent.rs",
+     "sidecar/claude/src/sidecar.ts"
+    ],
+    "answer_key": [
+     "crates/grove-core/tests/mode_switch.rs",
+     "sidecar/claude/src/sidecar.test.ts"
+    ]
+   },
+   "area": "rust,sidecar",
+   "proof": {
+    "fails_without_fix": true,
+    "passes_with_fix": true
+   },
+   "stages": {
+    "gates": {
+     "outcome": "missed",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 215.28353699995205,
+     "note": "",
+     "leaks": []
+    },
+    "code-review": {
+     "outcome": "caught",
+     "findings": 7,
+     "other_findings": 6,
+     "tokens": 1531540,
+     "cost_usd": 1.3292,
+     "judge_cost_usd": 0.0278,
+     "seconds": 186.11059170821682,
+     "note": "The fix adds a Drop guard (Switch) so that a dropped set_mode future still clears `switching` and sets `ended`, which is exactly the cancel-safety bug finding 2 describes.",
+     "leaks": []
+    },
+    "interrogate": {
+     "outcome": "missed",
+     "findings": 6,
+     "other_findings": 6,
+     "tokens": 1280405,
+     "cost_usd": 1.2471,
+     "judge_cost_usd": 0.0298,
+     "seconds": 148.75728566711769,
+     "note": "The commit fixes two bugs: set_mode leaving the session stuck switching when the caller drops it, and the sidecar failing on a recorded message with a null body. Finding 3 concerns all-or-nothing parsing of history in Rust chat.rs, a different root cause. The other findings are unrelated.",
+     "leaks": []
+    },
+    "thermos": {
+     "outcome": "missed",
+     "findings": 6,
+     "other_findings": 6,
+     "tokens": 1320216,
+     "cost_usd": 1.2264,
+     "judge_cost_usd": 0.0274,
+     "seconds": 159.7651447081007,
+     "note": "The fix addresses set_mode being dropped mid-await (leaving the session stuck switching), a null message body in the Claude sidecar history, and history conversion errors; none of the findings describe these root causes.",
+     "leaks": []
+    },
+    "verify-gauntlet": {
+     "outcome": "not available",
+     "findings": 0,
+     "other_findings": 0,
+     "tokens": 0,
+     "cost_usd": 0.0,
+     "judge_cost_usd": 0.0,
+     "seconds": 0.0,
+     "note": "needs issue #265",
+     "leaks": []
+    }
+   }
+  }
+ ],
+ "errors": []
+}

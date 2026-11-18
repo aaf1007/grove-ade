@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+# Fake Claude Code for grove's core tests. Python 3 standard library only.
+# README.md has the flags it takes, the scenario format and the log format.
+import os
+import re
+import sys
+import uuid
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from fake_agent import (Input, Usage, append_record, check_claude_settings, check_mcp_config,  # noqa: E402
+                        load_scenario, main, mcp_call, mcp_env, play, read_json, run_hooks, run_shell)
+
+DATA = os.path.join(os.path.dirname(os.path.realpath(__file__)), "claude-code")
+# The payload field a hook group's matcher is checked against, as in the real
+# CLI. Other events ignore the matcher.
+MATCH_FIELD = {"PreToolUse": "tool_name", "PostToolUse": "tool_name", "PermissionRequest": "tool_name",
+               "SessionStart": "source", "SessionEnd": "reason", "Notification": "notification_type",
+               "StopFailure": "error", "SubagentStop": "agent_type"}
+
+
+def parse_args(args):
+    """Returns ({flag: value}, prompt). Takes only the flags grove passes."""
+    opts = {}
+    prompts = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if arg in ("--settings", "--session-id", "--resume", "--model", "--effort"):
+            if i == len(args):
+                raise Usage(f"{arg} needs a value")
+            if arg in opts:
+                raise Usage(f"{arg} given twice")
+            opts[arg] = args[i]
+            i += 1
+        elif arg.startswith("--mcp-config="):
+            opts["--mcp-config"] = arg.split("=", 1)[1]
+        elif arg == "--mcp-config":
+            raise Usage("--mcp-config takes several values and swallows the prompt, use --mcp-config=<file>")
+        elif arg.startswith("-"):
+            raise Usage(f"unknown argument {arg}")
+        else:
+            prompts.append(arg)
+    if len(prompts) > 1:
+        raise Usage(f"more than one prompt: {prompts}")
+    if "--session-id" in opts and "--resume" in opts:
+        raise Usage("--session-id and --resume together")
+    for flag in ("--session-id", "--resume"):
+        if flag in opts:
+            try:
+                uuid.UUID(opts[flag])
+            except ValueError:
+                raise Usage(f"{flag} is not a UUID: {opts[flag]}")
+    return opts, prompts[0] if prompts else ""
+
+
+def run(args, log):
+    opts, prompt = parse_args(args)
+    settings = {}
+    if "--settings" in opts:
+        settings = read_json(opts["--settings"], "settings", log)
+        check_claude_settings(settings)
+    servers = {}
+    if "--mcp-config" in opts:
+        mcp = read_json(opts["--mcp-config"], "mcp config", log)
+        check_mcp_config(mcp)
+        servers = mcp["mcpServers"]
+    steps = load_scenario("FAKE_CLAUDE_SCENARIO", DATA)
+    cwd = os.getcwd()
+    slots = {"session_id": opts.get("--session-id") or opts.get("--resume") or str(uuid.uuid4()),
+             "cwd": cwd, "home": os.environ.get("HOME", ""), "prompt": prompt,
+             "project": re.sub(r"[^A-Za-z0-9]", "-", cwd), "text": "",
+             "tmp": os.path.join(os.path.realpath("/tmp"), f"claude-{os.getuid()}")}
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=cwd)
+
+    def fire(payload):
+        event = payload["hook_event_name"]
+        groups = settings.get("hooks", {}).get(event, [])
+        run_hooks(groups, payload, MATCH_FIELD.get(event), log, ["/bin/sh", "-c"], env, 60)
+
+    def call(name, tool, arguments):
+        server = servers.get(name)
+        if server is None:
+            raise Usage(f"mcp_call: no MCP server {name} in the config")
+        mcp_call(server["command"], server.get("args", []), mcp_env(server.get("env", {})), tool, arguments, log)
+
+    # The Bash tool gets the agent's own environment.
+    def shell(command):
+        run_shell(command, ["/bin/sh", "-c"], dict(os.environ), log)
+
+    stdin = Input(log)
+    try:
+        return play(steps, DATA, slots, stdin, log, fire,
+                    record=lambda message: append_record("FAKE_CLAUDE_RECORD", slots["session_id"], message),
+                    call=call, shell=shell)
+    finally:
+        stdin.restore()
+
+
+if __name__ == "__main__":
+    sys.exit(main("claude", "FAKE_CLAUDE", run))

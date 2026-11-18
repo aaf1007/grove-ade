@@ -1,0 +1,30 @@
+{
+  "session_id": "{{session_id}}",
+  "turn_id": "01a1830d-d1fc-7683-bbba-aff8060e900c",
+  "transcript_path": "{{codex_home}}/sessions/2026/10/28/rollout-2026-10-28T08-07-50-{{session_id}}.jsonl",
+  "cwd": "{{cwd}}",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-fixture",
+  "permission_mode": "default",
+  "tool_name": "request_user_input",
+  "tool_input": {
+    "questions": [
+      {
+        "id": "color",
+        "header": "Color",
+        "question": "Which color?",
+        "options": [
+          {
+            "label": "Red",
+            "description": "Warm"
+          },
+          {
+            "label": "Blue",
+            "description": "Cool"
+          }
+        ]
+      }
+    ]
+  },
+  "tool_use_id": "call_fixture_4"
+}

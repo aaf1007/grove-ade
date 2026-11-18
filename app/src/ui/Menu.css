@@ -1,0 +1,86 @@
+.ui-menu {
+  position: relative;
+  flex: none;
+}
+
+.ui-menu-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + var(--space-4));
+  display: flex;
+  min-width: 200px;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--ring), var(--shadow-menu);
+}
+
+.ui-menu-list-start {
+  left: 0;
+}
+
+.ui-menu-list-end {
+  right: 0;
+}
+
+.ui-menu-heading {
+  padding: var(--space-6) var(--space-8) var(--space-4);
+  color: var(--muted);
+  font: var(--text-label);
+}
+
+.ui-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-height: var(--control-sm);
+  padding: var(--space-4) var(--space-8);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg);
+  font: var(--text-control);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ui-menu-item:hover {
+  background: var(--hover);
+}
+
+.ui-menu-item:focus-visible {
+  background: var(--hover);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.ui-menu-check {
+  display: inline-flex;
+  width: var(--icon);
+  flex: none;
+  color: var(--muted);
+}
+
+.ui-menu-item svg {
+  width: var(--icon);
+  height: var(--icon);
+  stroke-width: 1.75;
+}
+
+.ui-menu-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.ui-menu-hint {
+  display: block;
+  color: var(--muted);
+  font: var(--text-meta);
+}
+
+.ui-menu-item kbd {
+  color: var(--faint);
+  font: var(--text-code-meta);
+}

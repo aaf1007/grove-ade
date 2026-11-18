@@ -1,0 +1,12 @@
+{"steps": [
+  {"hook": "SessionStart-startup"},
+  {"screen": "idle-prompt"},
+  {"wait_input": "\r"},
+  {"hook": "UserPromptSubmit"},
+  {"hook": "PreToolUse-Bash"},
+  {"hook": "PermissionRequest-Bash"},
+  {"wait_input": "1"},
+  {"hook": "PostToolUse-Bash"},
+  {"hook": "Stop"},
+  {"wait_input": "\u0003\u0003"}
+]}

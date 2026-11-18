@@ -1,0 +1,12 @@
+{
+  "session_id": "{{session_id}}",
+  "transcript_path": "{{home}}/.claude/projects/{{project}}/{{session_id}}.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "c812191f-a31d-4b37-8d15-30cf162ff529",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "StopFailure",
+  "error": "unknown",
+  "last_assistant_message": "API Error: 400 fixture: forced failure"
+}

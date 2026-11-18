@@ -1,0 +1,14 @@
+{
+  "session_id": "{{session_id}}",
+  "turn_id": "01a1830d-9dd2-79f2-aaa9-020edd3c85fd",
+  "transcript_path": "{{codex_home}}/sessions/2026/10/28/rollout-2026-10-28T08-07-50-{{session_id}}.jsonl",
+  "cwd": "{{cwd}}",
+  "hook_event_name": "PermissionRequest",
+  "model": "gpt-fixture",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "touch note.txt",
+    "description": "Create note.txt"
+  }
+}

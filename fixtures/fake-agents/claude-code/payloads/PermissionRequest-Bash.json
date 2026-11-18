@@ -1,0 +1,30 @@
+{
+  "session_id": "{{session_id}}",
+  "transcript_path": "{{home}}/.claude/projects/{{project}}/{{session_id}}.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "3b641f33-2d53-4c36-9029-127ad94bca33",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "touch note.txt",
+    "description": "Create note.txt"
+  },
+  "permission_suggestions": [
+    {
+      "type": "addDirectories",
+      "directories": [
+        "{{cwd}}"
+      ],
+      "destination": "session"
+    },
+    {
+      "type": "setMode",
+      "mode": "acceptEdits",
+      "destination": "session"
+    }
+  ]
+}

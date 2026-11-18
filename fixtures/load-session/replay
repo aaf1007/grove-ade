@@ -1,0 +1,8 @@
+#!/bin/sh
+# Plays session.ansi in a loop, forever, through pv at 50 KB/s.
+# Usage: replay [RATE]
+# RATE is a pv -L rate, 50k by default. Stop it with Ctrl-C.
+command -v pv >/dev/null || { echo "replay: needs pv (brew install pv)" >&2; exit 1; }
+recording="$(dirname "$0")/session.ansi"
+# cat fails once pv is gone, which ends the loop.
+while cat "$recording"; do :; done | pv -qL "${1:-50k}"

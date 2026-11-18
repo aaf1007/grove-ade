@@ -1,0 +1,22 @@
+name: Delete PR caches
+
+# A closed pull request's caches only use up the repo's 10 GB, and past that GitHub evicts main's.
+# pull_request_target runs from main with a token that can delete caches, also for a PR from a
+# fork. It must never check out or run code from the pull request, which would get that token.
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  actions: write
+
+jobs:
+  delete-caches:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PULL_REQUEST_MERGE_REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: gh cache delete --all --ref "$PULL_REQUEST_MERGE_REF" --succeed-on-no-caches

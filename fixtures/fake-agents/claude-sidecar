@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+# Fake Claude sidecar for grove's core tests. Python 3 standard library only.
+# sidecar/claude/PROTOCOL.md has the protocol. README.md has the scenario and log formats.
+import json
+import os
+import sys
+import uuid
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from fake_agent import (SIDECAR_ACTIONS, Input, Usage, append_record, check_claude_settings,  # noqa: E402
+                        check_mcp_config, load_scenario, main, mcp_call, mcp_env, play, read_json, read_record,
+                        send)
+
+DATA = os.path.join(os.path.dirname(os.path.realpath(__file__)), "claude-code")
+FLAGS = ("--settings", "--mcp-config", "--session-id", "--claude")
+
+
+def parse_args(args):
+    """Returns {flag: value}. Takes exactly the flags grove passes, each once, and
+    --resume at most once, as True."""
+    opts = {}
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--resume":
+            if arg in opts:
+                raise Usage(f"{arg} given twice")
+            opts[arg] = True
+            i += 1
+            continue
+        if arg not in FLAGS:
+            raise Usage(f"unknown argument {arg}")
+        if i + 1 == len(args):
+            raise Usage(f"{arg} needs a value")
+        if arg in opts:
+            raise Usage(f"{arg} given twice")
+        opts[arg] = args[i + 1]
+        i += 2
+    missing = [flag for flag in FLAGS if flag not in opts]
+    if missing:
+        raise Usage(f"missing {' '.join(missing)}")
+    try:
+        uuid.UUID(opts["--session-id"])
+    except ValueError:
+        raise Usage(f"--session-id is not a UUID: {opts['--session-id']}")
+    return opts
+
+
+def run(args, log):
+    opts = parse_args(args)
+    check_claude_settings(read_json(opts["--settings"], "settings", log))
+    mcp = read_json(opts["--mcp-config"], "mcp config", log)
+    check_mcp_config(mcp)
+    servers = mcp["mcpServers"]
+    steps = load_scenario("FAKE_CLAUDE_SIDECAR_SCENARIO", DATA, SIDECAR_ACTIONS)
+    # The model and effort the current turn runs with, and those the next turn takes.
+    slots = {"session_id": opts["--session-id"], "cwd": os.getcwd(), "home": os.environ.get("HOME", ""),
+             "model": "default", "effort": "default", "text": ""}
+    chosen = {"model": "default", "effort": "default"}
+
+    def no_hooks(payload):
+        raise Usage("the sidecar fake runs no hooks")
+
+    # A set_model applies from the next turn, as PROTOCOL.md says. A missing field stays.
+    def on_line(line):
+        try:
+            message = json.loads(line)
+        except ValueError:
+            return
+        if isinstance(message, dict) and message.get("type") == "set_model":
+            chosen.update({k: message[k] for k in ("model", "effort") if isinstance(message.get(k), str)})
+
+    # The real sidecar hands the servers to the Agent SDK, which starts one the same way.
+    def call(name, tool, arguments):
+        server = servers.get(name)
+        if server is None:
+            raise Usage(f"mcp_call: no MCP server {name} in the config")
+        mcp_call(server["command"], server.get("args", []), mcp_env(server.get("env", {})), tool, arguments, log)
+
+    def on_send(message):
+        if message.get("type") == "turn_start":
+            slots.update(chosen)
+
+    # Like the real sidecar, a resumed conversation starts with the record of it.
+    if opts.get("--resume"):
+        send({"type": "history", "messages": read_record("FAKE_CLAUDE_RECORD", slots["session_id"])}, {})
+    return play(steps, DATA, slots, Input(log, on_line), log, no_hooks, on_send,
+                lambda message: append_record("FAKE_CLAUDE_RECORD", slots["session_id"], message), call)
+
+
+if __name__ == "__main__":
+    sys.exit(main("claude-sidecar", "FAKE_CLAUDE_SIDECAR", run))
