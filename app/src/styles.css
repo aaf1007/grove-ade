@@ -60,49 +60,68 @@ svg {
   height: 100vh;
 }
 
+/* The title bar and the core's warnings, over the chat area and the panel area. */
+.window-top {
+  grid-row: 1;
+  grid-column: 3 / -1;
+  min-width: 0;
+}
+
 .titlebar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  height: var(--topbar);
+  padding: 0 var(--space-12);
+  font-size: var(--text-body-size);
+}
+
+/* The repo's badge and name, a slash, then the worktree's name, which is cut first. */
+.titlebar .crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  min-width: 0;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.crumb-repo {
   display: flex;
   flex: none;
   align-items: center;
   gap: var(--space-8);
-  height: var(--topbar);
-  padding: 0 var(--space-12);
-  font-size: var(--text-meta-size);
 }
 
-.titlebar .crumbs {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.repo-badge {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: calc(var(--text-meta-size) * 0.75);
+  font-weight: 700;
+}
+
+.crumb-sep {
+  color: var(--faint);
 }
 
 .titlebar .crumbs b {
+  min-width: 0;
+  overflow: hidden;
   color: var(--fg);
   font-weight: 500;
+  text-overflow: ellipsis;
 }
 
-.titlebar .spacer {
-  flex: 1;
-}
-
-/* The attention queue's count and key. */
-.ui-button.attn {
-  color: var(--faint);
-}
-
-.ui-button.attn:hover:not(:disabled) {
-  color: var(--fg);
-}
-
-.ui-button.attn.waiting {
-  color: var(--needs);
-}
-
-.attn kbd {
-  color: var(--faint);
-  font: var(--text-code-meta-size) var(--font-mono);
+.titlebar .switches {
+  display: flex;
+  flex: none;
+  gap: var(--space-4);
+  margin-left: auto;
 }
 
 /* A core warning, under the title bar. */
@@ -125,11 +144,12 @@ svg {
   position: relative;
 }
 
+/* Opens up from the sidebar's footer. */
 .pop {
   position: absolute;
   z-index: 20;
-  top: 30px;
   right: 0;
+  bottom: calc(100% + var(--space-6));
   display: grid;
   justify-items: start;
   padding: var(--space-6) var(--space-8) var(--space-10);
@@ -156,6 +176,7 @@ svg {
   flex: 1;
   min-height: 0;
   grid-template-columns: var(--sidebar-w) 5px minmax(0, 1fr) 5px var(--panels-w);
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .regions.no-sidebar {
@@ -171,14 +192,17 @@ svg {
 }
 
 .regions > * {
-  grid-row: 1;
+  grid-row: 2;
 }
 
+/* The sidebar runs the window's full height, beside the title bar. */
 .sidebar-region {
+  grid-row: 1 / -1;
   grid-column: 1;
 }
 
 .split-before {
+  grid-row: 1 / -1;
   grid-column: 2;
 }
 
@@ -216,10 +240,121 @@ svg {
 }
 
 .sidebar {
+  display: flex;
+  flex-direction: column;
   height: 100%;
-  padding: var(--space-8);
-  overflow-y: auto;
   background: var(--sidebar);
+}
+
+/* New worktree, Search, Needs you and Profiles, over the list. */
+.sidebar-nav {
+  display: grid;
+  flex: none;
+  padding: var(--space-8);
+}
+
+.nav-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  width: 100%;
+  height: 34px;
+  padding: 0 var(--space-10);
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: none;
+  color: var(--fg);
+  font-size: var(--text-body-size);
+  text-align: left;
+}
+
+.nav-row:hover:not(:disabled),
+.search-row:focus-within {
+  background: var(--hover);
+}
+
+.nav-row svg {
+  width: var(--icon);
+  height: var(--icon);
+  color: var(--muted);
+}
+
+.nav-row kbd {
+  margin-left: auto;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--faint);
+  font: var(--text-code-meta);
+}
+
+.nav-row .count {
+  margin-left: auto;
+  color: var(--faint);
+  font: var(--text-label);
+}
+
+.nav-row .count.waiting {
+  color: var(--needs);
+}
+
+.nav-row .count + kbd {
+  margin-left: 0;
+}
+
+.search-row {
+  cursor: text;
+}
+
+.search-row input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  appearance: none;
+  background: none;
+}
+
+.search-row input::placeholder {
+  color: var(--fg);
+}
+
+.search-row input::-webkit-search-cancel-button {
+  display: none;
+}
+
+/* The repos and their worktrees. Only this part scrolls. */
+.sidebar-tree {
+  flex: 1;
+  min-height: 0;
+  padding: 0 var(--space-8) var(--space-12);
+  overflow-y: auto;
+}
+
+/* Each agent's account, then Settings. */
+.sidebar-foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-10);
+  height: 56px;
+  padding: 0 var(--space-12) 0 var(--space-16);
+  border-top: 1px solid var(--line);
+}
+
+.sidebar .accounts {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--text-meta-size);
+}
+
+.accounts li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar form {
@@ -242,7 +377,7 @@ svg {
   color: var(--faint);
 }
 
-.sidebar > [role="alert"] {
+.sidebar-tree > [role="alert"] {
   padding: var(--space-6);
 }
 
@@ -1224,17 +1359,6 @@ svg {
   height: var(--space-12);
   fill: currentColor;
   stroke: none;
-}
-
-.composer-foot {
-  display: flex;
-  max-width: var(--chat-lane);
-  flex-wrap: wrap;
-  gap: var(--space-4) var(--space-12);
-  margin: 0 auto;
-  padding: var(--space-8) var(--space-8) 0;
-  color: var(--muted);
-  font-size: var(--text-meta-size);
 }
 
 /* Narrow agent panels keep 12px gutters. */

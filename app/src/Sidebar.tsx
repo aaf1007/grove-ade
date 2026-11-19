@@ -1,7 +1,8 @@
-import { Ellipsis, Plus } from "lucide-react";
-import { useEffect, useId, useState, type FormEvent } from "react";
+import { Bell, Ellipsis, Plus, Search, Settings2, SlidersHorizontal } from "lucide-react";
+import { useEffect, useEffectEvent, useId, useRef, useState, type FormEvent } from "react";
 
 import type {
+  Account,
   Agent,
   AgentState as State,
   AgentStateChanged,
@@ -16,6 +17,8 @@ import { AgentState, stateWord } from "./ui/AgentState";
 import { Button } from "./ui/Button";
 import { IconButton } from "./ui/IconButton";
 import { Menu } from "./ui/Menu";
+import { Segmented } from "./ui/Segmented";
+import { type Appearance, PALETTES, THEMES } from "./theme";
 import { ChangeBaseDialog, DeleteDialog, ForgetDialog, NewWorktreeDialog } from "./WorktreeDialogs";
 
 /** An agent session the user started, and the worktree it runs in. */
@@ -55,6 +58,9 @@ type OpenDialog = { kind: "new"; repo: Worktree } | { kind: WorktreeAction; work
  * Lists every tracked worktree under its repo with its agent sessions, adds repos, selects a
  * worktree, and starts an agent session in the selected one. Each repo's + adds a worktree, and
  * each worktree's menu changes its base branch, forgets it or deletes it.
+ *
+ * Above the list: New worktree, Search, Needs you and Profiles. Below it: each agent's account and
+ * the appearance menu.
  */
 export function Sidebar({
   bridge,
@@ -68,6 +74,13 @@ export function Sidebar({
   onShowAgent,
   onDeleting,
   onRemoved,
+  onWorktrees,
+  waiting,
+  onJump,
+  onOpenProfiles,
+  accounts,
+  appearance,
+  onAppearance,
 }: {
   bridge: Bridge;
   selected: string | null;
@@ -87,13 +100,30 @@ export function Sidebar({
   onDeleting(worktree: Worktree, running: boolean): void;
   /** A worktree was forgotten or deleted, which ended its sessions. */
   onRemoved(path: string): void;
+  /** Called with each new list of worktrees. */
+  onWorktrees?(worktrees: Worktree[]): void;
+  /** How many agent sessions are in the attention queue. */
+  waiting: number;
+  /** Focuses the head of the attention queue. */
+  onJump(): void;
+  /** Opens the selected worktree's Profile panel. */
+  onOpenProfiles(): void;
+  /** Each agent's login: null when nobody is logged in, missing until a session reports it. */
+  accounts: Partial<Record<Agent, Account | null>>;
+  appearance: Appearance;
+  onAppearance(update: (appearance: Appearance) => Appearance): void;
 }) {
   const [path, setPath] = useState("");
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
+  const [query, setQuery] = useState("");
+  const searchBox = useRef<HTMLInputElement>(null);
   // Each setup state the core sent since the sidebar opened. It is newer than any list.
   const [setups, setSetups] = useState<Record<string, SetupState>>({});
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<OpenDialog | null>(null);
+
+  const reportWorktrees = useEffectEvent((list: Worktree[]) => onWorktrees?.(list));
+  useEffect(() => reportWorktrees(worktrees), [worktrees]);
 
   useEffect(
     () => bridge.onSetup(({ worktree, setup }) => setSetups((known) => ({ ...known, [worktree]: setup }))),
@@ -151,87 +181,159 @@ export function Sidebar({
     setWorktrees(await bridge.listWorktrees());
   }
 
+  const repos = byRepo(worktrees);
+  // New worktree adds to the selected worktree's repo, or else to the first repo.
+  const newWorktreeRepo = (repos.find((repo) => repo.some((w) => w.path === selected)) ?? repos[0])?.[0];
+  function newWorktree() {
+    if (newWorktreeRepo) setDialog({ kind: "new", repo: newWorktreeRepo });
+  }
+
+  // Cmd-N and Cmd-K, unless a dialog is open or a terminal or an editor took the key.
+  const onKey = useEffectEvent((event: KeyboardEvent) => {
+    if (event.defaultPrevented || dialog || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    const key = event.key.toLowerCase();
+    if (key === "n" && newWorktreeRepo) {
+      event.preventDefault();
+      newWorktree();
+    } else if (key === "k") {
+      event.preventDefault();
+      searchBox.current?.focus();
+    }
+  });
+  useEffect(() => {
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const names = sessionNames(agents);
   const lineCounts = useLineCounts(bridge, worktrees);
+  const shownRepos = repos.flatMap((repo) => {
+    const shown = repo.filter((worktree) => matches(worktree, query));
+    return shown.length > 0 ? [{ head: repo[0], worktrees: shown }] : [];
+  });
   return (
     <aside className="sidebar" aria-label="Worktrees">
-      <form onSubmit={addRepo}>
-        <input
-          aria-label="Repo path"
-          placeholder="/path/to/repo"
-          value={path}
-          onChange={(event) => setPath(event.target.value)}
-        />
-        <Button type="submit" size="sm">
-          Add repo
-        </Button>
-      </form>
-      {error && <p role="alert">{error}</p>}
-      {byRepo(worktrees).map((repo) => (
-        <section key={repo[0].path} aria-label={folderName(repo[0].path)}>
-          <div className="repo-head">
-            <h2>{folderName(repo[0].path)}</h2>
-            <IconButton
-              icon={Plus}
-              size="xs"
-              label={`New worktree in ${folderName(repo[0].path)}`}
-              title="New worktree"
-              onClick={() => setDialog({ kind: "new", repo: repo[0] })}
-            />
-          </div>
-          <ul>
-            {repo.map((worktree) => {
-              const own = agents.filter((agent) => agent.worktree === worktree.path);
-              const setup = setups[worktree.path] ?? worktree.setup;
-              const top = mostUrgent(own.map((agent) => agentStates[agent.session]));
-              return (
-                <li key={worktree.path} title={worktree.path}>
-                  <div className="wt-row">
-                    <WorktreeRow
-                      worktree={worktree}
-                      selected={worktree.path === selected}
-                      state={top}
-                      setupRunning={setup?.state === "Running"}
-                      counts={lineCounts[worktree.path]}
-                      onClick={() => (own.length === 1 ? onShowAgent(own[0]) : onSelect(worktree.path))}
-                    />
-                    <WorktreeMenu worktree={worktree} onPick={(kind) => setDialog({ kind, worktree })} />
-                  </div>
-                  {setup && <SetupStatus setup={setup} />}
-                  {own.length > 1 && (
-                    <ul className="agent-sessions">
-                      {own.map((agent) => (
-                        <li key={agent.session}>
-                          <button
-                            className="session-row"
-                            aria-current={shownAgents.includes(agent.session)}
-                            onClick={() => onShowAgent(agent)}
-                          >
-                            <span className="session-name">{names[agent.session]}</span>{" "}
-                            {agentStates[agent.session] && <AgentState state={agentStates[agent.session]} />}
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {/* `spawn_agent` does not wait for setup, so the button waits instead. */}
-                  {worktree.path === selected && setup?.state !== "Running" && (
-                    <Button
-                      className="start-agent"
-                      variant="ghost"
-                      size="xs"
-                      icon={Plus}
-                      onClick={() => onStartAgent(worktree.path)}
-                    >
-                      Start Claude Code
-                    </Button>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      ))}
+      <nav className="sidebar-nav" aria-label="Sidebar">
+        <button
+          className="nav-row"
+          aria-keyshortcuts="Meta+N"
+          disabled={!newWorktreeRepo}
+          onClick={newWorktree}
+        >
+          <Plus aria-hidden="true" />
+          New worktree
+          <kbd aria-hidden="true">⌘N</kbd>
+        </button>
+        <label className="nav-row search-row">
+          <Search aria-hidden="true" />
+          <input
+            ref={searchBox}
+            type="search"
+            aria-label="Search"
+            aria-keyshortcuts="Meta+K"
+            placeholder="Search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setQuery("");
+            }}
+          />
+          <kbd aria-hidden="true">⌘K</kbd>
+        </label>
+        <button className="nav-row" aria-keyshortcuts="Meta+J" onClick={onJump}>
+          <Bell aria-hidden="true" />
+          Needs you{" "}
+          <span className={waiting > 0 ? "count waiting" : "count"}>{waiting}</span>
+          <kbd aria-hidden="true">⌘J</kbd>
+        </button>
+        <button className="nav-row" disabled={!selected} onClick={onOpenProfiles}>
+          <SlidersHorizontal aria-hidden="true" />
+          Profiles
+        </button>
+      </nav>
+      <div className="sidebar-tree">
+        <form onSubmit={addRepo}>
+          <input
+            aria-label="Repo path"
+            placeholder="/path/to/repo"
+            value={path}
+            onChange={(event) => setPath(event.target.value)}
+          />
+          <Button type="submit" size="sm">
+            Add repo
+          </Button>
+        </form>
+        {error && <p role="alert">{error}</p>}
+        {shownRepos.map(({ head, worktrees: repo }) => (
+          <section key={head.path} aria-label={folderName(head.path)}>
+            <div className="repo-head">
+              <h2>{folderName(head.path)}</h2>
+              <IconButton
+                icon={Plus}
+                size="xs"
+                label={`New worktree in ${folderName(head.path)}`}
+                title="New worktree"
+                onClick={() => setDialog({ kind: "new", repo: head })}
+              />
+            </div>
+            <ul>
+              {repo.map((worktree) => {
+                const own = agents.filter((agent) => agent.worktree === worktree.path);
+                const setup = setups[worktree.path] ?? worktree.setup;
+                const top = mostUrgent(own.map((agent) => agentStates[agent.session]));
+                return (
+                  <li key={worktree.path} title={worktree.path}>
+                    <div className="wt-row">
+                      <WorktreeRow
+                        worktree={worktree}
+                        selected={worktree.path === selected}
+                        state={top}
+                        setupRunning={setup?.state === "Running"}
+                        counts={lineCounts[worktree.path]}
+                        onClick={() => (own.length === 1 ? onShowAgent(own[0]) : onSelect(worktree.path))}
+                      />
+                      <WorktreeMenu worktree={worktree} onPick={(kind) => setDialog({ kind, worktree })} />
+                    </div>
+                    {setup && <SetupStatus setup={setup} />}
+                    {own.length > 1 && (
+                      <ul className="agent-sessions">
+                        {own.map((agent) => (
+                          <li key={agent.session}>
+                            <button
+                              className="session-row"
+                              aria-current={shownAgents.includes(agent.session)}
+                              onClick={() => onShowAgent(agent)}
+                            >
+                              <span className="session-name">{names[agent.session]}</span>{" "}
+                              {agentStates[agent.session] && <AgentState state={agentStates[agent.session]} />}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {/* `spawn_agent` does not wait for setup, so the button waits instead. */}
+                    {worktree.path === selected && setup?.state !== "Running" && (
+                      <Button
+                        className="start-agent"
+                        variant="ghost"
+                        size="xs"
+                        icon={Plus}
+                        onClick={() => onStartAgent(worktree.path)}
+                      >
+                        Start Claude Code
+                      </Button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        ))}
+      </div>
+      <footer className="sidebar-foot" role="group" aria-label="Account and settings">
+        <Accounts accounts={accounts} />
+        <AppearanceMenu appearance={appearance} onAppearance={onAppearance} />
+      </footer>
       {dialog?.kind === "new" && (
         <NewWorktreeDialog
           bridge={bridge}
@@ -269,6 +371,98 @@ export function Sidebar({
         />
       )}
     </aside>
+  );
+}
+
+/** Whether Search's `query` finds the worktree, by display name or branch, ignoring case. */
+function matches(worktree: Worktree, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  return (
+    needle === "" ||
+    [worktree.displayName, worktree.branch ?? ""].some((text) => text.toLowerCase().includes(needle))
+  );
+}
+
+/** Each agent's login that a session has reported, Claude's first. */
+function Accounts({ accounts }: { accounts: Partial<Record<Agent, Account | null>> }) {
+  const known = (Object.keys(AGENT_NAMES) as Agent[]).flatMap((agent) => {
+    const account = accounts[agent];
+    return account === undefined ? [] : [{ agent, account }];
+  });
+  return (
+    <ul className="accounts">
+      {known.map(({ agent, account }) => (
+        <li key={agent} title={AGENT_NAMES[agent]}>
+          {describeAccount(account)}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function describeAccount(account: Account | null): string {
+  if (account === null) return "Not logged in";
+  const who = account.email ?? account.organization ?? "Logged in";
+  const how = account.plan
+    ? `${account.plan} plan`
+    : account.apiKeySource && `API key from ${account.apiKeySource}`;
+  return how ? `${who} · ${how}` : who;
+}
+
+/** The settings button and the menu over it, with the palette and theme switches. */
+function AppearanceMenu({
+  appearance,
+  onAppearance,
+}: {
+  appearance: Appearance;
+  onAppearance(update: (appearance: Appearance) => Appearance): void;
+}) {
+  const [open, setOpen] = useState(false);
+  const menu = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+
+  // A click outside or Escape closes it. When focus is in the menu, Escape puts it back on the
+  // button, since the focused option goes away.
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => {
+      if (!menu.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (menu.current?.contains(document.activeElement)) button.current?.focus();
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
+
+  return (
+    <div className="appearance" ref={menu}>
+      <IconButton ref={button} icon={Settings2} label="Settings" aria-expanded={open} onClick={() => setOpen(!open)} />
+      {open && (
+        <div className="pop">
+          <h4>Palette</h4>
+          <Segmented
+            label="Palette"
+            options={PALETTES}
+            value={appearance.palette}
+            onChange={(palette) => onAppearance((a) => ({ ...a, palette }))}
+          />
+          <h4>Theme</h4>
+          <Segmented
+            label="Theme"
+            options={THEMES}
+            value={appearance.theme}
+            onChange={(theme) => onAppearance((a) => ({ ...a, theme }))}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 

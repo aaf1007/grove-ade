@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, expect, onTestFinished, test } from "vitest";
+import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 
 import { fakeBridge } from "./fakeBridge";
 import sidebarStyles from "./styles.css?raw";
@@ -14,7 +14,7 @@ const groveRepo = [
   { path: "/code/grove-wt/spike", branch: null, isMain: false },
 ];
 
-// These tests start no agent session.
+// These tests start no agent session, and nothing waits.
 const noAgents = {
   agents: [],
   agentStates: {},
@@ -24,6 +24,12 @@ const noAgents = {
   onDeleting() {},
   onRemoved() {},
   onShowAgent() {},
+  waiting: 0,
+  onJump() {},
+  onOpenProfiles() {},
+  accounts: {},
+  appearance: { theme: "system" as const, palette: "default" as const },
+  onAppearance() {},
 };
 
 function addRepo(path: string) {
@@ -375,4 +381,182 @@ test("a worktree's counts are asked again when its base branch changes to anothe
   fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
 
   await expect.poll(() => counts(row)).toEqual(["+3", "−1"]);
+});
+
+// The sidebar's frame: the rows at its top and its footer (#29).
+
+const siteRepo = [
+  { path: "/code/site", branch: "main", isMain: true },
+  { path: "/code/site-wt/fix-12", branch: "fix-12-pty", isMain: false, displayName: "Terminal resize" },
+];
+
+async function twoRepos() {
+  const bridge = fakeBridge({ "/code/grove": groveRepo, "/code/site": siteRepo });
+  await bridge.addRepo("/code/grove");
+  await bridge.addRepo("/code/site");
+  return bridge;
+}
+
+function search(text: string) {
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search" }), { target: { value: text } });
+}
+
+const rowNames = () =>
+  [...document.querySelectorAll(".wt-title")].map((title) => title.textContent);
+
+test("Search hides rows whose display name and branch do not match, and clearing it shows them all", async () => {
+  render(<Sidebar bridge={await twoRepos()} selected={null} onSelect={() => {}} {...noAgents} />);
+  await worktreeRow("Terminal resize");
+  const all = rowNames();
+
+  // By branch.
+  search("PTY");
+  expect(rowNames()).toEqual(["Terminal resize"]);
+  expect(screen.queryByRole("region", { name: "grove" })).toBeNull();
+
+  // By display name.
+  search("resize");
+  expect(rowNames()).toEqual(["Terminal resize"]);
+
+  search("feat-35");
+  expect(rowNames()).toEqual(["feat-35-tauri-sidebar"]);
+
+  search("");
+  expect(rowNames()).toEqual(all);
+  expect(all).toHaveLength(5);
+});
+
+test("Cmd-K puts focus in Search, and Escape there clears it", async () => {
+  render(<Sidebar bridge={await twoRepos()} selected={null} onSelect={() => {}} {...noAgents} />);
+  await worktreeRow("Terminal resize");
+  const box = screen.getByRole("searchbox", { name: "Search" });
+
+  fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+  expect(document.activeElement).toBe(box);
+
+  search("resize");
+  fireEvent.keyDown(box, { key: "Escape" });
+  expect((box as HTMLInputElement).value).toBe("");
+  expect(rowNames()).toHaveLength(5);
+});
+
+test("New worktree and Cmd-N open the new worktree dialog for the selected worktree's repo", async () => {
+  const bridge = await twoRepos();
+  const asked = vi.spyOn(bridge, "suggestProfile");
+  render(<Sidebar bridge={bridge} selected="/code/site-wt/fix-12" onSelect={() => {}} {...noAgents} />);
+  await worktreeRow("Terminal resize");
+
+  fireEvent.click(screen.getByRole("button", { name: "New worktree" }));
+  const dialog = await screen.findByRole("dialog", { name: "New worktree" });
+  expect(asked).toHaveBeenLastCalledWith("/code/site");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  await expect.poll(() => screen.queryByRole("dialog")).toBeNull();
+
+  fireEvent.keyDown(document.body, { key: "n", metaKey: true });
+  expect(await screen.findByRole("dialog", { name: "New worktree" })).toBeTruthy();
+  expect(asked).toHaveBeenCalledTimes(2);
+});
+
+test("with no worktree selected, New worktree uses the first repo, and with no repo it is off", async () => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  const asked = vi.spyOn(bridge, "suggestProfile");
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  expect(screen.getByRole("button", { name: "New worktree" })).toHaveProperty("disabled", true);
+
+  addRepo("/code/grove");
+  await worktreeRow("feat-35-tauri-sidebar");
+  fireEvent.click(screen.getByRole("button", { name: "New worktree" }));
+
+  await screen.findByRole("dialog", { name: "New worktree" });
+  expect(asked).toHaveBeenLastCalledWith("/code/grove");
+});
+
+test("Needs you shows the attention queue's length, and clicking it jumps", async () => {
+  const jumps: number[] = [];
+  render(
+    <Sidebar
+      bridge={fakeBridge({})}
+      selected={null}
+      onSelect={() => {}}
+      {...noAgents}
+      waiting={3}
+      onJump={() => jumps.push(1)}
+    />,
+  );
+  const needsYou = screen.getByRole("button", { name: /^Needs you/ });
+
+  expect(needsYou.querySelector(".count")?.textContent).toBe("3");
+  fireEvent.click(needsYou);
+  expect(jumps).toEqual([1]);
+});
+
+test("Profiles opens the Profile panel, and is off with no worktree selected", () => {
+  const opened: number[] = [];
+  const { rerender } = render(
+    <Sidebar
+      bridge={fakeBridge({})}
+      selected="/code/grove"
+      onSelect={() => {}}
+      {...noAgents}
+      onOpenProfiles={() => opened.push(1)}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "Profiles" }));
+  expect(opened).toEqual([1]);
+
+  rerender(<Sidebar bridge={fakeBridge({})} selected={null} onSelect={() => {}} {...noAgents} />);
+  expect(screen.getByRole("button", { name: "Profiles" })).toHaveProperty("disabled", true);
+});
+
+test("the footer shows each agent's account, or that nobody is logged in", () => {
+  render(
+    <Sidebar
+      bridge={fakeBridge({})}
+      selected={null}
+      onSelect={() => {}}
+      {...noAgents}
+      accounts={{
+        Claude: { email: "ann@example.com", organization: null, plan: "max", apiKeySource: null },
+        Codex: null,
+      }}
+    />,
+  );
+  const footer = screen.getByRole("group", { name: "Account and settings" });
+
+  expect(within(footer).getByText("ann@example.com · max plan").closest("li")?.title).toBe("Claude Code");
+  expect(within(footer).getByText("Not logged in").closest("li")?.title).toBe("Codex");
+});
+
+test("an account with an API key and no plan names the key's source", () => {
+  const account = { email: null, organization: "Ann's org", plan: null, apiKeySource: "ANTHROPIC_API_KEY" };
+  render(
+    <Sidebar bridge={fakeBridge({})} selected={null} onSelect={() => {}} {...noAgents} accounts={{ Claude: account }} />,
+  );
+
+  const footer = screen.getByRole("group", { name: "Account and settings" });
+  expect(within(footer).getByRole("listitem").textContent).toBe("Ann's org · API key from ANTHROPIC_API_KEY");
+});
+
+test("Settings in the footer opens the appearance menu, which changes palette and theme", () => {
+  const appearances: unknown[] = [];
+  render(
+    <Sidebar
+      bridge={fakeBridge({})}
+      selected={null}
+      onSelect={() => {}}
+      {...noAgents}
+      onAppearance={(update) => appearances.push(update(noAgents.appearance))}
+    />,
+  );
+  const footer = screen.getByRole("group", { name: "Account and settings" });
+
+  fireEvent.click(within(footer).getByRole("button", { name: "Settings" }));
+  fireEvent.click(within(footer).getByRole("button", { name: "Modern" }));
+  fireEvent.click(within(footer).getByRole("button", { name: "Light" }));
+
+  expect(appearances).toEqual([
+    { theme: "system", palette: "modern" },
+    { theme: "light", palette: "default" },
+  ]);
 });
