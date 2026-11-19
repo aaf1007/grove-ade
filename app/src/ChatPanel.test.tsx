@@ -257,7 +257,6 @@ test("each tool call is one row with a past-tense label and no JSON, and opening
       { type: "ToolResult", id: "toolu_01", output: "3 passed", isError: false },
       { type: "ToolCall", id: "toolu_02", tool: "Read", input: { file_path: `${worktree}/src/a.ts` } },
       { type: "ToolCall", id: "toolu_03", tool: "git/status", input: { short: true } },
-      { type: "ToolResult", id: "toolu_03", output: "not a repo", isError: true },
     ),
   );
   nextFrame();
@@ -270,13 +269,161 @@ test("each tool call is one row with a past-tense label and no JSON, and opening
 
   fireEvent.click(ran);
   fireEvent.click(read);
-  fireEvent.click(used);
 
   expect(ran.getAttribute("aria-expanded")).toBe("true");
   expect(screen.getByText("3 passed")).toBeTruthy();
   expect(screen.getByText("Running")).toBeTruthy();
-  expect(screen.getByText("not a repo")).toBeTruthy();
   expect(document.querySelector(".messages")!.textContent).not.toMatch(/[{}"]/);
+});
+
+test("three Read calls then two Bash calls fold into two rows, and each opens to list its calls", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted" },
+      { type: "ToolCall", id: "1", tool: "Read", input: { file_path: `${worktree}/src/a.ts` } },
+      { type: "ToolResult", id: "1", output: "a", isError: false },
+      { type: "ToolCall", id: "2", tool: "Read", input: { file_path: `${worktree}/src/b.ts` } },
+      { type: "ToolCall", id: "3", tool: "Read", input: { file_path: "/elsewhere/c.ts" } },
+      { type: "ToolCall", id: "4", tool: "Bash", input: { command: "npm test" } },
+      { type: "ToolCall", id: "5", tool: "Bash", input: { command: "npm run lint\n--fix" } },
+    ),
+  );
+  nextFrame();
+
+  const read = screen.getByRole("button", { name: "Read 3 files" });
+  const ran = screen.getByRole("button", { name: "Ran 2 commands" });
+  expect(screen.queryByRole("list", { name: "Read 3 files" })).toBeNull();
+
+  fireEvent.click(read);
+  fireEvent.click(ran);
+
+  expect(read.getAttribute("aria-expanded")).toBe("true");
+  const calls = (name: string) =>
+    within(screen.getByRole("list", { name })).getAllByRole("listitem").map((item) => item.textContent);
+  expect(calls("Read 3 files")).toEqual(["src/a.ts", "src/b.ts", "/elsewhere/c.ts"]);
+  expect(calls("Ran 2 commands")).toEqual(["npm test", "npm run lint"]);
+});
+
+test("edits fold by file, and calls of other kinds stay apart", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted" },
+      { type: "ToolCall", id: "1", tool: "Edit", input: { file_path: `${worktree}/a.ts` } },
+      { type: "ToolCall", id: "2", tool: "Write", input: { file_path: `${worktree}/b.ts` } },
+      { type: "ToolCall", id: "3", tool: "MultiEdit", input: { file_path: `${worktree}/a.ts` } },
+      { type: "ToolCall", id: "4", tool: "Grep", input: { pattern: "TODO" } },
+      { type: "ToolCall", id: "5", tool: "Grep", input: { pattern: "FIXME" } },
+      { type: "ToolCall", id: "6", tool: "Read", input: { file_path: `${worktree}/a.ts` } },
+    ),
+  );
+  nextFrame();
+
+  const rows = [...document.querySelectorAll(".thread .tool-label")].map((label) => label.textContent);
+  expect(rows).toEqual(["Edited 2 files", "Searched for TODO", "Searched for FIXME", "Read a.ts"]);
+});
+
+test("a failed call is a row of its own in failed, with its output under it", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted" },
+      { type: "ToolCall", id: "1", tool: "Read", input: { file_path: `${worktree}/a.ts` } },
+      { type: "ToolCall", id: "2", tool: "Read", input: { file_path: `${worktree}/b.ts` } },
+      { type: "ToolResult", id: "2", output: "no such file", isError: true },
+      { type: "ToolCall", id: "3", tool: "Read", input: { file_path: `${worktree}/c.ts` } },
+    ),
+  );
+  nextFrame();
+
+  expect(screen.getByRole("button", { name: "Read a.ts" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Read c.ts" })).toBeTruthy();
+  const failed = screen.getByText("Read b.ts").closest(".tool")!;
+  expect(failed.classList.contains("failed")).toBe(true);
+  expect(screen.getByText("no such file").classList.contains("failed")).toBe(true);
+});
+
+test("a turn's work sits under one header, Working while the turn runs and Worked after", async () => {
+  const bridge = await started();
+  const view = await shownPanel(bridge, { state: working("Working") });
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "User", text: "fix it" },
+      { type: "TurnStarted" },
+      { type: "TextDelta", text: "Looking first." },
+      { type: "ToolCall", id: "1", tool: "Read", input: { file_path: `${worktree}/a.ts` } },
+      { type: "TextDelta", text: "Now the fix." },
+      { type: "ToolCall", id: "2", tool: "Edit", input: { file_path: `${worktree}/a.ts` } },
+    ),
+  );
+  nextFrame();
+
+  const heads = () => [...document.querySelectorAll(".work-head")].map((head) => head.textContent);
+  expect(heads()).toEqual(["Working"]);
+  const head = document.querySelector(".work-head")!;
+  const text = screen.getByText("Looking first.");
+  expect(head.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+  act(() => bridge.messages("0", { type: "TurnEnded", outcome: "Completed" }));
+  nextFrame();
+  view.rerender(<Panel bridge={bridge} state={working("Done")} />);
+  expect(heads()).toEqual(["Worked"]);
+
+  // A turn that only talks has no header.
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "User", text: "thanks" },
+      { type: "TurnStarted" },
+      { type: "TextDelta", text: "Any time." },
+      { type: "TurnEnded", outcome: "Completed" },
+    ),
+  );
+  nextFrame();
+  expect(heads()).toEqual(["Worked"]);
+});
+
+test("a running call's label shimmers until it has a result or its turn ends", async () => {
+  const bridge = await started();
+  const view = await shownPanel(bridge, { state: working("Working") });
+  const shimmering = () => [...document.querySelectorAll(".shimmer")].map((label) => label.textContent);
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted" },
+      { type: "ToolCall", id: "1", tool: "Bash", input: { command: "npm test" } },
+    ),
+  );
+  nextFrame();
+  expect(shimmering()).toEqual(["Working", "Ran npm test"]);
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "ToolResult", id: "1", output: "ok", isError: false },
+      { type: "ToolCall", id: "2", tool: "Bash", input: { command: "npm run lint" } },
+    ),
+  );
+  nextFrame();
+  expect(shimmering()).toEqual(["Working", "Ran 2 commands"]);
+
+  act(() => bridge.messages("0", { type: "TurnEnded", outcome: "Interrupted" }));
+  nextFrame();
+  view.rerender(<Panel bridge={bridge} state={working("Idle")} />);
+  expect(shimmering()).toEqual([]);
 });
 
 test.each<[string, unknown, string]>([
@@ -716,15 +863,17 @@ const kinds: Question = {
   ],
 };
 
-// A panel showing a turn that waits on `request`.
-async function asked(request: AgentMessage) {
+// A panel showing a turn that waits on its last message, a request.
+async function asked(...messages: AgentMessage[]) {
   const bridge = await started();
   await shownPanel(bridge, { state: { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" } });
-  act(() => bridge.messages("0", { type: "TurnStarted" }, request));
+  act(() => bridge.messages("0", { type: "TurnStarted" }, ...messages));
   nextFrame();
   return bridge;
 }
 
+// As Claude Code sends it: the tool call, then the request to run it, under the call's id.
+const bashCall: AgentMessage = { type: "ToolCall", id: "toolu_01", tool: "Bash", input: { command: "npm test" } };
 const approval: AgentMessage = {
   type: "ApprovalRequested",
   request: "toolu_01",
@@ -738,49 +887,158 @@ async function settle() {
   nextFrame();
 }
 
-test.each<[string, Reply, string]>([
-  ["Allow", { type: "AllowOnce" }, "Allowed Bash once"],
-  ["Always allow this session", { type: "AllowForSession" }, "Allowed Bash for this session"],
-  ["Deny", { type: "Deny", message: null }, "Denied Bash"],
-])("an approval's %s button sends its reply and the card becomes a record", async (button, reply, record) => {
-  const bridge = await asked(approval);
+function approvalLine() {
+  return screen.getByRole("group", { name: "Claude Code wants to use Bash" });
+}
 
-  const card = screen.getByRole("group", { name: "Claude Code wants to use Bash" });
-  expect(within(card).getByText("npm test")).toBeTruthy();
-  expect(within(card).getByText("Waiting for approval")).toBeTruthy();
-  fireEvent.click(within(card).getByRole("button", { name: button }));
+test("an approval shows under its tool row, with no card and no second row", async () => {
+  await asked(bashCall, approval);
+
+  expect(screen.getAllByRole("button", { name: "Ran npm test" })).toHaveLength(1);
+  const line = approvalLine();
+  expect(line.classList.contains("card")).toBe(false);
+  expect(within(line).getByText("Waiting for approval")).toBeTruthy();
+  expect(within(line).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([
+    "Decline",
+    "Approve",
+    "More approval options",
+  ]);
+});
+
+test("an approval with no tool call of its own shows its own row", async () => {
+  await asked({ ...approval, request: "item_7", tool: "commandExecution", input: { command: "ls -la" } });
+
+  expect(screen.getByRole("button", { name: "Ran ls -la" })).toBeTruthy();
+  expect(screen.getByRole("group", { name: "Claude Code wants to use commandExecution" })).toBeTruthy();
+});
+
+test.each<[string, Reply, string]>([
+  ["Approve", { type: "AllowOnce" }, "Approved"],
+  ["Decline", { type: "Deny", message: null }, "Declined"],
+])("an approval's %s button sends its reply and the line becomes a record", async (button, reply, record) => {
+  const bridge = await asked(bashCall, approval);
+
+  fireEvent.click(within(approvalLine()).getByRole("button", { name: button }));
   await settle();
 
   expect(bridge.answered).toEqual([{ session: "0", request: "toolu_01", reply }]);
   expect(screen.queryByRole("group", { name: "Claude Code wants to use Bash" })).toBeNull();
-  expect(screen.queryByRole("button", { name: button })).toBeNull();
   expect(screen.getByText(record)).toBeTruthy();
 });
 
-test("a card's buttons send once, even when pressed again before the answer is back", async () => {
-  const bridge = await asked(approval);
+test("two approvals from one run each answer by button, one after the other", async () => {
+  const lint: AgentMessage = { type: "ToolCall", id: "toolu_02", tool: "Bash", input: { command: "npm run lint" } };
+  const bridge = await asked(bashCall, lint, approval);
+  fireEvent.click(within(approvalLine()).getByRole("button", { name: "Approve" }));
+  await settle();
 
-  const allow = screen.getByRole("button", { name: "Allow" });
-  fireEvent.click(allow);
-  fireEvent.click(allow);
-  fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "ToolResult", id: "toolu_01", output: "ok", isError: false },
+      { type: "ApprovalRequested", request: "toolu_02", tool: "Bash", input: { command: "npm run lint" } },
+    ),
+  );
+  nextFrame();
+  const approve = within(approvalLine()).getByRole("button", { name: "Approve" }) as HTMLButtonElement;
+  expect(approve.disabled).toBe(false);
+  fireEvent.click(approve);
+  await settle();
+
+  expect(bridge.answered.map((a) => a.request)).toEqual(["toolu_01", "toolu_02"]);
+});
+
+test("a declined call shows as declined, not as a failed call, with the message once", async () => {
+  const bridge = await asked(bashCall, approval);
+  fireEvent.change(composer(), { target: { value: "use vitest instead" } });
+  fireEvent.keyDown(composer(), { key: "Enter" });
+  await settle();
+
+  // The agent reports the declined call as a failed result carrying the message.
+  act(() => bridge.messages("0", { type: "ToolResult", id: "toolu_01", output: "use vitest instead", isError: true }));
+  nextFrame();
+
+  expect(document.querySelector(".tool.failed")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Ran npm test" })).toBeNull();
+  expect(document.querySelector(".tool.declined")!.textContent).toBe("npm test");
+  expect(screen.getAllByText(/use vitest instead/).map((el) => el.textContent)).toEqual([
+    "Declined: use vitest instead",
+  ]);
+});
+
+test("the approval's menu allows the tool for the rest of the session", async () => {
+  const bridge = await asked(bashCall, approval);
+
+  fireEvent.click(within(approvalLine()).getByRole("button", { name: "More approval options" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Always allow this session" }));
+  await settle();
+
+  expect(bridge.answered).toEqual([{ session: "0", request: "toolu_01", reply: { type: "AllowForSession" } }]);
+  expect(screen.getByText("Approved for this session")).toBeTruthy();
+});
+
+test("an approval's buttons send once, even when pressed again before the answer is back", async () => {
+  const bridge = await asked(bashCall, approval);
+
+  const approve = screen.getByRole("button", { name: "Approve" });
+  fireEvent.click(approve);
+  fireEvent.click(approve);
+  fireEvent.click(screen.getByRole("button", { name: "Decline" }));
   await settle();
 
   expect(bridge.answered).toHaveLength(1);
 });
 
-test("a single-choice question sends the chosen option", async () => {
-  const bridge = await asked({ type: "QuestionAsked", request: "toolu_02", questions: [runner] });
+test("while an approval waits, a message from the composer declines it with that message", async () => {
+  const bridge = await asked(bashCall, approval);
 
-  const card = screen.getByRole("group", { name: "Claude Code is asking" });
+  expect(composer().getAttribute("placeholder")).toBe("Send a message to decline and redirect the agent");
+  fireEvent.change(composer(), { target: { value: "use vitest instead" } });
+  fireEvent.keyDown(composer(), { key: "Enter" });
+  await settle();
+
+  expect(bridge.answered).toEqual([
+    { session: "0", request: "toolu_01", reply: { type: "Deny", message: "use vitest instead" } },
+  ]);
+  expect(bridge.sent).toEqual([]);
+  expect((composer() as HTMLTextAreaElement).value).toBe("");
+  expect(screen.getByText("Declined: use vitest instead")).toBeTruthy();
+  expect(composer().getAttribute("placeholder")).toBe("Ask Claude Code anything");
+});
+
+test("a decline the core refuses puts the message back in the composer with its error", async () => {
+  const bridge = await asked(bashCall, approval);
+  vi.spyOn(bridge, "answer").mockRejectedValue("agent session 0 has no pending request toolu_01");
+
+  fireEvent.change(composer(), { target: { value: "use vitest instead" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await settle();
+
+  expect((composer() as HTMLTextAreaElement).value).toBe("use vitest instead");
+  expect(screen.getByRole("alert").textContent).toBe("agent session 0 has no pending request toolu_01");
+});
+
+function questionCard() {
+  return screen.getByRole("group", { name: "Claude Code is asking" });
+}
+
+test("a question shows as a card above the composer and sends the chosen option", async () => {
+  const bridge = await asked(
+    { type: "ToolCall", id: "toolu_02", tool: "AskUserQuestion", input: { questions: [runner] } },
+    { type: "QuestionAsked", request: "toolu_02", questions: [runner] },
+  );
+
+  const card = questionCard();
+  expect(card.closest(".composer-wrap")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Used AskUserQuestion" })).toBeNull();
   expect(within(card).getByText("Which test runner?")).toBeTruthy();
   expect(within(card).getByText("Fast, Vite native")).toBeTruthy();
-  const send = within(card).getByRole("button", { name: "Answer" }) as HTMLButtonElement;
-  expect(send.disabled).toBe(true);
+  const submit = within(card).getByRole("button", { name: "Submit answer" }) as HTMLButtonElement;
+  expect(submit.disabled).toBe(true);
 
   fireEvent.click(within(card).getByRole("radio", { name: /jest/ }));
   fireEvent.click(within(card).getByRole("radio", { name: /vitest/ }));
-  fireEvent.click(send);
+  fireEvent.click(submit);
   await settle();
 
   expect(bridge.answered).toEqual([
@@ -790,16 +1048,22 @@ test("a single-choice question sends the chosen option", async () => {
   expect(screen.getByText("Answered: vitest")).toBeTruthy();
 });
 
-test("a multiple-choice question sends every selected option, one answer per question", async () => {
+test("a request of several questions shows one at a time, then sends every answer", async () => {
   const bridge = await asked({ type: "QuestionAsked", request: "toolu_02", questions: [runner, kinds] });
 
-  const card = screen.getByRole("group", { name: "Claude Code is asking" });
+  const card = questionCard();
+  expect(within(card).queryByText("Which kinds of test?")).toBeNull();
+  const next = within(card).getByRole("button", { name: "Next question" }) as HTMLButtonElement;
+  expect(next.disabled).toBe(true);
   fireEvent.click(within(card).getByRole("radio", { name: /vitest/ }));
+  fireEvent.click(next);
+
+  expect(within(card).queryByText("Which test runner?")).toBeNull();
   fireEvent.click(within(card).getByRole("checkbox", { name: /unit/ }));
   fireEvent.click(within(card).getByRole("checkbox", { name: /e2e/ }));
   fireEvent.click(within(card).getByRole("checkbox", { name: /integration/ }));
   fireEvent.click(within(card).getByRole("checkbox", { name: /e2e/ }));
-  fireEvent.click(within(card).getByRole("button", { name: "Answer" }));
+  fireEvent.click(within(card).getByRole("button", { name: "Submit answer" }));
   await settle();
 
   expect(bridge.answered[0].reply).toEqual({ type: "Answers", answers: [["vitest"], ["unit", "integration"]] });
@@ -809,55 +1073,60 @@ test("a multiple-choice question sends every selected option, one answer per que
 test("a free-text answer sends the text in place of any option", async () => {
   const bridge = await asked({ type: "QuestionAsked", request: "toolu_02", questions: [runner] });
 
-  const card = screen.getByRole("group", { name: "Claude Code is asking" });
+  const card = questionCard();
   fireEvent.click(within(card).getByRole("radio", { name: /jest/ }));
   fireEvent.change(within(card).getByRole("textbox", { name: "Your own answer to Runner" }), {
     target: { value: "node:test" },
   });
   expect((within(card).getByRole("radio", { name: /jest/ }) as HTMLInputElement).checked).toBe(false);
-  fireEvent.click(within(card).getByRole("button", { name: "Answer" }));
+  fireEvent.click(within(card).getByRole("button", { name: "Submit answer" }));
   await settle();
 
   expect(bridge.answered[0].reply).toEqual({ type: "Answers", answers: [["node:test"]] });
   expect(screen.getByText("Answered: node:test")).toBeTruthy();
 });
 
-test("a card whose turn ended shows as expired and sends nothing", async () => {
-  const bridge = await asked(approval);
+test("a request whose turn ended shows as expired and sends nothing", async () => {
+  const bridge = await asked(bashCall, approval, { type: "QuestionAsked", request: "toolu_02", questions: [runner] });
 
   act(() => bridge.messages("0", { type: "TurnEnded", outcome: "Interrupted" }));
   nextFrame();
 
-  expect(screen.queryByRole("button", { name: "Allow" })).toBeNull();
-  expect(screen.getByText("Expired: Claude Code asked to use Bash")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+  expect(screen.queryByRole("group", { name: "Claude Code is asking" })).toBeNull();
+  expect(screen.getByText("Expired")).toBeTruthy();
+  expect(screen.getByText("Expired: Which test runner?")).toBeTruthy();
   expect(bridge.answered).toEqual([]);
 });
 
-test("a card the core no longer has pending shows as expired when answered", async () => {
+test("a question the core no longer has pending shows as expired when answered", async () => {
   const bridge = await asked({ type: "QuestionAsked", request: "toolu_02", questions: [runner] });
   // The turn ended in the core, and the panel has not drawn that yet.
   act(() => bridge.messages("0", { type: "TurnEnded", outcome: "Interrupted" }));
 
   fireEvent.click(screen.getByRole("radio", { name: /vitest/ }));
-  fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+  fireEvent.click(screen.getByRole("button", { name: "Submit answer" }));
   await act(async () => {});
 
   expect(bridge.answered).toEqual([]);
-  expect(screen.queryByRole("button", { name: "Answer" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Submit answer" })).toBeNull();
   expect(screen.getByText("Expired: Which test runner?")).toBeTruthy();
 });
 
-test("a new card scrolls into view, and its controls take keyboard focus in order", async () => {
+test("a new approval scrolls into view, and its controls take keyboard focus in order", async () => {
   const scrolled: Element[] = [];
   Element.prototype.scrollIntoView = function (this: Element) {
     scrolled.push(this);
   };
-  await asked(approval);
+  await asked(bashCall, approval);
 
-  const card = screen.getByRole("group", { name: "Claude Code wants to use Bash" });
-  expect(scrolled).toContain(card);
-  const buttons = within(card).getAllByRole("button");
-  expect(buttons.map((b) => b.textContent)).toEqual(["Allow", "Deny", "Always allow this session"]);
+  expect(scrolled).toContain(approvalLine());
+  const buttons = within(approvalLine()).getAllByRole("button");
+  expect(buttons.map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([
+    "Decline",
+    "Approve",
+    "More approval options",
+  ]);
   buttons[0].focus();
   expect(document.activeElement).toBe(buttons[0]);
   expect(buttons.every((b) => b.tabIndex === 0)).toBe(true);
@@ -868,13 +1137,14 @@ test("a request answered before the panel opened shows as its record", async () 
   bridge.messages(
     "0",
     { type: "TurnStarted" },
+    bashCall,
     approval,
     { type: "Answered", request: "toolu_01", reply: { type: "AllowOnce" } },
     { type: "TurnEnded", outcome: "Completed" },
   );
   await shownPanel(bridge);
 
-  expect(screen.getByText("Allowed Bash once")).toBeTruthy();
+  expect(screen.getByText("Approved")).toBeTruthy();
   expect(screen.queryByText(/Expired/)).toBeNull();
 });
 
