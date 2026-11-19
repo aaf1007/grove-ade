@@ -147,6 +147,41 @@ test("switching the diff base changes the file list and the editor", async () =>
   expect(listed()).toEqual(["a.rs +1 -1"]);
 });
 
+test("the Diff opens on the base it is asked for, and a new ask switches to it again", async () => {
+  const diffs: FakeDiffs = {
+    [worktree]: {
+      Head: [change({ newPath: "a.rs", added: 1, removed: 1 }, "staged a\n", "saved a\n")],
+      MergeBase: [change({ newPath: "a.rs", added: 2, removed: 1 }, "base a\n", "saved a\n")],
+    },
+  };
+  const bridge = fakeBridge(repos, diffs);
+  await bridge.addRepo(worktree);
+  const view = (request: number) => (
+    <DiffView
+      bridge={bridge}
+      worktree={worktree}
+      agentStates={{}}
+      onSent={() => {}}
+      opened={{ base: "MergeBase", request }}
+    />
+  );
+  const { rerender } = render(view(1));
+
+  await screen.findByText("base a");
+  const bases = screen.getByRole("group", { name: "Diff base" });
+  expect(within(bases).getByRole("button", { name: "Merge base" }).getAttribute("aria-pressed")).toBe("true");
+
+  fireEvent.click(within(bases).getByRole("button", { name: "HEAD" }));
+  await screen.findByText("staged a");
+
+  // The same ask again keeps the user's choice. A new one goes back to the merge base.
+  rerender(view(1));
+  expect(within(bases).getByRole("button", { name: "HEAD" }).getAttribute("aria-pressed")).toBe("true");
+  rerender(view(2));
+  await screen.findByText("base a");
+  expect(within(bases).getByRole("button", { name: "Merge base" }).getAttribute("aria-pressed")).toBe("true");
+});
+
 test("a base the core rejects shows its error and no files", async () => {
   const diffs: FakeDiffs = { [worktree]: { Head: [change({ newPath: "a.rs" }, "a\n", "b\n")] } };
 
