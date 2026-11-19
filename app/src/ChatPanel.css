@@ -247,6 +247,64 @@ button.tool:hover {
   border-radius: var(--radius-full);
 }
 
+/* What the panel's agent session changed in the workspace or a profile, above the composer. */
+.agent-change {
+  display: flex;
+  max-width: var(--chat-lane);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-10);
+  margin: 0 auto var(--space-8);
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-xl);
+  background: var(--panel);
+  font: var(--text-body);
+}
+
+.agent-change-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-change-what {
+  color: var(--muted);
+}
+
+.agent-change-actions {
+  display: inline-flex;
+  gap: var(--space-12);
+}
+
+.agent-change-action {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: var(--text-control);
+  cursor: pointer;
+}
+
+.agent-change-action:first-child {
+  color: var(--fg);
+}
+
+.agent-change-action:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.agent-change-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-change-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--failed);
+  font-size: var(--text-meta-size);
+}
+
 /* The worktree's changed files after the last turn. */
 .files-card {
   overflow: hidden;

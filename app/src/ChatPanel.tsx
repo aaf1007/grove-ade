@@ -16,6 +16,7 @@ import {
 import type {
   Account,
   Agent,
+  AgentChange,
   AgentMessage,
   AgentStateChanged,
   BatchComment,
@@ -25,10 +26,11 @@ import type {
   Question,
   Reply,
   SessionId,
+  Workspace,
 } from "./bridge";
 import { AgentMarkdown } from "./AgentMarkdown";
 import "./ChatPanel.css";
-import { type ModelChoice, Picker, useModelChoice } from "./Picker";
+import { AgentMark, type ModelChoice, Picker, useModelChoice } from "./Picker";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { TerminalPanel } from "./TerminalPanel";
 import { DeclinedCall, type ToolCall, ToolCalls } from "./ToolCalls";
@@ -126,6 +128,21 @@ export function ChatPanel({
   const name = AGENT_NAMES[agent];
   const blocked = switchBlocked(state, modeSwitch, name);
   const { branch, profile } = useWorktreePlace(bridge, worktree);
+  // Here, above the views, so a notice nobody answered stays through a mode switch.
+  const change = useAgentChange(bridge, session, worktree);
+  const notice = change.notice && (
+    <AgentChangeNotice
+      agent={agent}
+      who={sessionName ?? name}
+      notice={change.notice}
+      busy={change.busy}
+      error={change.error}
+      canSave={profile !== null}
+      onUndo={change.undo}
+      onKeep={change.keep}
+      onSave={change.save}
+    />
+  );
   const reportMode = useEffectEvent((mode: Mode) => onMode?.(mode));
 
   useEffect(() => {
@@ -227,6 +244,7 @@ export function ChatPanel({
       )}
       {modeSwitch.mode === "Chat" && (
         <ChatView
+          notice={notice}
           strip={strip}
           key={modeSwitch.switches}
           bridge={bridge}
@@ -258,10 +276,18 @@ export function ChatPanel({
             shown={shown}
             focusRequest={focusRequest}
           />
-          <div className="composer-wrap strip-only">{strip}</div>
+          <div className="composer-wrap strip-only">
+            {notice}
+            {strip}
+          </div>
         </>
       )}
-      {modeSwitch.mode === null && <div className="composer-wrap strip-only">{strip}</div>}
+      {modeSwitch.mode === null && (
+        <div className="composer-wrap strip-only">
+          {notice}
+          {strip}
+        </div>
+      )}
     </section>
   );
 }
@@ -319,6 +345,171 @@ function useWorktreePlace(bridge: Bridge, worktree: string) {
   return { branch: mine?.branch ?? null, profile: repo === undefined ? null : profile };
 }
 
+/** What an agent session changed, as its notice says. */
+type ChangeNotice = { kind: "Workspace"; change: string } | { kind: "Profiles" };
+
+/**
+ * The latest change this panel's agent session made to its worktree's workspace or to a profile,
+ * until the user answers it or a newer change replaces it.
+ */
+function useAgentChange(bridge: Bridge, session: SessionId, worktree: string) {
+  const [shown, setShown] = useState<{ notice: ChangeNotice; of: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const of = `${session} ${worktree}`;
+
+  useEffect(() => {
+    let current = true;
+    // The latest workspace fetched, and the one from before an agent change on its way.
+    let known: Workspace | null = null;
+    let before: { workspace: Workspace | null } | null = null;
+    let fetches = 0;
+    function show(notice: ChangeNotice) {
+      setShown({ notice, of: `${session} ${worktree}` });
+      setError(null);
+    }
+    function fetch() {
+      const at = ++fetches;
+      bridge.workspace(worktree).then(
+        (workspace) => {
+          if (!current || at !== fetches) return;
+          if (before) show({ kind: "Workspace", change: describeChange(before.workspace, workspace) });
+          before = null;
+          known = workspace;
+        },
+        () => {},
+      );
+    }
+    fetch();
+    const stopWorkspace = bridge.onWorkspaceChanged((changed) => changed === worktree && fetch());
+    // The core sends a change's `agent-change` before its `workspace-changed`.
+    const stopAgent = bridge.onAgentChange((change: AgentChange) => {
+      if (change.by !== session) return;
+      if (change.kind === "Profiles") show({ kind: "Profiles" });
+      else if (change.worktree === worktree) before = { workspace: known };
+    });
+    return () => {
+      current = false;
+      stopWorkspace();
+      stopAgent();
+    };
+  }, [bridge, session, worktree]);
+
+  function answer(call: () => Promise<void>) {
+    setBusy(true);
+    call()
+      .then(
+        () => setShown(null),
+        (e: unknown) => setError(String(e)),
+      )
+      .finally(() => setBusy(false));
+  }
+
+  return {
+    notice: shown?.of === of ? shown.notice : null,
+    busy,
+    error,
+    undo: () => answer(() => bridge.undoWorkspace(worktree)),
+    keep: () => setShown(null),
+    save: () => answer(() => bridge.saveWorkspaceToProfile(worktree)),
+  };
+}
+
+/**
+ * The agent change notice: the agent's mark, what its session changed, and Undo, Keep and Save to
+ * profile for a workspace, or Keep for a profile. It never takes focus.
+ */
+function AgentChangeNotice({
+  agent,
+  who,
+  notice,
+  busy,
+  error,
+  canSave,
+  onUndo,
+  onKeep,
+  onSave,
+}: {
+  agent: Agent;
+  /** The agent session's name. */
+  who: string;
+  notice: ChangeNotice;
+  /** An answer is on its way. */
+  busy: boolean;
+  error: string | null;
+  /** The repo uses a profile to save to. */
+  canSave: boolean;
+  onUndo(): void;
+  onKeep(): void;
+  onSave(): void;
+}) {
+  const workspace = notice.kind === "Workspace";
+  return (
+    <div className="agent-change" role="group" aria-label="Agent change">
+      <AgentMark agent={agent} />
+      <span className="agent-change-text">
+        {workspace ? (
+          <>
+            {who} changed this workspace: <span className="agent-change-what">{notice.change}</span>
+          </>
+        ) : (
+          `${who} changed a profile`
+        )}
+      </span>
+      <span className="agent-change-actions">
+        {workspace && (
+          <button className="agent-change-action" disabled={busy} onClick={onUndo}>
+            Undo
+          </button>
+        )}
+        <button className="agent-change-action" disabled={busy} onClick={onKeep}>
+          Keep
+        </button>
+        {workspace && canSave && (
+          <button className="agent-change-action" disabled={busy} onClick={onSave}>
+            Save to profile
+          </button>
+        )}
+      </span>
+      {error && (
+        <p role="alert" className="agent-change-error">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** What changed from `before` to `after`, such as "opened the Logs panel and closed the terminal". */
+function describeChange(before: Workspace | null, after: Workspace): string {
+  if (!before) return "changed its layout";
+  const parts: string[] = [];
+  const opened = after.panels.filter((panel) => !before.panels.includes(panel));
+  const closed = before.panels.filter((panel) => !after.panels.includes(panel));
+  const panels = (kinds: string[]) => `the ${sentence(kinds)} ${kinds.length === 1 ? "panel" : "panels"}`;
+  if (opened.length > 0) parts.push(`opened ${panels(opened)}`);
+  if (closed.length > 0) parts.push(`closed ${panels(closed)}`);
+  if (after.terminal !== before.terminal) parts.push(`${after.terminal ? "opened" : "closed"} the terminal`);
+  for (const agent of ["Claude", "Codex"] as const) {
+    const count = (workspace: Workspace) => workspace.chat.filter((p) => p.agent === agent && p.shown).length;
+    const more = count(after) - count(before);
+    if (more !== 0) {
+      const which = AGENT_NAMES[agent];
+      const many = Math.abs(more) === 1 ? `a ${which} panel` : `${Math.abs(more)} ${which} panels`;
+      parts.push(`${more > 0 ? "added" : "hid"} ${many}`);
+    }
+  }
+  if (opened.length === 0 && after.selected !== null && after.selected !== before.selected) {
+    parts.push(`switched to the ${after.selected} tab`);
+  }
+  return parts.length > 0 ? sentence(parts) : "changed its layout";
+}
+
+/** "a", "a and b", "a, b and c". */
+function sentence(items: string[]): string {
+  return items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
 /** Why the Chat/Terminal switch is off, as its tooltip says. null while it is on. */
 function switchBlocked(
   state: AgentStateChanged | undefined,
@@ -343,6 +534,7 @@ type ChatMessage = AgentMessage | typeof RESUMED;
  * It follows the conversation while `shown`, and gets the whole of it again each time it is shown.
  */
 function ChatView({
+  notice,
   strip,
   bridge,
   session,
@@ -360,6 +552,8 @@ function ChatView({
   onChangeAgent,
   onModelChoice,
 }: {
+  /** Goes right above the composer. */
+  notice: ReactNode;
   /** Goes right under the composer. */
   strip: ReactNode;
   bridge: Bridge;
@@ -618,6 +812,7 @@ function ChatView({
             {error ?? modelError}
           </p>
         )}
+        {notice}
         {question && <QuestionCard key={question.request} item={question} agentName={name} onAnswer={answer} />}
         <div className="composer">
           <textarea

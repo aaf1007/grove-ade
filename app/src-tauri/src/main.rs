@@ -718,6 +718,34 @@ impl From<TurnOutcome> for Outcome {
     }
 }
 
+/// A change an agent session made, sent as the `agent-change` event for the agent change notice.
+/// Mirrors `AgentChange` in `app/src/bridge.ts`.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(tag = "kind")]
+enum AgentChange {
+    Workspace { worktree: PathBuf, by: String },
+    Profiles { by: String },
+}
+
+impl AgentChange {
+    /// The change `event` reports, when an agent session made it.
+    fn of(event: &CoreEvent) -> Option<Self> {
+        match event {
+            CoreEvent::WorkspaceChanged {
+                worktree,
+                by: Some(by),
+            } => Some(Self::Workspace {
+                worktree: worktree.clone(),
+                by: by.to_string(),
+            }),
+            CoreEvent::ProfilesChanged { by: Some(by) } => {
+                Some(Self::Profiles { by: by.to_string() })
+            }
+            _ => None,
+        }
+    }
+}
+
 /// An agent session's new state, sent as the `agent-state` event. Mirrors `AgentStateChanged`
 /// in `app/src/bridge.ts`.
 #[derive(Serialize, Clone)]
@@ -892,6 +920,29 @@ async fn set_workspace(
     let core = grove.0.read().await;
     let core = core.as_ref().ok_or(QUITTING)?;
     core.set_workspace(&worktree, workspace, None)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// The agent change notice (#4).
+
+#[tauri::command]
+async fn undo_workspace(grove: State<'_, Grove>, worktree: PathBuf) -> Result<(), String> {
+    let core = grove.0.read().await;
+    let core = core.as_ref().ok_or(QUITTING)?;
+    core.undo_workspace(&worktree)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_workspace_to_profile(
+    grove: State<'_, Grove>,
+    worktree: PathBuf,
+) -> Result<(), String> {
+    let core = grove.0.read().await;
+    let core = core.as_ref().ok_or(QUITTING)?;
+    core.save_workspace_to_profile(&worktree)
         .await
         .map_err(|e| e.to_string())
 }
@@ -2134,8 +2185,10 @@ fn main() -> anyhow::Result<()> {
                             };
                             let _ = app.emit("setup", change);
                         }
-                        // The agent's notice with Undo is #130, so the UI only reloads.
-                        Ok(CoreEvent::ProfilesChanged { .. }) => {
+                        Ok(event @ CoreEvent::ProfilesChanged { .. }) => {
+                            if let Some(change) = AgentChange::of(&event) {
+                                let _ = app.emit("agent-change", change);
+                            }
                             let _ = app.emit("profiles-changed", ());
                         }
                         // Each Profile panel of the repo reloads.
@@ -2145,9 +2198,15 @@ fn main() -> anyhow::Result<()> {
                         Ok(CoreEvent::CommentsChanged { worktree }) => {
                             let _ = app.emit("comments-changed", worktree);
                         }
-                        // The UI reloads the workspace. Showing who changed it is issue #130.
-                        Ok(CoreEvent::WorkspaceChanged { worktree, .. }) => {
-                            let _ = app.emit("workspace-changed", worktree);
+                        // The notice goes first, so the UI holds the workspace from before the
+                        // change when the reload comes.
+                        Ok(event @ CoreEvent::WorkspaceChanged { .. }) => {
+                            if let Some(change) = AgentChange::of(&event) {
+                                let _ = app.emit("agent-change", change);
+                            }
+                            if let CoreEvent::WorkspaceChanged { worktree, .. } = event {
+                                let _ = app.emit("workspace-changed", worktree);
+                            }
                         }
                         Ok(_) => {}
                         Err(_) if events.is_closed() => break,
@@ -2196,6 +2255,8 @@ fn main() -> anyhow::Result<()> {
             // Workspaces (#122).
             workspace,
             set_workspace,
+            undo_workspace,
+            save_workspace_to_profile,
             // Worktree management (#52).
             create_worktree,
             set_base_branch,
@@ -2306,6 +2367,32 @@ mod tests {
         assert_eq!((file.added, file.removed), (3, 2));
         assert_eq!(file.old_path, Path::new("old.rs"));
         assert_eq!(file.new_path, Path::new("new.rs"));
+    }
+
+    // The agent change notice (#4).
+
+    #[test]
+    fn only_a_change_an_agent_made_reaches_the_ui_as_an_agent_change() {
+        let workspace = |by| CoreEvent::WorkspaceChanged {
+            worktree: "/code/wt".into(),
+            by,
+        };
+        let by: SessionId = serde_json::from_str("7").unwrap();
+
+        let changes = [
+            workspace(Some(by)),
+            workspace(None),
+            CoreEvent::ProfilesChanged { by: Some(by) },
+            CoreEvent::ProfilesChanged { by: None },
+        ]
+        .iter()
+        .filter_map(AgentChange::of)
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            serde_json::to_string(&changes).unwrap(),
+            r#"[{"kind":"Workspace","worktree":"/code/wt","by":"7"},{"kind":"Profiles","by":"7"}]"#
+        );
     }
 
     // Files panel (#124).
