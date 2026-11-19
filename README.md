@@ -90,7 +90,7 @@ Run from the repo root.
 | TS lint (in `app/`) | `npx eslint .` |
 | TS tests (in `app/`) | `npx vitest run` |
 
-CI runs the Rust and TS gates on every pull request and every push to `main`.
+CI runs on every pull request and every push to `main`. A pull request runs only the gate steps that read the paths it changed. A push to `main` runs them all.
 
 How work is planned, built and reviewed: [`docs/workflow.md`](docs/workflow.md). Tests each milestone must pass: [`docs/acceptance.md`](docs/acceptance.md).
 

@@ -27,7 +27,7 @@ python3 <skill>/post_review.py coderabbit aaf1007/grove-ade <number>
 
 - `gates-only`: CodeRabbit reviewed the head commit. Do steps 1 and 4, with no findings.
 - `full-review`: its notice for the head commit is "Review limit reached", or it said nothing for 15 minutes after the push. Do every step.
-- `wait`: CodeRabbit may still review. Stop and report when to ask again.
+- `wait`: CodeRabbit may still review. Read the CI checks (step 1), report them, and say when to ask again. Do no other step.
 
 The first line is the answer and the full sha of the head commit it is about, such as `gates-only 54f5930...`. The second line says why. Keep it: steps 1 and 4 use that commit, so the checks and the post match the decision.
 
@@ -44,7 +44,7 @@ The review is the plugin's. Without it, there is no review.
 
 ## 1. CI checks on the head commit
 
-The `rust` and `ts` jobs of `.github/workflows/ci.yml` run the six gates and the fixture checks on every PR. Read their result for the head commit:
+The `rust` and `ts` jobs of `.github/workflows/ci.yml` run on every PR. A PR run skips the gate steps whose paths it did not change, so a pass can mean a step was skipped. The step `Find the step groups this run needs` in each job's log says which groups ran. Read the result for the head commit:
 
 ```bash
 pr=<number>
@@ -59,8 +59,9 @@ A recheck, or a run with `--force-review`, skips step 0: set `commit=$(gh pr vie
 When the head is no longer `$commit`, start again from step 0.
 
 - `pass` for both: report them as passed.
-- `pending`: the checks are still running. Do steps 2 and 3 meanwhile, then read them again. The jobs time out after 15 and 10 minutes, so when one is still pending 20 minutes after the push, report that and stop.
-- `fail` or `cancel`: find the failing step. The link ends in `/actions/runs/<run>/job/<job>`:
+- `pending`: the checks are still running. On a full review, do steps 2 and 3 meanwhile. Then read them again. The jobs time out after 15 and 10 minutes, so when one is still pending 20 minutes after the push, report that and stop.
+- `cancel` with no failed step: report the cancellation with the job link.
+- `fail`, or `cancel` after a step failed: find the failing step. The link ends in `/actions/runs/<run>/job/<job>`:
 
   ```bash
   gh run view <run> --repo aaf1007/grove-ade --json jobs \
