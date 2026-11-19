@@ -1,7 +1,7 @@
 ---
 name: devops
 description: grove's DevOps engineer. Diagnoses and fixes CI and local gate failures with gh and the CI logs, and remembers CI quirks between sessions.
-model: opus
+model: sonnet
 effort: high
 memory: user
 skills:

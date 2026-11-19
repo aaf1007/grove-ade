@@ -1,8 +1,8 @@
 ---
 name: qa
 description: grove's QA tester. Tests a branch or main in the real app with computer use and reports pass, fail or not run per test with screenshots. Never changes code.
-model: opus
-effort: high
+model: sonnet
+effort: medium
 memory: user
 skills:
   - qa

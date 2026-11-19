@@ -26,7 +26,9 @@ python3 <skill>/post_review.py coderabbit aaf1007/grove-ade <number>
 ```
 
 - `gates-only`: CodeRabbit reviewed the head commit. Do steps 1 and 4, with no findings.
-- `full-review`: its notice for the head commit is "Review limit reached", or it said nothing for 15 minutes after the push. Do every step.
+- `full-review`: its notice for the head commit is "Review limit reached", or it said nothing for 15 minutes after the push. Then check whether you already reviewed an earlier commit of this PR (a summary ending "Commit reviewed: <sha>", from `python3 <skill>/post_review.py threads aaf1007/grove-ade <number>` or `gh pr view <number> --comments`):
+  - No earlier review: this is the first unreviewed commit. Do every step, a full review.
+  - An earlier review: this is a fix round. Do step 1, then the light review below, not steps 2 and 3.
 - `wait`: CodeRabbit may still review. Read the CI checks (step 1), report them, and say when to ask again. Do no other step.
 
 The first line is the answer and the full sha of the head commit it is about, such as `gates-only 54f5930...`. The second line says why. Keep it: steps 1 and 4 use that commit, so the checks and the post match the decision.
@@ -98,6 +100,10 @@ Invoke `code-review:code-review` with the argument `https://github.com/aaf1007/g
 ## 3. Spec check
 
 Find the issue: `gh pr view <number> --json closingIssuesReferences`, or the `#N` in the title. Read it with `gh issue view`. Mark every "What to build" line and every acceptance criterion as met, missed or out of scope, and name the file or test that shows it. Done when every line has a status.
+
+## Light review (fix rounds)
+
+Use one agent, yourself. Start no plugin or other agents. Read only the diff since the last reviewed commit: `git diff <last reviewed sha> <head>`. Check it against the open threads and the issue. Post a thread for each problem it adds, with step 4's `review.json`. The summary says it was a light review of that diff, and gives the CI check table.
 
 ## 4. Post
 
