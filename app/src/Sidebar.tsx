@@ -113,7 +113,7 @@ export function Sidebar({
   onDeleting(worktree: Worktree, running: boolean): void;
   /** A worktree was forgotten or deleted, which ended its sessions. */
   onRemoved(path: string): void;
-  /** Called with each new list of worktrees. */
+  /** Called with each new list of worktrees, from the core's first one on. */
   onWorktrees?(worktrees: Worktree[]): void;
   /** How many agent sessions are in the attention queue. */
   waiting: number;
@@ -131,6 +131,8 @@ export function Sidebar({
   ref?: Ref<SidebarHandle>;
 }) {
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
+  // False until the core's first list arrives, so an empty list before it means nothing.
+  const [listed, setListed] = useState(false);
   const [query, setQuery] = useState("");
   // The repos folded shut, by main worktree path. It survives a restart.
   const [foldedRepos, setFoldedRepos] = useSetting<string[]>("grove.foldedRepos", [], isPathList);
@@ -143,7 +145,9 @@ export function Sidebar({
   const [dialog, setDialog] = useState<OpenDialog | null>(null);
 
   const reportWorktrees = useEffectEvent((list: Worktree[]) => onWorktrees?.(list));
-  useEffect(() => reportWorktrees(worktrees), [worktrees]);
+  useEffect(() => {
+    if (listed) reportWorktrees(worktrees);
+  }, [listed, worktrees]);
 
   useEffect(
     () => bridge.onSetup(({ worktree, setup }) => setSetups((known) => ({ ...known, [worktree]: setup }))),
@@ -154,7 +158,10 @@ export function Sidebar({
   useEffect(() => {
     bridge
       .listWorktrees()
-      .then(setWorktrees)
+      .then((list) => {
+        setWorktrees(list);
+        setListed(true);
+      })
       .catch((e: unknown) => setError(String(e)));
   }, [bridge]);
 
@@ -199,6 +206,8 @@ export function Sidebar({
       setError(null);
     } catch (e) {
       setError(String(e));
+      // The chat area's Add repo works with the sidebar collapsed, and the error shows here.
+      onShowSidebar?.();
     }
     refresh();
   }

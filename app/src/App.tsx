@@ -58,7 +58,8 @@ export function App({ bridge }: { bridge: Bridge }) {
   const { appearance, setAppearance } = useAppearance();
   const [selected, setSelected] = useState<string | null>(null);
   // Every tracked worktree, as the sidebar last listed them.
-  const [worktrees, setWorktrees] = useState<Worktree[]>([]);
+  // null until the sidebar has the core's first list.
+  const [worktrees, setWorktrees] = useState<Worktree[] | null>(null);
   const sidebarRef = useRef<SidebarHandle>(null);
   const {
     workspaces,
@@ -547,7 +548,7 @@ export function App({ bridge }: { bridge: Bridge }) {
   const agentError = selected && startErrors[startKey("agent", selected)];
   const workspaceError = selected && workspaceErrors[selected];
   const detailsSession = selected ? focusedSession(selected) : null;
-  const selectedRepo = byRepo(worktrees).find((repo) => repo.some((w) => w.path === selected));
+  const selectedRepo = byRepo(worktrees ?? []).find((repo) => repo.some((w) => w.path === selected));
   const selectedWorktree = selectedRepo?.find((w) => w.path === selected);
   const regions = ["regions"];
   if (!layout.sidebarOpen) regions.push("no-sidebar");
@@ -695,7 +696,7 @@ export function App({ bridge }: { bridge: Bridge }) {
                     ),
                 )}
             </div>
-            {worktrees.length === 0 && (
+            {worktrees?.length === 0 && (
               <div className="empty-chat">
                 <h2>No repo added yet</h2>
                 <p>
@@ -705,7 +706,7 @@ export function App({ bridge }: { bridge: Bridge }) {
                 </p>
               </div>
             )}
-            {worktrees.length > 0 && (!selected || workspace?.chat.every((panel) => !panel.shown)) && (
+            {!!worktrees?.length && (!selected || workspace?.chat.every((panel) => !panel.shown)) && (
               <div className="empty-chat">
                 <h2>{selected ? "No agent session in this worktree" : "No worktree selected"}</h2>
                 <p>

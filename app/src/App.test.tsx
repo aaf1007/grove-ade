@@ -3,7 +3,7 @@ import { StrictMode, useState } from "react";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 
 import { App } from "./App";
-import type { Agent, AgentState, StateSource, Workspace } from "./bridge";
+import type { Agent, AgentState, StateSource, Workspace, Worktree } from "./bridge";
 import { DEFAULT_WORKSPACE, fakeBridge } from "./fakeBridge";
 import { menuItems } from "./testing";
 import appStyles from "./styles.css?raw";
@@ -1843,11 +1843,40 @@ test("with no repos, the empty chat area's Add repo opens the picker and adds th
   const bridge = fakeBridge({ [main]: [{ path: main, branch: "main", isMain: true }] });
   render(<App bridge={bridge} />);
   const chatArea = screen.getByRole("main");
-  expect(within(chatArea).getByText("No repo added yet")).toBeTruthy();
+  expect(await within(chatArea).findByText("No repo added yet")).toBeTruthy();
   bridge.willPickFolder(main);
 
   await act(async () => fireEvent.click(within(chatArea).getByRole("button", { name: "Add repo" })));
 
   expect(await screen.findByRole("button", { name: "main (main worktree)" })).toBeTruthy();
   expect(within(chatArea).queryByRole("button", { name: "Add repo" })).toBeNull();
+});
+
+test("the chat area's Add repo with the sidebar collapsed shows the sidebar when the folder is no repo", async () => {
+  const bridge = fakeBridge({});
+  render(<App bridge={bridge} />);
+  fireEvent.click(screen.getByRole("button", { name: "Sidebar" }));
+  const chatArea = screen.getByRole("main");
+  bridge.willPickFolder("/code/not-a-repo");
+
+  const addRepo = await within(chatArea).findByRole("button", { name: "Add repo" });
+
+  await act(async () => fireEvent.click(addRepo));
+
+  const sidebar = await screen.findByRole("complementary", { name: "Worktrees" });
+  expect(within(sidebar).getByRole("alert").textContent).toBe("/code/not-a-repo is not a git repo");
+});
+
+test("the chat area says no repo is added only once the core's worktree list says so", async () => {
+  const bridge = fakeBridge({});
+  let answer: (worktrees: Worktree[]) => void = () => {};
+  const first = new Promise<Worktree[]>((resolve) => (answer = resolve));
+  bridge.listWorktrees = () => first;
+  render(<App bridge={bridge} />);
+  const chatArea = screen.getByRole("main");
+  expect(within(chatArea).queryByText("No repo added yet")).toBeNull();
+
+  await act(async () => answer([]));
+
+  expect(await within(chatArea).findByText("No repo added yet")).toBeTruthy();
 });
