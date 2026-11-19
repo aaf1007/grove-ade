@@ -1,0 +1,260 @@
+/* The conversation of an agent panel in chat mode: work blocks, tool rows, approvals and the
+   question card. */
+
+/* A turn's work starts under one header, 8px above its first row. */
+.work-head {
+  display: flex;
+  min-height: var(--control-sm);
+  align-items: center;
+  gap: var(--space-8);
+  margin-bottom: calc(var(--space-8) * -1);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font: var(--text-body);
+}
+
+/* A label that shimmers while its work runs. Still under reduced motion. */
+.shimmer {
+  background: linear-gradient(90deg, var(--muted) 40%, var(--fg) 50%, var(--muted) 60%);
+  background-size: 300% 100%;
+  /* impeccable-disable-next-line gradient-text -- the shimmer of a running label (#30) */
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2.2s linear infinite;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: 0 0;
+  }
+}
+
+/* Tool calls: one quiet row each. */
+.tools {
+  display: flex;
+  flex-direction: column;
+}
+
+.tool {
+  display: flex;
+  width: 100%;
+  min-height: var(--control-sm);
+  align-items: center;
+  gap: var(--space-10);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted);
+  font: var(--text-body);
+  text-align: left;
+}
+
+button.tool:hover {
+  color: var(--fg);
+}
+
+.tool svg {
+  width: var(--icon);
+  height: var(--icon);
+  flex: none;
+  stroke-width: 1.75;
+}
+
+.tool.failed {
+  color: var(--failed);
+}
+
+.tool .chevron {
+  width: var(--space-12);
+  height: var(--space-12);
+  opacity: 0;
+  transition:
+    transform 200ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.tool:hover .chevron,
+.tool:focus-visible .chevron,
+.tool[aria-expanded="true"] .chevron {
+  opacity: 0.7;
+}
+
+.tool[aria-expanded="true"] .chevron {
+  transform: rotate(90deg);
+}
+
+.tool-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Under the row's label: past its icon and gap. */
+.tool-output,
+.tool-calls {
+  max-height: calc(var(--space-32) * 8);
+  margin: 0 0 var(--space-6) calc(var(--icon) + var(--space-10));
+  overflow: auto;
+  color: var(--muted);
+  font: var(--text-code-sm);
+}
+
+.tool-output {
+  white-space: pre;
+}
+
+.tool-output.failed {
+  color: var(--failed);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-calls {
+  padding: 0;
+  list-style: none;
+}
+
+.tool-calls li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* An approval: its call's row, then a line under the label with what the user can do. */
+.approval-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+  margin-left: calc(var(--icon) + var(--space-10));
+  color: var(--muted);
+  font: var(--text-body);
+}
+
+.approval-waiting {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  color: var(--needs);
+}
+
+.approval-waiting svg {
+  width: var(--space-16);
+  height: var(--space-16);
+  stroke-width: 1.75;
+}
+
+.approval-action {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: var(--text-control);
+  cursor: pointer;
+}
+
+.approval-action.approve {
+  color: var(--fg);
+}
+
+.approval-action:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.approval-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* What became of a request: answered, or expired with its turn. */
+.record {
+  color: var(--muted);
+  font-size: var(--text-meta-size);
+}
+
+.record.expired {
+  color: var(--faint);
+}
+
+/* A pending question, attached above the composer in its lane. */
+.question-card {
+  max-width: var(--chat-lane);
+  margin: 0 auto var(--space-8);
+  padding: var(--space-12) var(--space-16);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-xl);
+  background: var(--panel);
+}
+
+.question {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.question-text {
+  margin-bottom: var(--space-8);
+  padding: 0;
+  font-weight: 500;
+}
+
+.option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-10);
+  padding: var(--space-6) 0;
+  cursor: pointer;
+}
+
+.option input {
+  margin: var(--space-4) 0 0;
+  accent-color: var(--accent);
+}
+
+.option-description {
+  display: block;
+  color: var(--muted);
+  font-size: var(--text-meta-size);
+}
+
+.own-answer {
+  height: var(--control-sm);
+  margin-top: var(--space-6);
+  padding: 0 var(--space-8);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+}
+
+.question-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-8);
+}
+
+.question-card .question-submit {
+  border-radius: var(--radius-full);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    background: none;
+    color: var(--muted);
+    animation: none;
+  }
+
+  .tool .chevron {
+    transition: none;
+  }
+}
