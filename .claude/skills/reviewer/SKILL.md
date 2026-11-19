@@ -49,9 +49,11 @@ The `rust` and `ts` jobs of `.github/workflows/ci.yml` run on every PR. A PR run
 ```bash
 pr=<number>
 commit=<the sha step 0 printed>
-[ "$(gh pr view "$pr" --repo aaf1007/grove-ade --json headRefOid -q .headRefOid)" = "$commit" ] &&
+head=$(gh pr view "$pr" --repo aaf1007/grove-ade --json headRefOid -q .headRefOid)
+if [ "$head" != "$commit" ]; then echo "Head moved to $head."; else
   gh pr checks "$pr" --repo aaf1007/grove-ade --json name,state,bucket,link \
-    -q '.[] | select(.name == "rust" or .name == "ts") | [.name, .bucket, .link] | @tsv'
+    -q '.[] | select(.name == "rust" or .name == "ts") | [.name, .bucket, .link] | @tsv' | grep . ||
+    echo "No rust or ts check: CI did not run on the PR."; fi
 ```
 
 A recheck, or a run with `--force-review`, skips step 0: set `commit=$(gh pr view "$pr" --repo aaf1007/grove-ade --json headRefOid -q .headRefOid)` instead.
@@ -65,8 +67,11 @@ When the head is no longer `$commit`, start again from step 0.
 
   ```bash
   gh run view <run> --repo aaf1007/grove-ade --json jobs \
-    -q '.jobs[] | select(.conclusion == "failure") | .name as $job | .steps[] | select(.conclusion == "failure") | "\($job): \(.name)"'
+    -q '.jobs[] | .name as $job | .steps[] | select(.conclusion == "failure") | "\($job): \(.name)"'
+  # A failed job:
   gh run view --job <job> --repo aaf1007/grove-ade --log-failed | tail -n 40
+  # A cancelled job: --log-failed skips it, so keep the failing step's lines of the full log.
+  gh run view --job <job> --repo aaf1007/grove-ade --log | awk -F '\t' -v step="<failing step>" '$2 == step' | tail -n 40
   ```
 
 - `rust` or `ts` missing from the list: CI did not run on the PR. Report it and stop.
