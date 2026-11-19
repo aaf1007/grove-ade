@@ -90,7 +90,10 @@ export function DetailsCard({
   const [runSessions, setRunSessions] = useState<RunSession[] | null>(null);
   // Bumped when a profile or the repo's settings change, to list its run sessions again.
   const [settingsChanges, setSettingsChanges] = useState(0);
-  const [changes, setChanges] = useState<{ files: FileDiff[] } | { error: string } | null>(null);
+  // The diff keeps the base it counts against, so a base that just changed shows no old counts.
+  const [diff, setDiff] = useState<{ base: string | null; result: { files: FileDiff[] } | { error: string } } | null>(
+    null,
+  );
   const [diffChanges, setDiffChanges] = useState(0);
   const [changingBase, setChangingBase] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -146,8 +149,8 @@ export function DetailsCard({
     if (base === undefined) return;
     let current = true;
     bridge.diff(worktree, base === null ? "Head" : "MergeBase").then(
-      (files) => current && setChanges({ files }),
-      (e: unknown) => current && setChanges({ error: String(e) }),
+      (files) => current && setDiff({ base, result: { files } }),
+      (e: unknown) => current && setDiff({ base, result: { error: String(e) } }),
     );
     return () => {
       current = false;
@@ -210,6 +213,7 @@ export function DetailsCard({
     return live && served !== null ? [`:${served} ${name}`] : [];
   });
   const sessionDetails = session && [session.model?.model.name, session.model?.effort, session.mode].filter(Boolean);
+  const changes = diff && diff.base === base ? diff.result : null;
   const diffError = changes && "error" in changes ? changes.error : null;
   const alert = error ?? diffError;
 

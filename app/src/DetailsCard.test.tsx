@@ -204,6 +204,21 @@ test("the branch row shows the branch, and Change base in its menu changes the b
   expect(within(row("Changes")).getByText("vs main")).toBeTruthy();
 });
 
+test("the changes row hides the old base's counts while the new base's diff loads", async () => {
+  const bridge = await setup();
+  await renderCard(bridge);
+  expect(within(row("Changes")).getByText("vs develop")).toBeTruthy();
+  vi.spyOn(bridge, "diff").mockReturnValue(new Promise(() => {}));
+
+  fireEvent.click(within(row("Branch")).getByRole("button", { name: "Branch" }));
+  await act(async () => fireEvent.click(screen.getByRole("menuitem", { name: "Change base" })));
+  const dialog = screen.getByRole("dialog", { name: "Change base branch" });
+  fireEvent.change(within(dialog).getByLabelText("Base branch"), { target: { value: "main" } });
+  await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Save" })));
+
+  expect(within(card()).queryByRole("listitem", { name: "Changes" })).toBeNull();
+});
+
 test("the changes row counts the lines since the base branch, and opens the Diff panel", async () => {
   const bridge = await setup();
   const { onOpenDiff } = await renderCard(bridge);
