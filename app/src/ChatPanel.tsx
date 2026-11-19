@@ -593,7 +593,7 @@ interface Turn {
   /** Where the turn's items start in the message list. */
   start: number;
   ended: boolean;
-  /** Set once the turn has a tool call. */
+  /** Set when the turn starts, or at its first tool call when the conversation has no start for it. */
   head: WorkItem | null;
   /** When the turn started and ended, in milliseconds since the Unix epoch. null when unknown. */
   startedAt: number | null;
@@ -680,6 +680,8 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
       case "TurnStarted":
         edited = [];
         turn = { start: items.length, ended: false, head: null, startedAt: message.timeUnixMs, endedAt: null };
+        // Every turn has its header, so a turn that only talks says how long it worked too.
+        workStarts();
         break;
       case "TextDelta": {
         const last = items[items.length - 1];

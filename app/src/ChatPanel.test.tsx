@@ -384,7 +384,7 @@ test("a turn's work sits under one header, Working while the turn runs and Worke
   view.rerender(<Panel bridge={bridge} state={working("Done")} />);
   expect(heads()).toEqual(["Worked"]);
 
-  // A turn that only talks has no header.
+  // A turn that only talks has its own header too.
   act(() =>
     bridge.messages(
       "0",
@@ -395,7 +395,7 @@ test("a turn's work sits under one header, Working while the turn runs and Worke
     ),
   );
   nextFrame();
-  expect(heads()).toEqual(["Worked"]);
+  expect(heads()).toEqual(["Worked", "Worked"]);
 });
 
 test("a running call's label shimmers until it has a result or its turn ends", async () => {
@@ -486,6 +486,36 @@ test("the work header counts the turn from its start while it runs, then says ho
     view.rerender(<Panel bridge={bridge} state={working("Done")} />);
     expect(head()).toBe("Worked for 2m 14s");
     expect(screen.queryByText(/^Working for/)).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a turn with no tool call has the work header too, counting from its start and then saying how long it took", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+  try {
+    const bridge = await started();
+    const view = await shownPanel(bridge, { state: working("Working") });
+    const heads = () => [...document.querySelectorAll(".work-head")].map((head) => head.textContent);
+    const startedAt = Date.now();
+
+    act(() => bridge.messages("0", { type: "User", text: "hi" }, { type: "TurnStarted", timeUnixMs: startedAt }));
+    nextFrame();
+    expect(heads()).toEqual(["Working for 0s"]);
+
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(heads()).toEqual(["Working for 5s"]);
+
+    act(() =>
+      bridge.messages(
+        "0",
+        { type: "TextDelta", text: "Hello." },
+        { type: "TurnEnded", outcome: "Completed", timeUnixMs: startedAt + 42_000 },
+      ),
+    );
+    nextFrame();
+    view.rerender(<Panel bridge={bridge} state={working("Done")} />);
+    expect(heads()).toEqual(["Worked for 42s"]);
   } finally {
     vi.useRealTimers();
   }
