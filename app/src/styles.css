@@ -498,7 +498,7 @@ svg {
   opacity: 1;
 }
 
-/* The most urgent state as a 7px dot. Working pulses. */
+/* The most urgent state as a 7px dot. Working pulses as the Working icon does. */
 .status-dot {
   flex: none;
   width: 7px;
@@ -509,7 +509,7 @@ svg {
 
 .status-working {
   background: var(--working);
-  animation: status-pulse 2s steps(6) infinite;
+  animation: ui-agent-state-pulse var(--working-pulse);
 }
 
 .status-approval {
@@ -526,12 +526,6 @@ svg {
 
 .status-done {
   background: var(--done);
-}
-
-@keyframes status-pulse {
-  50% {
-    opacity: 0.45;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
