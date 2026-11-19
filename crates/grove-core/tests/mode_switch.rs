@@ -20,7 +20,7 @@ use tokio::sync::broadcast::{self, error::TryRecvError};
 use tokio::sync::mpsc::unbounded_channel;
 
 mod common;
-use common::grove_hook;
+use common::{grove_hook, untimed};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -263,9 +263,10 @@ impl Setup {
         }
     }
 
+    /// The conversation, with no times: these tests check what it holds and in what order.
     fn history(&self, session: SessionId) -> Vec<AgentMessage> {
         let (sink, _frames) = unbounded_channel();
-        self.core.subscribe(session, sink).unwrap()
+        untimed(self.core.subscribe(session, sink).unwrap())
     }
 }
 
@@ -273,12 +274,13 @@ impl Setup {
 fn turn_messages(text: &str) -> Vec<AgentMessage> {
     vec![
         AgentMessage::User { text: text.into() },
-        AgentMessage::TurnStarted,
+        AgentMessage::TurnStarted { time_unix_ms: None },
         AgentMessage::TextDelta {
             text: format!("re: {text}"),
         },
         AgentMessage::TurnEnded {
             outcome: TurnOutcome::Completed,
+            time_unix_ms: None,
         },
     ]
 }
