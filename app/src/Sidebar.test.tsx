@@ -761,6 +761,20 @@ test("a nested worktree shows one level deep under the top worktree of its chain
   expect(nesting().map(([name]) => name)).not.toContain("feat-35");
 });
 
+test("a nested worktree's row starts right of the tree line, so the line never crosses its ring", async () => {
+  const style = document.createElement("style");
+  style.textContent = sidebarStyles;
+  document.head.append(style);
+  onTestFinished(() => style.remove());
+  const bridge = fakeBridge({ "/code/grove": nestingRepo });
+  await bridge.addRepo("/code/grove");
+  render(<Sidebar bridge={bridge} selected="/code/grove-wt/feat-35" onSelect={() => {}} {...noAgents} />);
+  const row = (await worktreeRow("feat-35")).closest<HTMLElement>(".wt-row")!;
+
+  const box = getComputedStyle(row);
+  expect([box.marginLeft, box.paddingLeft]).toEqual(["calc(var(--space-32) - var(--space-2))", "0"]);
+});
+
 test("a nested worktree stays nested after the agent session that nested it ended", async () => {
   const bridge = fakeBridge({ "/code/grove": nestingRepo });
   await bridge.addRepo("/code/grove");
