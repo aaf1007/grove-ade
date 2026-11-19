@@ -124,6 +124,22 @@ test("with no suggestion the dialog asks the user to pick, and creates nothing u
   expect(await bridge.repoProfile("/code/grove")).toBeNull();
 });
 
+test("creating a worktree in a folded repo opens the repo, so the new selected row shows", async () => {
+  await sidebarWith();
+  fireEvent.click(screen.getByRole("button", { name: "grove" }));
+  expect(screen.queryByRole("button", { name: "feat-35-tauri-sidebar" })).toBeNull();
+
+  const dialog = await openNewWorktree();
+  await within(dialog).findByText(/No profile matches/);
+  type(dialog, "Branch name", "feat-52-ui");
+  pick(dialog, "None");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Create worktree" }));
+
+  await waitForNoDialog();
+  expect(screen.getByRole("button", { name: "grove" }).getAttribute("aria-expanded")).toBe("true");
+  expect(await screen.findByRole("button", { name: "feat-52-ui" })).toBeTruthy();
+});
+
 test("the repo's own profile is picked over the suggestion", async () => {
   const { bridge } = await sidebarWith({ "/code/grove": { "Cargo.toml": "" } });
   await bridge.setRepoProfile("/code/grove", "Next.js app");
