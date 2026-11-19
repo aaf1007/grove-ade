@@ -613,6 +613,7 @@ export function App({ bridge }: { bridge: Bridge }) {
                 session={detailsSession}
                 onStartRun={(name) => void startRun(selected, name)}
                 onOpenDiff={() => open(selected, "Diff")}
+                onOpenProfile={() => open(selected, "Profile")}
                 onClose={() => setDetailsOpen(false)}
               />
             )}
