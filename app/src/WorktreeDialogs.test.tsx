@@ -20,6 +20,12 @@ const noAgents = {
   onDeleting() {},
   onRemoved() {},
   onShowAgent() {},
+  waiting: 0,
+  onJump() {},
+  onOpenProfiles() {},
+  accounts: {},
+  appearance: { theme: "system" as const, palette: "default" as const },
+  onAppearance() {},
 };
 
 // Renders the sidebar with the grove repo added. Returns what it selected, and the worktrees it
