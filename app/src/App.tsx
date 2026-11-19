@@ -22,7 +22,7 @@ import { PanelTabs, tabId } from "./PanelTabs";
 import type { ModelChoice } from "./Picker";
 import { ProfilePanel } from "./ProfilePanel";
 import { QuitGuard } from "./QuitGuard";
-import { AGENT_NAMES, type AgentSession, Sidebar, byRepo, sessionNames } from "./Sidebar";
+import { AGENT_NAMES, type AgentSession, Sidebar, byRepo, folderName, sessionNames } from "./Sidebar";
 import { Splitter } from "./Splitter";
 import { TerminalPanel } from "./TerminalPanel";
 import { useAppearance } from "./theme";
@@ -49,6 +49,8 @@ export function App({ bridge }: { bridge: Bridge }) {
     useLayout();
   const { appearance, setAppearance } = useAppearance();
   const [selected, setSelected] = useState<string | null>(null);
+  // Every tracked worktree, as the sidebar last listed them.
+  const [worktrees, setWorktrees] = useState<Worktree[]>([]);
   const {
     workspaces,
     errors: workspaceErrors,
@@ -536,6 +538,8 @@ export function App({ bridge }: { bridge: Bridge }) {
   const agentError = selected && startErrors[startKey("agent", selected)];
   const workspaceError = selected && workspaceErrors[selected];
   const detailsSession = selected ? focusedSession(selected) : null;
+  const selectedRepo = byRepo(worktrees).find((repo) => repo.some((w) => w.path === selected));
+  const selectedWorktree = selectedRepo?.find((w) => w.path === selected);
   const regions = ["regions"];
   if (!layout.sidebarOpen) regions.push("no-sidebar");
   if (!layout.panelsOpen) regions.push("no-panels");
@@ -547,28 +551,28 @@ export function App({ bridge }: { bridge: Bridge }) {
   return (
     <>
       <div className="app">
-        <TitleBar
-          worktree={selected}
-          waiting={attentionQueue.length}
-          onJump={jump}
-          sidebarOpen={layout.sidebarOpen}
-          panelsOpen={layout.panelsOpen}
-          terminalOpen={workspace?.terminal ?? null}
-          onToggleSidebar={toggleSidebar}
-          onTogglePanels={togglePanels}
-          onToggleTerminal={() => selected && toggleTerminal(selected)}
-          appearance={appearance}
-          onAppearance={setAppearance}
-          detailsOpen={selected ? detailsOpen : null}
-          onToggleDetails={() => setDetailsOpen(!detailsOpen)}
-        />
-        <Warnings bridge={bridge} />
         <QuitGuard
           bridge={bridge}
           agentStates={agentStates}
           deleting={deleting.map((worktree) => worktree.displayName)}
         />
         <div className={regions.join(" ")} style={widths}>
+          {/* The title bar spans the chat area and the panel area. The sidebar runs beside it. */}
+          <div className="window-top">
+            <TitleBar
+              repo={selectedRepo ? folderName(selectedRepo[0].path) : null}
+              worktree={selectedWorktree?.displayName ?? null}
+              sidebarOpen={layout.sidebarOpen}
+              panelsOpen={layout.panelsOpen}
+              terminalOpen={workspace?.terminal ?? null}
+              onToggleSidebar={toggleSidebar}
+              onTogglePanels={togglePanels}
+              onToggleTerminal={() => selected && toggleTerminal(selected)}
+              detailsOpen={selected ? detailsOpen : null}
+              onToggleDetails={() => setDetailsOpen(!detailsOpen)}
+            />
+            <Warnings bridge={bridge} />
+          </div>
           {/* Collapsed regions stay mounted, so they keep their state and their terminals. */}
           <div className="sidebar-region" hidden={!layout.sidebarOpen}>
             <Sidebar
@@ -593,6 +597,14 @@ export function App({ bridge }: { bridge: Bridge }) {
                 startAgent(worktree, "Claude", firstEmptyPanel, true)
               }
               onShowAgent={showAgent}
+              onWorktrees={setWorktrees}
+              waiting={attentionQueue.length}
+              onJump={jump}
+              onOpenProfiles={() => selected && open(selected, "Profile")}
+              onShowSidebar={() => layout.sidebarOpen || toggleSidebar()}
+              accounts={accounts}
+              appearance={appearance}
+              onAppearance={setAppearance}
             />
           </div>
           {layout.sidebarOpen && (
@@ -634,7 +646,6 @@ export function App({ bridge }: { bridge: Bridge }) {
                   shown={places[started.session]?.shown ?? false}
                   order={places[started.session]?.at}
                   state={agentStates[started.session]}
-                  account={accounts[started.agent]}
                   focusRequest={jumped.session === started.session ? jumped.request : 0}
                   onOpenDiff={() => open(started.worktree, "Diff")}
                   onChangeAgent={(agent) => changeAgent(started, agent)}

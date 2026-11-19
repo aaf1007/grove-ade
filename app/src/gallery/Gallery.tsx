@@ -299,6 +299,12 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
             onShowAgent={() => {}}
             onDeleting={() => {}}
             onRemoved={() => {}}
+            waiting={1}
+            onJump={() => {}}
+            onOpenProfiles={() => {}}
+            accounts={{ Claude: { email: "dev@example.com", organization: null, plan: "Max", apiKeySource: null } }}
+            appearance={{ theme: "system", palette: "default" }}
+            onAppearance={() => {}}
           />
           {pane && (
             <ChatPanel
@@ -309,7 +315,6 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
               worktree={FEATURE}
               shown
               state={{ session: pane, state: "Working", source: "Protocol" }}
-              account={{ email: "dev@example.com", organization: null, plan: "Max", apiKeySource: null }}
               focusRequest={0}
               onOpenDiff={() => {}}
               onSplit={() => {}}
