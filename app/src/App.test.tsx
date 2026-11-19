@@ -734,7 +734,7 @@ test("a file the chat opens in the diff opens the Diff panel on that file", asyn
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   const panel = await screen.findByRole("region", { name: "Panel 0" });
   fireEvent.click(screen.getByRole("button", { name: "Panel area" }));
   expect(screen.queryByRole("region", { name: "Panel area" })).toBeNull();
