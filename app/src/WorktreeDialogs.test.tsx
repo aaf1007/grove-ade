@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import { fakeBridge, type FakeBridge, type FakeFiles } from "./fakeBridge";
 import { Sidebar } from "./Sidebar";
+import { menuItems } from "./testing";
 
 afterEach(cleanup);
 
@@ -20,6 +21,7 @@ const noAgents = {
   onDeleting() {},
   onRemoved() {},
   onShowAgent() {},
+  onFocusAgent() {},
   waiting: 0,
   onJump() {},
   onOpenProfiles() {},
@@ -122,6 +124,22 @@ test("with no suggestion the dialog asks the user to pick, and creates nothing u
   expect(await bridge.repoProfile("/code/grove")).toBeNull();
 });
 
+test("creating a worktree in a folded repo opens the repo, so the new selected row shows", async () => {
+  await sidebarWith();
+  fireEvent.click(screen.getByRole("button", { name: "grove" }));
+  expect(screen.queryByRole("button", { name: "feat-35-tauri-sidebar" })).toBeNull();
+
+  const dialog = await openNewWorktree();
+  await within(dialog).findByText(/No profile matches/);
+  type(dialog, "Branch name", "feat-52-ui");
+  pick(dialog, "None");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Create worktree" }));
+
+  await waitForNoDialog();
+  expect(screen.getByRole("button", { name: "grove" }).getAttribute("aria-expanded")).toBe("true");
+  expect(await screen.findByRole("button", { name: "feat-52-ui" })).toBeTruthy();
+});
+
 test("the repo's own profile is picked over the suggestion", async () => {
   const { bridge } = await sidebarWith({ "/code/grove": { "Cargo.toml": "" } });
   await bridge.setRepoProfile("/code/grove", "Next.js app");
@@ -145,7 +163,6 @@ test("creating a worktree adds it to its repo, selects it, sets the repo's profi
 
   await waitForNoDialog();
   expect(worktreeNames()).toEqual(["main (main worktree)", "feat-35-tauri-sidebar", "Worktree UI"]);
-  expect(screen.getByText("feat/52-ui", { selector: ".wt-branch" })).toBeTruthy();
   expect(selected).toEqual(["/grovecode/worktrees/grove/feat-52-ui"]);
   expect(started).toEqual(["/grovecode/worktrees/grove/feat-52-ui"]);
   expect((await bridge.listWorktrees())[2]).toEqual({
@@ -239,11 +256,12 @@ test("a worktree whose setup script runs shows it after a reload, with no Start 
 
   render(<Sidebar bridge={bridge} selected={added.path} onSelect={() => {}} {...noAgents} />);
 
-  expect(await screen.findByText("Setup running")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Start Claude Code" })).toBeNull();
+  expect(await screen.findByRole("img", { name: "Setup running" })).toBeTruthy();
+  expect(menuItems("feat-52")).not.toContain("Start Claude Code");
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
   act(() => bridge.finishSetup(added.path, null));
   expect(await screen.findByText("Setup failed: was stopped by a signal")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Start Claude Code" })).toBeTruthy();
+  expect(menuItems("feat-52")).toContain("Start Claude Code");
 });
 
 test("changing the base branch saves it, and an unknown branch shows the error", async () => {
@@ -266,13 +284,13 @@ test("changing the base branch saves it, and an unknown branch shows the error",
   expect((await bridge.listWorktrees())[1].baseBranch).toBe("feat-35-tauri-sidebar");
 });
 
-test("the main worktree's menu only changes its base branch", async () => {
+test("the main worktree's menu only starts Claude Code and changes its base branch", async () => {
   await sidebarWith();
 
   fireEvent.click(screen.getByRole("button", { name: "Actions for main" }));
 
   const items = within(screen.getByRole("menu")).getAllByRole("menuitem");
-  expect(items.map((item) => item.textContent)).toEqual(["Change base branch"]);
+  expect(items.map((item) => item.textContent)).toEqual(["Start Claude Code", "Change base branch"]);
 });
 
 test("closing a dialog puts focus back on the + that opened it", async () => {

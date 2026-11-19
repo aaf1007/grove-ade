@@ -1,4 +1,4 @@
-import { Bell, Ellipsis, Plus, Search, Settings2, SlidersHorizontal } from "lucide-react";
+import { Bell, ChevronDown, ChevronRight, Ellipsis, Plus, Search, Settings2, SlidersHorizontal } from "lucide-react";
 import { useEffect, useEffectEvent, useId, useRef, useState, type FormEvent } from "react";
 import { flushSync } from "react-dom";
 
@@ -9,12 +9,12 @@ import type {
   AgentStateChanged,
   BranchOutcome,
   Bridge,
-  DiffBase,
   SessionId,
   SetupState,
   Worktree,
 } from "./bridge";
-import { AgentState, stateWord } from "./ui/AgentState";
+import { useSetting } from "./settings";
+import { stateWord } from "./ui/AgentState";
 import { Button } from "./ui/Button";
 import { IconButton } from "./ui/IconButton";
 import { Menu } from "./ui/Menu";
@@ -50,15 +50,17 @@ export function sessionNames(agents: AgentSession[]): Record<SessionId, string> 
 }
 
 /** What a worktree's menu does. */
-type WorktreeAction = "base" | "forget" | "delete";
+type WorktreeAction = "start" | "base" | "forget" | "delete";
 
 /** The dialog the sidebar shows: a new worktree for a repo, or a worktree's menu action. */
-type OpenDialog = { kind: "new"; repo: Worktree } | { kind: WorktreeAction; worktree: Worktree };
+type OpenDialog =
+  | { kind: "new"; repo: Worktree }
+  | { kind: Exclude<WorktreeAction, "start">; worktree: Worktree };
 
 /**
- * Lists every tracked worktree under its repo with its agent sessions, adds repos, selects a
- * worktree, and starts an agent session in the selected one. Each repo's + adds a worktree, and
- * each worktree's menu changes its base branch, forgets it or deletes it.
+ * Lists every tracked worktree under its repo with its agent sessions, adds repos and selects a
+ * worktree. Each repo's + adds a worktree, and each worktree's menu starts Claude Code in it,
+ * changes its base branch, forgets it or deletes it.
  *
  * Above the list: New worktree, Search, Needs you and Profiles. Below it: each agent's account and
  * the appearance menu.
@@ -73,6 +75,7 @@ export function Sidebar({
   onStartAgent,
   onStartAgentAfterSetup,
   onShowAgent,
+  onFocusAgent,
   onDeleting,
   onRemoved,
   onWorktrees,
@@ -98,6 +101,8 @@ export function Sidebar({
   /** Starts an agent session in a new worktree once its setup script succeeds. */
   onStartAgentAfterSetup(worktree: string): void;
   onShowAgent(agent: AgentSession): void;
+  /** Shows the agent session's panel and puts focus in it. */
+  onFocusAgent(agent: AgentSession): void;
   /** A delete of the worktree started or ended. */
   onDeleting(worktree: Worktree, running: boolean): void;
   /** A worktree was forgotten or deleted, which ended its sessions. */
@@ -120,6 +125,10 @@ export function Sidebar({
   const [path, setPath] = useState("");
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
   const [query, setQuery] = useState("");
+  // The repos folded shut, by main worktree path. It survives a restart.
+  const [foldedRepos, setFoldedRepos] = useSetting<string[]>("grove.foldedRepos", [], isPathList);
+  // The worktrees whose agent session rows are folded shut, by path.
+  const [foldedSessions, setFoldedSessions] = useState<string[]>([]);
   const searchBox = useRef<HTMLInputElement>(null);
   // Each setup state the core sent since the sidebar opened. It is newer than any list.
   const [setups, setSetups] = useState<Record<string, SetupState>>({});
@@ -149,8 +158,10 @@ export function Sidebar({
       .catch((e: unknown) => setError(String(e)));
   }
 
-  function created(worktree: Worktree, startAgent: boolean) {
+  // `repo` opens, so the new worktree's selected row shows.
+  function created(repo: string, worktree: Worktree, startAgent: boolean) {
     setDialog(null);
+    setFoldedRepos((folded) => folded.filter((path) => path !== repo));
     refresh();
     onSelect(worktree.path);
     if (startAgent) onStartAgentAfterSetup(worktree.path);
@@ -185,6 +196,14 @@ export function Sidebar({
     setWorktrees(await bridge.listWorktrees());
   }
 
+  function toggleRepo(path: string) {
+    setFoldedRepos((folded) => toggled(folded, path));
+  }
+
+  function toggleSessions(path: string) {
+    setFoldedSessions((folded) => toggled(folded, path));
+  }
+
   const repos = byRepo(worktrees);
   // New worktree adds to the selected worktree's repo, or else to the first repo.
   const newWorktreeRepo = (repos.find((repo) => repo.some((w) => w.path === selected)) ?? repos[0])?.[0];
@@ -212,7 +231,6 @@ export function Sidebar({
   }, []);
 
   const names = sessionNames(agents);
-  const lineCounts = useLineCounts(bridge, worktrees);
   const shownRepos = repos.flatMap((repo) => {
     const shown = repo.filter((worktree) => matches(worktree, query));
     return shown.length > 0 ? [{ head: repo[0], worktrees: shown }] : [];
@@ -270,71 +288,79 @@ export function Sidebar({
           </Button>
         </form>
         {error && <p role="alert">{error}</p>}
-        {shownRepos.map(({ head, worktrees: repo }) => (
-          <section key={head.path} aria-label={folderName(head.path)}>
-            <div className="repo-head">
-              <h2>{folderName(head.path)}</h2>
-              <IconButton
-                icon={Plus}
-                size="xs"
-                label={`New worktree in ${folderName(head.path)}`}
-                title="New worktree"
-                onClick={() => setDialog({ kind: "new", repo: head })}
-              />
-            </div>
-            <ul>
-              {repo.map((worktree) => {
-                const own = agents.filter((agent) => agent.worktree === worktree.path);
-                const setup = setups[worktree.path] ?? worktree.setup;
-                const top = mostUrgent(own.map((agent) => agentStates[agent.session]));
-                return (
-                  <li key={worktree.path} title={worktree.path}>
-                    <div className="wt-row">
-                      <WorktreeRow
-                        worktree={worktree}
-                        selected={worktree.path === selected}
-                        state={top}
-                        setupRunning={setup?.state === "Running"}
-                        counts={lineCounts[worktree.path]}
-                        onClick={() => (own.length === 1 ? onShowAgent(own[0]) : onSelect(worktree.path))}
-                      />
-                      <WorktreeMenu worktree={worktree} onPick={(kind) => setDialog({ kind, worktree })} />
-                    </div>
-                    {setup && <SetupStatus setup={setup} />}
-                    {own.length > 1 && (
-                      <ul className="agent-sessions">
-                        {own.map((agent) => (
-                          <li key={agent.session}>
-                            <button
-                              className="session-row"
-                              aria-current={shownAgents.includes(agent.session)}
-                              onClick={() => onShowAgent(agent)}
-                            >
-                              <span className="session-name">{names[agent.session]}</span>{" "}
-                              {agentStates[agent.session] && <AgentState state={agentStates[agent.session]} />}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {/* `spawn_agent` does not wait for setup, so the button waits instead. */}
-                    {worktree.path === selected && setup?.state !== "Running" && (
-                      <Button
-                        className="start-agent"
-                        variant="ghost"
-                        size="xs"
-                        icon={Plus}
-                        onClick={() => onStartAgent(worktree.path)}
-                      >
-                        Start Claude Code
-                      </Button>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        ))}
+        {shownRepos.map(({ head, worktrees: repo }) => {
+          const name = folderName(head.path);
+          // Search shows the matching rows of a folded repo too, and keeps it from folding.
+          const searching = query.trim() !== "";
+          const open = searching || !foldedRepos.includes(head.path);
+          return (
+            <section key={head.path} aria-label={name}>
+              <div className="repo-folder">
+                <button
+                  className="repo-toggle"
+                  aria-expanded={open}
+                  disabled={searching}
+                  onClick={() => toggleRepo(head.path)}
+                >
+                  <span className="repo-name">{name}</span>
+                  {open ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+                </button>
+                <IconButton
+                  icon={Plus}
+                  size="xs"
+                  className="repo-add"
+                  label={`New worktree in ${name}`}
+                  title="New worktree"
+                  onClick={() => setDialog({ kind: "new", repo: head })}
+                />
+              </div>
+              {open && (
+                <ul>
+                  {repo.map((worktree) => {
+                    const own = agents.filter((agent) => agent.worktree === worktree.path);
+                    const setup = setups[worktree.path] ?? worktree.setup;
+                    const sessionsOpen = !foldedSessions.includes(worktree.path);
+                    return (
+                      <li key={worktree.path} title={worktree.path}>
+                        <WorktreeRow
+                          worktree={worktree}
+                          selected={worktree.path === selected}
+                          state={mostUrgent(own.map((agent) => agentStates[agent.session]))}
+                          setupRunning={setup?.state === "Running"}
+                          sessionsOpen={own.length > 0 ? sessionsOpen : null}
+                          onToggleSessions={() => toggleSessions(worktree.path)}
+                          onClick={() => (own.length === 1 ? onShowAgent(own[0]) : onSelect(worktree.path))}
+                          onPick={(kind) => {
+                            if (kind !== "start") return setDialog({ kind, worktree });
+                            onSelect(worktree.path);
+                            onStartAgent(worktree.path);
+                          }}
+                        />
+                        {setup && <SetupStatus setup={setup} />}
+                        {own.length > 0 && sessionsOpen && (
+                          <ul className="agent-sessions">
+                            {own.map((agent) => (
+                              <li key={agent.session}>
+                                <button
+                                  className="session-row"
+                                  aria-current={shownAgents.includes(agent.session)}
+                                  onClick={() => onFocusAgent(agent)}
+                                >
+                                  <span className="session-name">{names[agent.session]}</span>
+                                  <StatusDot state={agentStates[agent.session]} />
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          );
+        })}
       </div>
       <footer className="sidebar-foot" role="group" aria-label="Account and settings">
         <Accounts accounts={accounts} />
@@ -344,7 +370,7 @@ export function Sidebar({
         <NewWorktreeDialog
           bridge={bridge}
           repo={dialog.repo}
-          onCreated={created}
+          onCreated={(worktree, startAgent) => created(dialog.repo.path, worktree, startAgent)}
           onCancel={() => setDialog(null)}
         />
       )}
@@ -378,6 +404,14 @@ export function Sidebar({
       )}
     </aside>
   );
+}
+
+const isPathList = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((path) => typeof path === "string");
+
+/** `list` with `item` taken out if it was in, or put in if it was not. */
+function toggled(list: string[], item: string): string[] {
+  return list.includes(item) ? list.filter((other) => other !== item) : [...list, item];
 }
 
 /** Whether Search's `query` finds the worktree, by display name or branch, ignoring case. */
@@ -472,65 +506,6 @@ function AppearanceMenu({
   );
 }
 
-/** The lines a worktree's diff adds and removes. */
-interface LineCounts {
-  added: number;
-  removed: number;
-}
-
-/**
- * Each worktree's line counts, by path, from its whole-branch diff, or its Head diff when it has
- * no base branch. It asks for a worktree's counts again each time its diff may have changed.
- */
-function useLineCounts(bridge: Bridge, worktrees: Worktree[]): Record<string, LineCounts> {
-  const [counts, setCounts] = useState<Record<string, LineCounts>>({});
-  // Asks again only when a worktree comes, goes or changes its base branch, not on every list.
-  // The core sends no DiffChanged for a new base branch, so its name is part of the key.
-  const bases = JSON.stringify(worktrees.map((w) => [w.path, w.baseBranch]));
-
-  useEffect(() => {
-    const baseOf = new Map(
-      (JSON.parse(bases) as [string, string | null][]).map(([path, branch]): [string, DiffBase] => [
-        path,
-        branch ? "MergeBase" : "Head",
-      ]),
-    );
-    // Each worktree's latest ask, so an older answer that arrives late gets dropped.
-    const asks = new Map<string, number>();
-    let live = true;
-    function count(worktree: string) {
-      const base = baseOf.get(worktree);
-      if (!base) return;
-      const ask = (asks.get(worktree) ?? 0) + 1;
-      asks.set(worktree, ask);
-      bridge.diff(worktree, base).then(
-        (files) => {
-          if (!live || asks.get(worktree) !== ask) return;
-          const sum = (key: "added" | "removed") => files.reduce((total, file) => total + file[key], 0);
-          setCounts((known) => ({ ...known, [worktree]: { added: sum("added"), removed: sum("removed") } }));
-        },
-        // A diff fails when the worktree's folder is gone. The row then shows no counts.
-        () => {
-          if (!live || asks.get(worktree) !== ask) return;
-          setCounts((known) => {
-            const rest = { ...known };
-            delete rest[worktree];
-            return rest;
-          });
-        },
-      );
-    }
-    baseOf.forEach((_, worktree) => count(worktree));
-    const stop = bridge.onDiffChanged(count);
-    return () => {
-      live = false;
-      stop();
-    };
-  }, [bridge, bases]);
-
-  return counts;
-}
-
 // The attention queue's order, most urgent first.
 const URGENCY = ["Approval", "Question", "Failed", "Done", "Working", "Idle", "Exited"];
 
@@ -541,65 +516,72 @@ function mostUrgent(states: (State | undefined)[]): State | undefined {
 }
 
 /**
- * A worktree's row shows its name with its state chip, then its branch and line counts. The name
- * is the button's name, and the rest describes it.
+ * A worktree's row: its name, which fades out when cut, then on the right a chevron that folds its
+ * agent sessions, its menu and its status dot. The dot's word describes the row's button.
  */
 function WorktreeRow({
   worktree,
   selected,
   state,
   setupRunning,
-  counts,
+  sessionsOpen,
+  onToggleSessions,
   onClick,
+  onPick,
 }: {
   worktree: Worktree;
   selected: boolean;
   state: State | undefined;
   /** Shows "Setup running" in place of the state. */
   setupRunning: boolean;
-  counts: LineCounts | undefined;
+  /** Whether its agent session rows show. null when it has no agent session. */
+  sessionsOpen: boolean | null;
+  onToggleSessions(): void;
   onClick(): void;
+  onPick(action: WorktreeAction): void;
 }) {
-  const id = useId();
+  const dot = useId();
   return (
-    <button
-      className="wt-name"
-      aria-current={selected}
-      aria-labelledby={`${id}-title`}
-      aria-describedby={`${id}-state ${id}-meta`}
-      onClick={onClick}
-    >
-      <span className="wt-line">
-        <span id={`${id}-title`} className="wt-title">
+    <div className={selected ? "wt-row selected" : "wt-row"}>
+      <button className="wt-name" aria-current={selected} aria-describedby={dot} onClick={onClick}>
+        <span className="wt-title">
           {worktree.displayName}
           {worktree.isMain && " (main worktree)"}
         </span>
-        {(setupRunning || state) && (
-          <span id={`${id}-state`} className="wt-state">
-            {setupRunning ? (
-              <AgentState state={{ state: "Working" }} word="Setup running" />
-            ) : (
-              state && <AgentState state={state} />
-            )}
-          </span>
-        )}
-      </span>
-      <span id={`${id}-meta`} className="wt-meta">
-        <span className="wt-branch">{worktree.branch ?? "detached HEAD"}</span>
-        {counts && (counts.added > 0 || counts.removed > 0) && (
-          <>
-            <span className="add">+{counts.added}</span>
-            <span className="del">−{counts.removed}</span>
-          </>
-        )}
-      </span>
-    </button>
+      </button>
+      {sessionsOpen !== null && (
+        <IconButton
+          icon={sessionsOpen ? ChevronDown : ChevronRight}
+          size="xs"
+          className="wt-chevron"
+          label={`Sessions of ${worktree.displayName}`}
+          title={sessionsOpen ? "Hide agent sessions" : "Show agent sessions"}
+          aria-expanded={sessionsOpen}
+          onClick={onToggleSessions}
+        />
+      )}
+      <WorktreeMenu worktree={worktree} setupRunning={setupRunning} onPick={onPick} />
+      <StatusDot id={dot} state={state} word={setupRunning ? "Setup running" : undefined} />
+    </div>
   );
 }
 
 /**
- * A failed setup script. A running one shows as the chip on the worktree's row, and one that
- * succeeded shows nothing.
+ * A 7px dot in the color of the most urgent state, named by the state's word. Idle and Exited
+ * show none. A running setup script shows as Working, named `word`.
+ */
+function StatusDot({ id, state, word }: { id?: string; state: State | undefined; word?: string }) {
+  const shown = word ? "Working" : state && stateWord(state);
+  if (!shown || shown === "Idle" || shown === "Exited") return null;
+  const name = word ?? shown;
+  return (
+    <span id={id} role="img" aria-label={name} title={name} className={`status-dot status-${shown.toLowerCase()}`} />
+  );
+}
+
+/**
+ * A failed setup script. A running one shows as the Working dot on the worktree's row, named
+ * "Setup running", and one that succeeded shows nothing.
  */
 function SetupStatus({ setup }: { setup: SetupState }) {
   if (setup.state !== "Failed") return null;
@@ -607,15 +589,29 @@ function SetupStatus({ setup }: { setup: SetupState }) {
   return <p className="wt-setup state Failed">{`Setup failed: ${ended}`}</p>;
 }
 
-/** A worktree's menu. A main worktree is forgotten only with its repo, so its menu has neither. */
-function WorktreeMenu({ worktree, onPick }: { worktree: Worktree; onPick(action: WorktreeAction): void }) {
-  const items: [WorktreeAction, string][] = worktree.isMain
-    ? [["base", "Change base branch"]]
-    : [
-        ["base", "Change base branch"],
-        ["forget", "Forget"],
-        ["delete", "Delete"],
-      ];
+/**
+ * A worktree's menu. A main worktree is forgotten only with its repo, so its menu has neither.
+ * `spawn_agent` does not wait for setup, so Start Claude Code waits for it instead.
+ */
+function WorktreeMenu({
+  worktree,
+  setupRunning,
+  onPick,
+}: {
+  worktree: Worktree;
+  setupRunning: boolean;
+  onPick(action: WorktreeAction): void;
+}) {
+  const items: [WorktreeAction, string][] = [
+    ...(setupRunning ? [] : [["start", "Start Claude Code"] as [WorktreeAction, string]]),
+    ["base", "Change base branch"],
+    ...(worktree.isMain
+      ? []
+      : ([
+          ["forget", "Forget"],
+          ["delete", "Delete"],
+        ] as [WorktreeAction, string][])),
+  ];
   return (
     <Menu
       label={`Actions for ${worktree.displayName}`}

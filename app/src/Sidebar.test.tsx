@@ -1,12 +1,16 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 
 import { fakeBridge } from "./fakeBridge";
 import sidebarStyles from "./styles.css?raw";
 import agentStateStyles from "./ui/AgentState.css?raw";
 import { Sidebar } from "./Sidebar";
+import { menuItems } from "./testing";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+});
 
 const groveRepo = [
   { path: "/code/grove", branch: "main", isMain: true },
@@ -24,6 +28,7 @@ const noAgents = {
   onDeleting() {},
   onRemoved() {},
   onShowAgent() {},
+  onFocusAgent() {},
   waiting: 0,
   onJump() {},
   onOpenProfiles() {},
@@ -37,14 +42,12 @@ function addRepo(path: string) {
   fireEvent.click(screen.getByRole("button", { name: "Add repo" }));
 }
 
-// Each worktree row's name and its branch line, in order.
+// Each worktree row's name and the path its tooltip shows, in order.
 function listed(repo: HTMLElement) {
   return within(repo)
-    .getAllByRole("listitem")
-    .map((row) => {
-      const button = within(row).getAllByRole("button")[0];
-      return [document.getElementById(button.getAttribute("aria-labelledby")!)!.textContent, button.querySelector(".wt-meta")!.textContent];
-    });
+    .getAllByRole("button")
+    .filter((button) => button.classList.contains("wt-name"))
+    .map((button) => [button.textContent, button.closest("li")!.title]);
 }
 
 test("adding a repo lists its worktrees, main worktree first", async () => {
@@ -61,9 +64,9 @@ test("adding a repo lists its worktrees, main worktree first", async () => {
 
   const repo = await screen.findByRole("region", { name: "grove" });
   expect(listed(repo)).toEqual([
-    ["main (main worktree)", "main"],
-    ["feat-35-tauri-sidebar", "feat-35-tauri-sidebar"],
-    ["spike", "detached HEAD"],
+    ["main (main worktree)", "/code/grove"],
+    ["feat-35-tauri-sidebar", "/code/grove-wt/feat-35"],
+    ["spike", "/code/grove-wt/spike"],
   ]);
 });
 
@@ -84,9 +87,9 @@ test("opening the sidebar lists the worktrees the core already tracks", async ()
 
   const repo = await screen.findByRole("region", { name: "grove" });
   expect(listed(repo)).toEqual([
-    ["main (main worktree)", "main"],
-    ["feat-35-tauri-sidebar", "feat-35-tauri-sidebar"],
-    ["spike", "detached HEAD"],
+    ["main (main worktree)", "/code/grove"],
+    ["feat-35-tauri-sidebar", "/code/grove-wt/feat-35"],
+    ["spike", "/code/grove-wt/spike"],
   ]);
 });
 
@@ -135,24 +138,35 @@ test("session rows name the agent, numbered from the second, show the state with
       }}
     />,
   );
-  const rows = within(await screen.findByRole("region", { name: "grove" }))
-    .getAllByRole("button")
-    .filter((button) => button.classList.contains("session-row"));
+  await screen.findByRole("region", { name: "grove" });
+  const rows = sessionRows();
 
-  expect(rows.map((row) => row.textContent)).toEqual(["Claude Code Approval", "Codex ", "Claude Code 2 Working"]);
+  expect(rows.map((row) => row.textContent)).toEqual(["Claude Code", "Codex", "Claude Code 2"]);
+  expect(rows.map(dot)).toEqual(["Approval", null, "Working"]);
   const sidebar = screen.getByRole("complementary", { name: "Worktrees" });
   expect(sidebar.textContent).not.toMatch(/Hook|Protocol|773\d/);
   expect(sidebar.innerHTML).not.toMatch(/773\d/);
 });
-
 const feature = "/code/grove-wt/feat-35";
 
-// The button that selects a worktree. It holds the name, chip, branch and counts.
+// The button that selects a worktree. It holds the name.
 async function worktreeRow(name: string) {
   return await screen.findByRole("button", { name });
 }
 
-test("a worktree's row shows its most urgent session state", async () => {
+// The nested agent session rows, in order.
+function sessionRows() {
+  return screen.getAllByRole("button").filter((button) => button.classList.contains("session-row"));
+}
+
+// The state a row's status dot names, or null when it has none. A worktree's dot sits beside its
+// button, which the dot describes. A session's dot sits in its button.
+function dot(row: HTMLElement) {
+  const own = row.querySelector(".status-dot") ?? row.closest(".wt-row")?.querySelector(".status-dot");
+  return own?.getAttribute("aria-label") ?? null;
+}
+
+test("a worktree with a session in Approval and one Working shows the Approval dot", async () => {
   const bridge = fakeBridge({ "/code/grove": groveRepo });
   await bridge.addRepo("/code/grove");
 
@@ -174,12 +188,36 @@ test("a worktree's row shows its most urgent session state", async () => {
   );
 
   const row = await worktreeRow("feat-35-tauri-sidebar");
-  expect(row.querySelector(".ui-agent-state")?.textContent).toBe("Approval");
-  // A screen reader reads the state after the name.
-  expect(screen.getByRole("button", { name: "feat-35-tauri-sidebar", description: /^Approval/ })).toBe(row);
+  expect(dot(row)).toBe("Approval");
+  // The dot's word is its tooltip, and a screen reader reads it after the name.
+  expect(row.closest(".wt-row")!.querySelector(".status-dot")!.getAttribute("title")).toBe("Approval");
+  expect(screen.getByRole("button", { name: "feat-35-tauri-sidebar", description: "Approval" })).toBe(row);
 });
 
-test("a worktree with one session has no nested row, and clicking the worktree shows that session", async () => {
+test.each([
+  ["Idle", { state: "Idle" as const }, null],
+  ["Exited", { state: "Exited" as const }, null],
+  ["Done", { state: "Done" as const }, "Done"],
+  ["Failed", { state: "Failed" as const }, "Failed"],
+  ["Question", { state: "NeedsInput" as const, kind: "Question" as const }, "Question"],
+])("a worktree whose session is %s shows the dot %s", async (_, state, shown) => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  await bridge.addRepo("/code/grove");
+
+  render(
+    <Sidebar
+      bridge={bridge}
+      selected={null}
+      onSelect={() => {}}
+      {...noAgents}
+      agents={[{ session: "1", worktree: feature, agent: "Claude", panel: "1" }]}
+      agentStates={{ "1": { session: "1", ...state, source: "Protocol" } }}
+    />,
+  );
+
+  expect(dot(await worktreeRow("feat-35-tauri-sidebar"))).toBe(shown);
+});
+test("a worktree's one session nests under its row, and clicking the worktree shows that session", async () => {
   const bridge = fakeBridge({ "/code/grove": groveRepo });
   await bridge.addRepo("/code/grove");
   const only = { session: "1", worktree: feature, agent: "Claude" as const, panel: "1" };
@@ -198,86 +236,51 @@ test("a worktree with one session has no nested row, and clicking the worktree s
   );
   fireEvent.click(await worktreeRow("feat-35-tauri-sidebar"));
 
-  expect(screen.queryByRole("button", { name: /Claude Code/ })).toBeNull();
+  expect(sessionRows().map((row) => row.textContent)).toEqual(["Claude Code"]);
   expect(shown).toEqual([only]);
 });
-
-test("a worktree with two sessions keeps a nested row for each", async () => {
+test("two agent sessions in a worktree show as two nested rows, and clicking the second focuses it", async () => {
   const bridge = fakeBridge({ "/code/grove": groveRepo });
   await bridge.addRepo("/code/grove");
+  const agents = [
+    { session: "1", worktree: feature, agent: "Claude" as const, panel: "1" },
+    { session: "2", worktree: feature, agent: "Claude" as const, panel: "2" },
+  ];
+  const shown: unknown[] = [];
 
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} agents={agents} onFocusAgent={(agent) => shown.push(agent)} />);
+  await worktreeRow("feat-35-tauri-sidebar");
+
+  expect(sessionRows().map((row) => row.textContent)).toEqual(["Claude Code", "Claude Code 2"]);
+  fireEvent.click(sessionRows()[1]);
+  expect(shown).toEqual([agents[1]]);
+});
+
+test("a worktree's chevron folds and unfolds its session rows", async () => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  await bridge.addRepo("/code/grove");
   render(
     <Sidebar
       bridge={bridge}
       selected={null}
       onSelect={() => {}}
       {...noAgents}
-      agents={[
-        { session: "1", worktree: feature, agent: "Claude", panel: "1" },
-        { session: "2", worktree: feature, agent: "Claude", panel: "2" },
-      ]}
+      agents={[{ session: "1", worktree: feature, agent: "Claude", panel: "1" }]}
     />,
   );
   await worktreeRow("feat-35-tauri-sidebar");
+  const chevron = screen.getByRole("button", { name: "Sessions of feat-35-tauri-sidebar" });
+  expect(chevron.getAttribute("aria-expanded")).toBe("true");
 
-  expect(screen.getAllByRole("button", { name: /^Claude Code/ }).map((row) => row.textContent)).toEqual([
-    "Claude Code ",
-    "Claude Code 2 ",
-  ]);
+  fireEvent.click(chevron);
+  expect(chevron.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryAllByRole("button").filter((b) => b.classList.contains("session-row"))).toEqual([]);
+
+  fireEvent.click(chevron);
+  expect(sessionRows()).toHaveLength(1);
+  // Only a worktree with sessions has one.
+  expect(screen.queryByRole("button", { name: "Sessions of spike" })).toBeNull();
 });
-
-// A changed file in a fake diff, with `added` and `removed` lines.
-function change(path: string, added: number, removed: number) {
-  return {
-    file: { status: "Modified" as const, oldPath: path, newPath: path, binary: false, added, removed },
-    versions: { old: "", new: "", binary: false },
-  };
-}
-
-// The added and removed counts on a worktree's branch line, or null when it shows none.
-function counts(row: HTMLElement) {
-  const added = row.querySelector(".add")?.textContent;
-  const removed = row.querySelector(".del")?.textContent;
-  return added === undefined && removed === undefined ? null : [added, removed];
-}
-
-test("a worktree's counts are its whole-branch diff, and change when the diff does", async () => {
-  const diffs = {
-    [feature]: {
-      Head: [change("src/a.ts", 1, 1)],
-      MergeBase: [change("src/a.ts", 10, 2), change("src/b.ts", 5, 1)],
-    },
-  };
-  const bridge = fakeBridge({ "/code/grove": groveRepo }, diffs);
-  await bridge.addRepo("/code/grove");
-  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
-  const row = await worktreeRow("feat-35-tauri-sidebar");
-
-  await expect.poll(() => counts(row)).toEqual(["+15", "−3"]);
-
-  diffs[feature].MergeBase = [change("src/a.ts", 20, 4)];
-  act(() => bridge.diffChanged(feature));
-
-  await expect.poll(() => counts(row)).toEqual(["+20", "−4"]);
-});
-
-test("a worktree with no base branch counts its Head diff, and one with no changes shows no counts", async () => {
-  const repo = [
-    { path: "/code/grove", branch: "main", isMain: true },
-    { path: feature, branch: "feat-35-tauri-sidebar", isMain: false, baseBranch: null },
-  ];
-  const diffs = {
-    "/code/grove": { Head: [], MergeBase: [] },
-    [feature]: { Head: [change("src/a.ts", 7, 0)] },
-  };
-  const bridge = fakeBridge({ "/code/grove": repo }, diffs);
-  await bridge.addRepo("/code/grove");
-  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
-
-  await expect.poll(async () => counts(await worktreeRow("feat-35-tauri-sidebar"))).toEqual(["+7", "−0"]);
-  expect(counts(await worktreeRow("main (main worktree)"))).toBeNull();
-});
-
 test("a worktree whose setup script runs shows Setup running in place of its state", async () => {
   const repo = [
     { path: "/code/grove", branch: "main", isMain: true },
@@ -298,8 +301,8 @@ test("a worktree whose setup script runs shows Setup running in place of its sta
   );
   const row = await worktreeRow("feat-35-tauri-sidebar");
 
-  expect(row.querySelector(".ui-agent-state")?.textContent).toBe("Setup running");
-  expect(screen.getAllByText("Setup running")).toHaveLength(1);
+  expect(dot(row)).toBe("Setup running");
+  expect(screen.getAllByRole("img", { name: "Setup running" })).toHaveLength(1);
 });
 
 test("the top rows fit the sidebar's width, so each key hint shows in full", async () => {
@@ -316,9 +319,9 @@ test("the top rows fit the sidebar's width, so each key hint shows in full", asy
   expect([search.minWidth, search.width]).toEqual(["0px", "0px"]);
 });
 
-test("a long worktree name is cut with an ellipsis, and its chip is never cut", async () => {
+test("a long worktree name is cut and fades out, and its dot is never squeezed", async () => {
   const style = document.createElement("style");
-  style.textContent = sidebarStyles + agentStateStyles;
+  style.textContent = sidebarStyles;
   document.head.append(style);
   onTestFinished(() => style.remove());
   const bridge = fakeBridge({ "/code/grove": groveRepo });
@@ -336,19 +339,12 @@ test("a long worktree name is cut with an ellipsis, and its chip is never cut", 
   );
   const row = await worktreeRow("feat-35-tauri-sidebar");
   const title = getComputedStyle(row.querySelector(".wt-title")!);
-  const chip = getComputedStyle(row.querySelector(".wt-state")!);
-  const word = getComputedStyle(row.querySelector(".ui-agent-state")!);
+  const statusDot = getComputedStyle(row.closest(".wt-row")!.querySelector(".status-dot")!);
 
-  expect([title.overflow, title.textOverflow, title.whiteSpace, title.minWidth]).toEqual([
-    "hidden",
-    "ellipsis",
-    "nowrap",
-    "0px",
-  ]);
-  expect([chip.flexShrink, word.whiteSpace]).toEqual(["0", "nowrap"]);
+  expect([title.overflow, title.whiteSpace, title.minWidth]).toEqual(["hidden", "nowrap", "0px"]);
+  expect(statusDot.flexShrink).toBe("0");
 });
-
-test("Tab moves from a worktree's row to its menu, its session rows, then Start Claude Code", async () => {
+test("Tab moves from a worktree's row to its chevron, its menu, then its session rows", async () => {
   const bridge = fakeBridge({ "/code/grove": groveRepo });
   await bridge.addRepo("/code/grove");
 
@@ -370,33 +366,13 @@ test("Tab moves from a worktree's row to its menu, its session rows, then Start 
   // No element in the sidebar sets tabIndex, so the order of its buttons is the Tab order.
   expect(within(item).getAllByRole("button")).toEqual([
     row,
+    screen.getByRole("button", { name: "Sessions of feat-35-tauri-sidebar" }),
     screen.getByRole("button", { name: "Actions for feat-35-tauri-sidebar" }),
     screen.getByRole("button", { name: "Claude Code" }),
     screen.getByRole("button", { name: "Codex" }),
-    screen.getByRole("button", { name: "Start Claude Code" }),
   ]);
   expect(item.querySelector("[tabindex]")).toBeNull();
 });
-
-test("a worktree's counts are asked again when its base branch changes to another branch", async () => {
-  const diffs = { [feature]: { MergeBase: [change("src/a.ts", 10, 2)] } };
-  const bridge = fakeBridge({ "/code/grove": groveRepo }, diffs);
-  await bridge.addRepo("/code/grove");
-  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
-  const row = await worktreeRow("feat-35-tauri-sidebar");
-  await expect.poll(() => counts(row)).toEqual(["+10", "−2"]);
-
-  // The core sends no DiffChanged for a new base, so only the change of base can ask again.
-  diffs[feature].MergeBase = [change("src/a.ts", 3, 1)];
-  fireEvent.click(screen.getByRole("button", { name: "Actions for feat-35-tauri-sidebar" }));
-  fireEvent.click(screen.getByRole("menuitem", { name: "Change base branch" }));
-  const dialog = await screen.findByRole("dialog", { name: "Change base branch" });
-  fireEvent.change(within(dialog).getByLabelText("Base branch"), { target: { value: "feat-35-tauri-sidebar" } });
-  fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
-
-  await expect.poll(() => counts(row)).toEqual(["+3", "−1"]);
-});
-
 // The sidebar's frame: the rows at its top and its footer (#29).
 
 const siteRepo = [
@@ -573,4 +549,148 @@ test("Settings in the footer opens the appearance menu, which changes palette an
     { theme: "system", palette: "modern" },
     { theme: "light", palette: "default" },
   ]);
+});
+
+// The tree: repo folders, worktree rows and nested agent sessions (#32).
+
+function folder(name: string) {
+  return screen.getByRole("button", { name });
+}
+
+test("a repo folds and unfolds, and its fold state survives a remount", async () => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  await bridge.addRepo("/code/grove");
+  const { unmount } = render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await worktreeRow("feat-35-tauri-sidebar");
+  expect(folder("grove").getAttribute("aria-expanded")).toBe("true");
+
+  fireEvent.click(folder("grove"));
+
+  expect(folder("grove").getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByRole("button", { name: "feat-35-tauri-sidebar" })).toBeNull();
+  unmount();
+
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await screen.findByRole("region", { name: "grove" });
+  expect(folder("grove").getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByRole("button", { name: "feat-35-tauri-sidebar" })).toBeNull();
+
+  fireEvent.click(folder("grove"));
+  expect(await worktreeRow("feat-35-tauri-sidebar")).toBeTruthy();
+});
+
+test("Search shows the matching rows of a folded repo", async () => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  await bridge.addRepo("/code/grove");
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await worktreeRow("feat-35-tauri-sidebar");
+  fireEvent.click(folder("grove"));
+
+  search("tauri");
+
+  expect(rowNames()).toEqual(["feat-35-tauri-sidebar"]);
+});
+
+test("a repo folder cannot fold while Search has text, since Search keeps it open", async () => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  await bridge.addRepo("/code/grove");
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await worktreeRow("feat-35-tauri-sidebar");
+  search("tauri");
+
+  fireEvent.click(folder("grove"));
+  search("");
+
+  expect(folder("grove").getAttribute("aria-expanded")).toBe("true");
+  expect(rowNames()).toContain("feat-35-tauri-sidebar");
+});
+
+test("a repo folder's + opens the new worktree dialog for that repo", async () => {
+  const bridge = await twoRepos();
+  const asked = vi.spyOn(bridge, "suggestProfile");
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await worktreeRow("Terminal resize");
+
+  fireEvent.click(screen.getByRole("button", { name: "New worktree in site" }));
+
+  await screen.findByRole("dialog", { name: "New worktree" });
+  expect(asked).toHaveBeenLastCalledWith("/code/site");
+});
+
+
+test("the menu keeps every action: Start Claude Code, Change base branch, Forget and Delete", async () => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  await bridge.addRepo("/code/grove");
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await worktreeRow("feat-35-tauri-sidebar");
+
+  expect(menuItems("feat-35-tauri-sidebar")).toEqual(["Start Claude Code", "Change base branch", "Forget", "Delete"]);
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+  expect(menuItems("main")).toEqual(["Start Claude Code", "Change base branch"]);
+});
+
+test("Start Claude Code in a worktree's menu selects the worktree and starts a session in it", async () => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  await bridge.addRepo("/code/grove");
+  const selected: (string | null)[] = [];
+  const started: string[] = [];
+  render(
+    <Sidebar
+      bridge={bridge}
+      selected={null}
+      onSelect={(path) => selected.push(path)}
+      {...noAgents}
+      onStartAgent={(path) => started.push(path)}
+    />,
+  );
+  await worktreeRow("feat-35-tauri-sidebar");
+
+  menuItems("feat-35-tauri-sidebar");
+  fireEvent.click(screen.getByRole("menuitem", { name: "Start Claude Code" }));
+
+  expect(selected).toEqual([feature]);
+  expect(started).toEqual([feature]);
+});
+
+test("a worktree whose setup script runs has no Start Claude Code in its menu", async () => {
+  const repo = [
+    { path: "/code/grove", branch: "main", isMain: true },
+    { path: feature, branch: "feat-35-tauri-sidebar", isMain: false, setup: { state: "Running" as const } },
+  ];
+  const bridge = fakeBridge({ "/code/grove": repo });
+  await bridge.addRepo("/code/grove");
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await worktreeRow("feat-35-tauri-sidebar");
+
+  expect(menuItems("feat-35-tauri-sidebar")).toEqual(["Change base branch", "Forget", "Delete"]);
+});
+
+test("the selected worktree's row is marked, and a Working dot pulses", async () => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  await bridge.addRepo("/code/grove");
+  render(
+    <Sidebar
+      bridge={bridge}
+      selected={feature}
+      onSelect={() => {}}
+      {...noAgents}
+      agents={[{ session: "1", worktree: feature, agent: "Claude", panel: "1" }]}
+      agentStates={{ "1": { session: "1", state: "Working", source: "Protocol" } }}
+    />,
+  );
+  const row = await worktreeRow("feat-35-tauri-sidebar");
+
+  expect(row.closest(".wt-row")!.classList.contains("selected")).toBe(true);
+  expect(row.closest(".wt-row")!.querySelector(".status-dot")!.classList.contains("status-working")).toBe(true);
+  expect(sidebarStyles).toMatch(/\.status-working\s*\{[^}]*animation/);
+  expect(sidebarStyles).toMatch(/prefers-reduced-motion[\s\S]*\.status-working[^}]*animation: none/);
+});
+
+test("the status dot pulses with the Working icon's one keyframe and timing", () => {
+  const animation = (css: string, selector: string) =>
+    css.match(new RegExp(`${selector}\\s*\\{[^}]*?animation: ([^;]+);`))?.[1];
+
+  expect(animation(sidebarStyles, "\\.status-working")).toBe("ui-agent-state-pulse var(--working-pulse)");
+  expect(animation(agentStateStyles, "\\.ui-agent-state-working svg")).toBe("ui-agent-state-pulse var(--working-pulse)");
+  expect(sidebarStyles).not.toMatch(/@keyframes status-pulse/);
 });

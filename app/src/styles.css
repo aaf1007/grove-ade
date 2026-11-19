@@ -386,58 +386,207 @@ svg {
   padding: var(--space-6);
 }
 
-.sidebar h2 {
-  margin: var(--space-12) var(--space-6) var(--space-4);
-  color: var(--faint);
-  font-size: var(--text-label-size);
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
 .sidebar ul {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.sidebar .wt-name,
-.sidebar .session-row {
-  display: block;
-  width: 100%;
-  padding: var(--space-6) var(--space-8);
-  overflow: hidden;
+/* A repo: its name and a chevron that folds it, then a + that shows on hover. */
+.repo-folder {
+  display: flex;
+  align-items: center;
+  height: var(--control-md);
+  margin-top: var(--space-10);
+  padding-right: var(--space-6);
+  border-radius: var(--radius-lg);
+}
+
+.repo-folder:hover {
+  background: var(--hover);
+}
+
+.repo-toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  height: 100%;
+  padding: 0 var(--space-10);
   border: 0;
-  border-radius: var(--radius-md);
   background: none;
+  font-weight: 500;
   text-align: left;
+}
+
+.repo-name {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.sidebar .wt-name:hover,
+.repo-toggle svg {
+  color: var(--muted);
+}
+
+/* Search keeps every repo open, so the toggle rests without looking greyed out. */
+.repo-toggle:disabled {
+  color: inherit;
+  cursor: default;
+}
+
+.repo-folder .repo-add {
+  opacity: 0;
+}
+
+.repo-folder:hover .repo-add,
+.repo-folder .repo-add:focus-visible {
+  opacity: 1;
+}
+
+/* A worktree's row: its name, then its chevron, its menu and its status dot. */
+.wt-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 34px;
+  padding-right: var(--space-8);
+  border-radius: var(--radius-lg);
+}
+
+.wt-row:hover {
+  background: var(--hover);
+}
+
+.wt-row.selected {
+  background: var(--row-selected);
+}
+
+:root[data-theme="light"] .wt-row.selected {
+  box-shadow: inset var(--ring);
+}
+
+.sidebar .wt-name {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  height: 100%;
+  padding: 0 var(--space-8) 0 var(--space-10);
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: none;
+  text-align: left;
+}
+
+.wt-row.selected .wt-name {
+  color: var(--fg);
+}
+
+/* The name is cut and fades out at the right edge. */
+.wt-title {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  mask-image: linear-gradient(to right, var(--fg) 85%, transparent);
+}
+
+.wt-row .wt-chevron svg {
+  color: var(--muted);
+}
+
+/* The menu shows on hover, on the selected row, and while it has focus. */
+.wt-row .ui-menu {
+  opacity: 0;
+}
+
+.wt-row:hover .ui-menu,
+.wt-row.selected .ui-menu,
+.wt-row .ui-menu:focus-within {
+  opacity: 1;
+}
+
+/* The most urgent state as a 7px dot. Working pulses as the Working icon does. */
+.status-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-left: var(--space-4);
+  border-radius: var(--radius-full);
+}
+
+.status-working {
+  background: var(--working);
+  animation: ui-agent-state-pulse var(--working-pulse);
+}
+
+.status-approval {
+  background: var(--needs);
+}
+
+.status-question {
+  background: var(--question);
+}
+
+.status-failed {
+  background: var(--failed);
+}
+
+.status-done {
+  background: var(--done);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-working {
+    animation: none;
+  }
+}
+
+/* An agent session nests under its worktree, with a tree line that runs down from the worktree's
+   row and turns into the session's row with a rounded corner. */
+.sidebar .session-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  width: 100%;
+  height: 34px;
+  padding: 0 var(--space-8) 0 calc(var(--space-32) + var(--space-8));
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: none;
+  color: var(--muted);
+  text-align: left;
+}
+
 .sidebar .session-row:hover {
   background: var(--hover);
 }
 
-.sidebar .wt-name[aria-current="true"],
 .sidebar .session-row[aria-current="true"] {
-  background: var(--raised);
-}
-
-/* A session's name, then its state on the right. */
-.sidebar .session-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  padding: var(--space-4) var(--space-8) var(--space-4) var(--space-24);
-  color: var(--muted);
-  font-size: var(--text-meta-size);
-}
-
-.sidebar .session-row[aria-current="true"] {
-  background: none;
   color: var(--fg);
+}
+
+.session-row::before {
+  position: absolute;
+  top: -17px;
+  bottom: 50%;
+  left: 18px;
+  width: 12px;
+  border-bottom: 1.5px solid var(--line);
+  border-left: 1.5px solid var(--line);
+  border-bottom-left-radius: var(--radius-lg);
+  content: "";
+}
+
+.agent-sessions li:not(:last-child) .session-row::after {
+  position: absolute;
+  top: 50%;
+  bottom: -17px;
+  left: 18px;
+  border-left: 1.5px solid var(--line);
+  content: "";
 }
 
 .session-name {
@@ -445,77 +594,7 @@ svg {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.sidebar .start-agent {
-  margin-left: var(--space-16);
-}
-
-.repo-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin: var(--space-12) var(--space-2) var(--space-4) var(--space-6);
-}
-
-.sidebar .repo-head h2 {
-  margin: 0;
-}
-
-/* A worktree's row, then its menu. */
-.wt-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-/* Two lines: the name with its state chip, then the branch with its line counts. */
-.sidebar .wt-row > .wt-name {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.wt-line,
-.wt-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-  min-width: 0;
-}
-
-.wt-meta {
-  color: var(--faint);
-  font-size: var(--text-meta-size);
-}
-
-/* The name and the branch get cut first. The chip and the counts are never cut. */
-.wt-title,
-.wt-branch {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.wt-title {
-  flex: 1;
-}
-
-.wt-state,
-.wt-meta .add,
-.wt-meta .del {
-  flex: none;
-}
-
-.wt-meta .add {
-  color: var(--add);
-}
-
-.wt-meta .del {
-  color: var(--del);
 }
 
 .wt-setup {

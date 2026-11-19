@@ -87,10 +87,17 @@ async function click(element: HTMLElement) {
   await act(async () => fireEvent.click(element));
 }
 
+// Starts Claude Code from the selected worktree's menu.
+async function startClaudeCode() {
+  const row = screen.getAllByRole("button", { current: true }).find((button) => button.classList.contains("wt-name"))!;
+  fireEvent.click(within(row.closest(".wt-row") as HTMLElement).getByRole("button", { name: /^Actions for / }));
+  await click(screen.getByRole("menuitem", { name: "Start Claude Code" }));
+}
+
 // Starts Claude Code in feat-36, then splits its panel, which starts Codex beside it.
 async function twoPanels(bridge: FakeBridge) {
   await select("feat-36");
-  await click(screen.getByRole("button", { name: "Start Claude Code" }));
+  await startClaudeCode();
   await click(within(panel("0")).getByRole("button", { name: "Split" }));
   await screen.findByRole("region", { name: "Panel 1" });
   expect(bridge.spawnedAgents.map((s) => s.agent)).toEqual(["Claude", "Codex"]);
@@ -252,7 +259,7 @@ test("after a window reload a panel switched to terminal mode opens in terminal 
   const bridge = await trackedBridge();
   const { unmount } = render(<App bridge={bridge} />);
   await select("feat-36");
-  await click(screen.getByRole("button", { name: "Start Claude Code" }));
+  await startClaudeCode();
   await click(within(panel("0")).getByRole("button", { name: "Terminal" }));
   unmount();
   const subscribes = bridge.subscribed.length;
@@ -536,7 +543,7 @@ test("no agent session starts in a worktree whose layout does not load", async (
   render(<App bridge={bridge} />);
   await select("feat-36");
 
-  await click(screen.getByRole("button", { name: "Start Claude Code" }));
+  await startClaudeCode();
 
   expect(bridge.spawnedAgents).toEqual([]);
   expect(screen.getByRole("alert").textContent).toBe(
