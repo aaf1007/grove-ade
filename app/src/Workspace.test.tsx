@@ -581,7 +581,7 @@ test("a jump while a session starts gives both sessions a panel", async () => {
   await select("feat-36");
   await click(screen.getByRole("button", { name: "Start session" }));
 
-  await click(screen.getByRole("button", { name: /1 waiting/ }));
+  await click(screen.getByRole("button", { name: "Needs you 1" }));
   await act(async () => finishSpawn());
 
   expect(shownPanels()).toEqual([`Panel ${waiting}`, "Panel 1"]);
