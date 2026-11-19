@@ -15,7 +15,7 @@ import type {
 } from "./bridge";
 import { ChatPanel } from "./ChatPanel";
 import { DetailsCard, type FocusedSession, type RunTab } from "./DetailsCard";
-import { DiffView } from "./DiffView";
+import { type DiffOpened, DiffView } from "./DiffView";
 import { FilesPanel } from "./FilesPanel";
 import { useLayout } from "./layout";
 import { PanelTabs, tabId } from "./PanelTabs";
@@ -110,6 +110,8 @@ export function App({ bridge }: { bridge: Bridge }) {
     Record<SessionId, { mode?: Mode; model?: ModelChoice | null }>
   >({});
   const [detailsOpen, setDetailsOpen] = useState(false);
+  // The base the Details card last asked each worktree's Diff to open on.
+  const [diffOpened, setDiffOpened] = useState<Record<string, DiffOpened>>({});
   // The attention queue, head first, as the core last listed it.
   const [attentionQueue, setAttentionQueue] = useState<AttentionEntry[]>([]);
   // The last jump's session, and a count that grows with each jump so its panel takes focus again.
@@ -626,7 +628,14 @@ export function App({ bridge }: { bridge: Bridge }) {
                 runs={runs[selected] ?? []}
                 session={detailsSession}
                 onStartRun={(name) => void startRun(selected, name)}
-                onOpenDiff={() => open(selected, "Diff")}
+                onOpenDiff={(base) => {
+                  setDiffOpened((asks) => ({
+                    ...asks,
+                    [selected]: { base, request: (asks[selected]?.request ?? 0) + 1 },
+                  }));
+                  open(selected, "Diff");
+                }}
+                onOpenProfile={() => open(selected, "Profile")}
                 onClose={() => setDetailsOpen(false)}
               />
             )}
@@ -744,6 +753,7 @@ export function App({ bridge }: { bridge: Bridge }) {
                   bridge={bridge}
                   worktree={selected}
                   agentStates={agentStates}
+                  opened={diffOpened[selected]}
                   reveal={diffReveal?.worktree === selected ? diffReveal.path : null}
                   onRevealed={() => setDiffReveal(null)}
                   onSent={(session) => {

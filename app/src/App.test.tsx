@@ -9,9 +9,15 @@ import appStyles from "./styles.css?raw";
 
 // The diff view and xterm.js need a real browser. These tests cover only which panels exist and
 // which ones are shown. ChatPanel.test.tsx covers the agent panel itself.
-// DiffView.test.tsx covers the Diff panel. The stub only says which file the app asked it to show.
+// DiffView.test.tsx covers the Diff panel. The stub only says which base it was last opened on,
+// and which file the app asked it to show.
 vi.mock("./DiffView", () => ({
-  DiffView: ({ reveal }: { reveal?: string | null }) => reveal && <p>Diff on {reveal}</p>,
+  DiffView: ({ opened, reveal }: { opened?: { base: string; request: number }; reveal?: string | null }) => (
+    <>
+      <p>Diff opened on {opened ? `${opened.base} ${opened.request}` : "nothing"}</p>
+      {reveal && <p>Diff on {reveal}</p>}
+    </>
+  ),
 }));
 // FilesPanel.test.tsx covers the Files panel. The stub only says which worktree it shows.
 vi.mock("./FilesPanel", () => ({
@@ -1683,7 +1689,7 @@ test("Start and Stop in the Details card's scripts row follow the run session's 
   render(<App bridge={bridge} />);
   await select("feat-36");
   await clickButton("Details");
-  const dev = () => within(detailsCard()).getByRole("listitem", { name: "dev" });
+  const dev = () => within(detailsCard()).getByRole("listitem", { name: "Run dev" });
 
   await act(async () => fireEvent.click(within(dev()).getByRole("button", { name: "Start dev" })));
 
@@ -1709,10 +1715,63 @@ test("the Details card keeps the port of a running run session after the setting
   await act(async () => bridge.setRepoOverridesText(main, `[[run_session]]\nname = "web"\ncommand = "pnpm dev"\n`));
   await clickButton("Details");
 
-  const dev = within(detailsCard()).getByRole("listitem", { name: "dev" });
+  const dev = within(detailsCard()).getByRole("listitem", { name: "Run dev" });
   expect(within(dev).getByRole("button", { name: "Stop dev" })).toBeTruthy();
-  const servers = within(within(detailsCard()).getByRole("group", { name: "Servers" })).getAllByRole("listitem");
-  expect(servers.map((item) => item.textContent)).toEqual(["devlocalhost:5173"]);
+  const servers = within(detailsCard()).getByRole("listitem", { name: "Servers" });
+  expect(within(servers).getByText(":5173 dev")).toBeTruthy();
+});
+
+test("the Details card's Changes row opens the Diff panel, and the panel area if it was closed", async () => {
+  const bridge = fakeBridge(
+    {
+      [main]: [
+        { path: main, branch: "main", isMain: true },
+        { path: feature, branch: "feat-36", isMain: false },
+      ],
+    },
+    { [feature]: { Head: [], MergeBase: [] } },
+  );
+  await bridge.addRepo(main);
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  fireEvent.click(screen.getByRole("button", { name: "Panel area" }));
+  await clickButton("Details");
+
+  await act(async () => fireEvent.click(within(detailsCard()).getByRole("button", { name: /Changes/ })));
+
+  expect(screen.getByRole("region", { name: "Panel area" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Diff", selected: true })).toBeTruthy();
+  expect(screen.getByText("Diff opened on MergeBase 1")).toBeTruthy();
+
+  // Each click asks again, so a Diff the user switched to HEAD goes back to the merge base.
+  await act(async () => fireEvent.click(within(detailsCard()).getByRole("button", { name: /Changes/ })));
+  expect(screen.getByText("Diff opened on MergeBase 2")).toBeTruthy();
+});
+
+test("the Details card's Changes row opens the Diff on HEAD for a worktree with no base branch", async () => {
+  const bridge = fakeBridge(
+    { [main]: [{ path: main, branch: "main", isMain: true, baseBranch: null }] },
+    { [main]: { Head: [], MergeBase: [] } },
+  );
+  await bridge.addRepo(main);
+  render(<App bridge={bridge} />);
+  await select("main (main worktree)");
+  await clickButton("Details");
+
+  await act(async () => fireEvent.click(within(detailsCard()).getByRole("button", { name: /Changes/ })));
+
+  expect(screen.getByText("Diff opened on Head 1")).toBeTruthy();
+});
+
+test("the Details card's Add run session row opens the Profile panel", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  await clickButton("Details");
+
+  await act(async () => fireEvent.click(within(detailsCard()).getByRole("button", { name: "Add run session" })));
+
+  expect(screen.getByRole("tab", { name: "Profile", selected: true })).toBeTruthy();
 });
 
 test("a run session's tab shows at once while its port is still being read", async () => {
@@ -1736,9 +1795,9 @@ test("the Details card's session row shows the worktree's agent session and wher
 
   await clickButton("Details");
 
-  const session = within(detailsCard()).getByRole("group", { name: "Session" });
+  const session = within(detailsCard()).getByRole("listitem", { name: "Session" });
   expect(within(session).getByText("Claude Code")).toBeTruthy();
-  expect(within(session).getByText("State from Protocol")).toBeTruthy();
+  expect(session.title).toBe("State from Protocol");
 });
 
 test("the Details card shows the new session of a panel that changed agent while it had focus", async () => {
@@ -1761,7 +1820,7 @@ test("the Details card shows the new session of a panel that changed agent while
   await act(async () => fireEvent.click(within(second).getByRole("button", { name: "Switch to Codex" })));
   await clickButton("Details");
 
-  const session = within(detailsCard()).getByRole("group", { name: "Session" });
+  const session = within(detailsCard()).getByRole("listitem", { name: "Session" });
   expect(within(session).getByText("Codex")).toBeTruthy();
 });
 

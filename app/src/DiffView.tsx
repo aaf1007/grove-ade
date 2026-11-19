@@ -17,6 +17,7 @@ export function DiffView({
   worktree,
   agentStates,
   onSent,
+  opened,
   reveal = null,
   onRevealed,
 }: {
@@ -26,12 +27,19 @@ export function DiffView({
   agentStates: Record<SessionId, AgentStateChanged>;
   /** Called with the agent session a review batch went to. */
   onSent(session: SessionId): void;
+  /** The base the Diff was last asked to open on. Each new request switches to its base. */
+  opened?: DiffOpened;
   /** A file to show on the HEAD base, by its path in the worktree. */
   reveal?: string | null;
   /** Called once the view took `reveal`, so the next request for the same file shows it again. */
   onRevealed?: () => void;
 }) {
-  const [base, setBase] = useState<DiffBase>("Head");
+  const [base, setBase] = useState<DiffBase>(opened?.base ?? "Head");
+  const [appliedRequest, setAppliedRequest] = useState(opened?.request);
+  if (opened && opened.request !== appliedRequest) {
+    setAppliedRequest(opened.request);
+    setBase(opened.base);
+  }
   // The files keep the base they came from, so their versions come from that same base.
   const [diff, setDiff] = useState<{ base: DiffBase; files: FileDiff[]; error?: string }>({
     base,
@@ -245,6 +253,12 @@ export function DiffView({
 type Shown = { path: string } & ({ versions: FileVersions } | { error: string });
 
 /** A comment being typed. `draft` tells it from the one before, so a new pick starts afresh. */
+/** An ask to show the Diff on `base`. A new `request` number asks again. */
+export interface DiffOpened {
+  base: DiffBase;
+  request: number;
+}
+
 interface Draft {
   draft: number;
   path: string;
