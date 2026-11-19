@@ -53,6 +53,7 @@ export function DeclinedCall({ call, worktree }: { call: ToolCall; worktree: str
     <div className="tool declined">
       <Ban aria-hidden="true" />
       <span className="tool-label">{what}</span>
+      <Clock time={call.time} />
     </div>
   );
 }

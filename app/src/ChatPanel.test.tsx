@@ -977,7 +977,7 @@ test.each<[string, Reply, string]>([
 });
 
 test("two approvals from one run each answer by button, one after the other", async () => {
-  const lint: AgentMessage = { type: "ToolCall", id: "toolu_02", tool: "Bash", input: { command: "npm run lint" } };
+  const lint: FakeMessage = { type: "ToolCall", id: "toolu_02", tool: "Bash", input: { command: "npm run lint" } };
   const bridge = await asked(bashCall, lint, approval);
   fireEvent.click(within(approvalLine()).getByRole("button", { name: "Approve" }));
   await settle();
@@ -1014,6 +1014,19 @@ test("a declined call shows as declined, not as a failed call, with the message 
   expect(screen.getAllByText(/use vitest instead/).map((el) => el.textContent)).toEqual([
     "Declined: use vitest instead",
   ]);
+});
+
+test("a declined call keeps its call's clock time", async () => {
+  const at = new Date(2026, 10, 19, 9, 5).getTime();
+  const bridge = await asked({ ...bashCall, timeUnixMs: at }, approval);
+  fireEvent.change(composer(), { target: { value: "no" } });
+  fireEvent.keyDown(composer(), { key: "Enter" });
+  await settle();
+
+  act(() => bridge.messages("0", { type: "ToolResult", id: "toolu_01", output: "no", isError: true }));
+  nextFrame();
+
+  expect(document.querySelector(".tool.declined .tool-time")?.textContent).toBe("09:05");
 });
 
 test("the approval's menu allows the tool for the rest of the session", async () => {
