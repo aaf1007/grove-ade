@@ -1,3 +1,4 @@
+import { Asterisk, Hexagon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import type { Agent, Bridge, Model, SessionId } from "./bridge";
@@ -73,15 +74,27 @@ function effortFor(model: Model, wanted: string | null): string | null {
   return model.efforts.includes(BUILT_IN_EFFORT) ? BUILT_IN_EFFORT : (model.efforts[0] ?? null);
 }
 
-/** What the picker's button says about the model, such as "Opus 5.5 · high effort". */
-function describeChoice(models: Model[] | null, choice: ModelChoice | null): string {
-  if (models === null) return "Loading models";
-  if (!choice) return "Agent's default model";
-  return choice.effort ? `${choice.model.name} · ${choice.effort} effort` : choice.model.name;
+/** What the picker's button says about the model: its name, and its effort when it takes one. */
+function describeChoice(models: Model[] | null, choice: ModelChoice | null): { name: string; effort: string | null } {
+  if (models === null) return { name: "Loading models", effort: null };
+  if (!choice) return { name: "Agent's default model", effort: null };
+  return { name: choice.model.name, effort: choice.effort };
+}
+
+const MARKS: Record<Agent, typeof Asterisk> = { Claude: Asterisk, Codex: Hexagon };
+
+/** The agent's mark, in the agent's color. Its title names the agent. */
+export function AgentMark({ agent }: { agent: Agent }) {
+  const Mark = MARKS[agent];
+  return (
+    <span className={`agent-mark ${agent}`} role="img" aria-label={AGENT_NAMES[agent]} title={AGENT_NAMES[agent]}>
+      <Mark aria-hidden="true" />
+    </span>
+  );
 }
 
 /**
- * The button under the composer and its popover: the agent, until `agentLocked`, then the model
+ * The button in the composer's footer, with the agent's mark, the model and its effort, and its popover: the agent, until `agentLocked`, then the model
  * and its effort. Picking an agent or a model closes it. Picking an effort leaves it open.
  */
 export function Picker({
@@ -122,6 +135,8 @@ export function Picker({
     if (picked !== agent && !agentLocked) onAgent(picked);
   }
 
+  const { name, effort } = describeChoice(models, choice);
+
   function pickModel(model: Model) {
     setOpen(false);
     onChoose({ model, effort: effortFor(model, choice?.effort ?? null) });
@@ -136,8 +151,14 @@ export function Picker({
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
-        <b>{AGENT_NAMES[agent]}</b>
-        {describeChoice(models, choice)}
+        <AgentMark agent={agent} />
+        <b>{name}</b>
+        {effort && (
+          <>
+            {" "}
+            <span className="picker-effort">{effort}</span>
+          </>
+        )}
       </button>
       {open && (
         <div className="pop picker-pop" role="dialog" aria-label="Agent and model">

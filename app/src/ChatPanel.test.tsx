@@ -120,6 +120,10 @@ function composer() {
   return screen.getByRole("textbox", { name: "Message" });
 }
 
+function strip() {
+  return screen.getByRole("group", { name: "Branch and profile" });
+}
+
 test("a stream of deltas renders at most once per animation frame and ends with the full text", async () => {
   const bridge = await started();
   let commits = 0;
@@ -769,15 +773,50 @@ test("a message the agent never got says so, with its text", async () => {
   expect(card.textContent).toContain("add a test");
 });
 
-test("the header shows the agent, its state with the source, and Chat mode", async () => {
+test("the header shows the agent and its state with the source, and the strip shows Chat mode", async () => {
   const bridge = await started();
   await shownPanel(bridge, { state: working("Working") });
 
   expect(document.querySelector(".pane-head b")!.textContent).toBe("Claude Code");
   expect(document.querySelector(".pane-head .ui-agent-state")!.textContent).toBe("Working · Protocol");
-  const mode = screen.getByRole("group", { name: "Mode" });
+  expect(within(document.querySelector<HTMLElement>(".pane-head")!).queryByRole("group", { name: "Mode" })).toBeNull();
+  const mode = within(strip()).getByRole("group", { name: "Mode" });
   expect(within(mode).getByRole("button", { name: "Chat" }).getAttribute("aria-pressed")).toBe("true");
   expect((within(mode).getByRole("button", { name: "Terminal" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test("the strip under the composer shows the worktree's branch and the repo's profile", async () => {
+  const bridge = await started();
+  await bridge.setRepoProfile(worktree, "Rust crate");
+  await shownPanel(bridge);
+
+  expect(strip().textContent).toContain("feat-116");
+  expect(strip().textContent).toContain("Rust crate");
+
+  await act(() => bridge.setRepoProfile(worktree, "Next.js app"));
+  expect(strip().textContent).toContain("Next.js app");
+  await act(() => bridge.setRepoProfile(worktree, null));
+  expect(strip().textContent).not.toMatch(/Rust crate|Next\.js app/);
+});
+
+test("the composer's footer shows the agent's mark, then the model and its effort, then send", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+
+  const row = document.querySelector(".composer-row")!;
+  expect(within(row as HTMLElement).getByTitle("Claude Code")).toBeTruthy();
+  expect(pickerButton().querySelector("b")!.textContent).toBe("Default (recommended)");
+  expect(pickerButton().querySelector(".picker-effort")!.textContent).toBe("high");
+  const buttons = within(row as HTMLElement).getAllByRole("button");
+  expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual(["Agent and model", "Send"]);
+});
+
+test("the composer starts on the placeholder for its agent", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex" });
+
+  expect(composer().getAttribute("placeholder")).toBe("Ask Codex anything. @ files, / commands");
+  expect(within(document.querySelector<HTMLElement>(".composer-row")!).getByTitle("Codex")).toBeTruthy();
 });
 
 // The account line moved to the sidebar's footer (#29).
@@ -786,7 +825,7 @@ test("the composer has no account line", async () => {
   await shownPanel(bridge);
 
   expect(document.querySelector(".composer-foot")).toBeNull();
-  expect(pickerButton().textContent).toContain("Default (recommended) · high effort");
+  expect(pickerButton().textContent).toContain("Default (recommended) high");
 });
 
 test("the pane head names the session as the sidebar does", async () => {
@@ -881,16 +920,16 @@ test("a new panel starts on the agent's default model and effort, and the picker
 
   expect(document.querySelector(".pane-head b")!.textContent).toBe("Codex");
   expect(bridge.modelsSet).toEqual([{ session: "0", model: "gpt-5.5", effort: "medium" }]);
-  expect(pickerButton().textContent).toContain("GPT-5.5 · medium effort");
+  expect(pickerButton().textContent).toContain("GPT-5.5 medium");
 
   // A model that takes the effort keeps it.
   fireEvent.click(option(openPicker(), /^GPT-5.5 mini/));
-  expect(pickerButton().textContent).toContain("GPT-5.5 mini · medium effort");
+  expect(pickerButton().textContent).toContain("GPT-5.5 mini medium");
   const efforts = within(openPicker()).getByRole("group", { name: "Effort" });
   expect(within(efforts).getAllByRole("button").map((b) => b.textContent)).toEqual(["low", "medium"]);
   fireEvent.click(within(efforts).getByRole("button", { name: "low" }));
 
-  expect(pickerButton().textContent).toContain("GPT-5.5 mini · low effort");
+  expect(pickerButton().textContent).toContain("GPT-5.5 mini low");
   expect(bridge.modelsSet.slice(1)).toEqual([
     { session: "0", model: "gpt-5.5-mini", effort: "medium" },
     { session: "0", model: "gpt-5.5-mini", effort: "low" },
@@ -909,7 +948,7 @@ test("a remounted panel shows the session's own choice and sends no default", as
 
   await shownPanel(bridge, { agent: "Codex" });
 
-  expect(pickerButton().textContent).toContain("GPT-5.5 mini · low effort");
+  expect(pickerButton().textContent).toContain("GPT-5.5 mini low");
   expect(bridge.modelsSet).toHaveLength(sent);
 });
 
@@ -919,8 +958,7 @@ test("a model that does not take the current effort gets its own default, or non
 
   fireEvent.click(option(openPicker(), /^Haiku 5.5/));
 
-  expect(pickerButton().textContent).toContain("Haiku 5.5");
-  expect(pickerButton().textContent).not.toContain("effort");
+  expect(pickerButton().textContent).toBe("Haiku 5.5");
   expect(bridge.modelsSet.at(-1)).toEqual({ session: "0", model: "haiku", effort: null });
 });
 
@@ -1133,7 +1171,7 @@ test("while an approval waits, a message from the composer declines it with that
   expect(bridge.sent).toEqual([]);
   expect((composer() as HTMLTextAreaElement).value).toBe("");
   expect(screen.getByText("Declined: use vitest instead")).toBeTruthy();
-  expect(composer().getAttribute("placeholder")).toBe("Ask Claude Code anything");
+  expect(composer().getAttribute("placeholder")).toBe("Ask Claude Code anything. @ files, / commands");
 });
 
 test("a decline the core refuses puts the message back in the composer with its error", async () => {
@@ -1298,7 +1336,7 @@ test("a focus request puts focus in the composer once the panel is shown, and on
 });
 
 function modeButton(name: "Chat" | "Terminal") {
-  const mode = screen.getByRole("group", { name: "Mode" });
+  const mode = within(strip()).getByRole("group", { name: "Mode" });
   return within(mode).getByRole("button", { name }) as HTMLButtonElement;
 }
 

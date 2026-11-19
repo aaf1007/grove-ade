@@ -254,6 +254,70 @@ button.tool:hover {
   border-radius: var(--radius-full);
 }
 
+/* The agent's mark, in its color. */
+.agent-mark {
+  display: inline-flex;
+  flex: none;
+}
+
+.agent-mark svg {
+  width: var(--icon);
+  height: var(--icon);
+  stroke-width: 2.2;
+}
+
+.agent-mark.Claude {
+  color: var(--claude);
+}
+
+.agent-mark.Codex {
+  color: var(--codex);
+}
+
+.picker-effort {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* Under the composer, in its lane: the branch, the profile, and the Chat/Terminal switch. */
+.composer-strip {
+  display: flex;
+  max-width: var(--chat-lane);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-16);
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-8) 0;
+  color: var(--muted);
+  font: var(--text-meta);
+}
+
+.composer-strip > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-strip > span svg {
+  width: var(--space-12);
+  height: var(--space-12);
+  flex: none;
+}
+
+.composer-strip > .spacer {
+  flex: 1;
+}
+
+/* Only the strip, at the bottom of the panel: in terminal mode, or while the mode is unknown. */
+.composer-wrap.strip-only {
+  margin-top: auto;
+  padding-top: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .shimmer {
     background: none;

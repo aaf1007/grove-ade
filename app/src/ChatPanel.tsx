@@ -1,7 +1,8 @@
-import { ArrowUp, Columns2, Ellipsis, Shield, Square, X } from "lucide-react";
+import { ArrowUp, Columns2, Ellipsis, GitBranch, Shield, SlidersHorizontal, Square, X } from "lucide-react";
 import {
   type Dispatch,
   type KeyboardEvent,
+  type ReactNode,
   type SetStateAction,
   useCallback,
   useEffect,
@@ -26,7 +27,7 @@ import type {
 import { AgentMarkdown } from "./AgentMarkdown";
 import "./ChatPanel.css";
 import { type ModelChoice, Picker, useModelChoice } from "./Picker";
-import { AGENT_NAMES } from "./Sidebar";
+import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { TerminalPanel } from "./TerminalPanel";
 import { DeclinedCall, relative, type ToolCall, ToolCalls } from "./ToolCalls";
 import { AgentState } from "./ui/AgentState";
@@ -64,9 +65,9 @@ interface ModeSwitch {
 }
 
 /**
- * An agent panel in the chat area: its header with the Chat/Terminal switch, then the session's
- * conversation in chat mode or the agent's own TUI in terminal mode. A switch resumes the same
- * conversation under the same session id.
+ * An agent panel in the chat area: its header, then the session's conversation in chat mode or the
+ * agent's own TUI in terminal mode, then a strip with the branch, the profile and the Chat/Terminal
+ * switch. A switch resumes the same conversation under the same session id.
  */
 export function ChatPanel({
   bridge,
@@ -126,6 +127,7 @@ export function ChatPanel({
   const [draft, setDraft] = useState("");
   const name = AGENT_NAMES[agent];
   const blocked = switchBlocked(state, modeSwitch, name);
+  const { branch, profile } = useWorktreePlace(bridge, worktree);
   const reportMode = useEffectEvent((mode: Mode) => onMode?.(mode));
 
   useEffect(() => {
@@ -162,6 +164,32 @@ export function ChatPanel({
     );
   }
 
+  const strip = (
+    <div className="composer-strip" role="group" aria-label="Branch and profile">
+      {branch && (
+        <span>
+          <GitBranch aria-hidden="true" />
+          {branch}
+        </span>
+      )}
+      {profile && (
+        <span>
+          <SlidersHorizontal aria-hidden="true" />
+          {profile}
+        </span>
+      )}
+      <span className="spacer" />
+      <Segmented
+        label="Mode"
+        options={MODES}
+        value={modeSwitch.mode}
+        disabled={blocked !== null}
+        title={blocked ?? undefined}
+        onChange={switchTo}
+      />
+    </div>
+  );
+
   return (
     <section
       className="chat-panel"
@@ -177,14 +205,6 @@ export function ChatPanel({
         <b>{sessionName ?? name}</b>
         {state && <AgentState state={state} source={state.source} />}
         <span className="spacer" />
-        <Segmented
-          label="Mode"
-          options={MODES}
-          value={modeSwitch.mode}
-          disabled={blocked !== null}
-          title={blocked ?? undefined}
-          onChange={switchTo}
-        />
         {onSplit && (
           <IconButton
             icon={Columns2}
@@ -209,6 +229,7 @@ export function ChatPanel({
       )}
       {modeSwitch.mode === "Chat" && (
         <ChatView
+          strip={strip}
           key={modeSwitch.switches}
           bridge={bridge}
           session={session}
@@ -238,10 +259,65 @@ export function ChatPanel({
             shown={shown}
             focusRequest={focusRequest}
           />
+          <div className="composer-wrap strip-only">{strip}</div>
         </>
       )}
+      {modeSwitch.mode === null && <div className="composer-wrap strip-only">{strip}</div>}
     </section>
   );
+}
+
+/**
+ * The worktree's branch and the name of the profile its repo uses, null when it has none. The
+ * profile follows changes to the repo's settings and to profiles. Neither shows when listing fails:
+ * the details card reports that.
+ */
+function useWorktreePlace(bridge: Bridge, worktree: string) {
+  const [found, setFound] = useState<{ worktree: string; repo: string; branch: string | null } | null>(null);
+  const [profile, setProfile] = useState<string | null>(null);
+  const [settingsChanges, setSettingsChanges] = useState(0);
+  const mine = found?.worktree === worktree ? found : null;
+  const repo = mine?.repo;
+
+  useEffect(() => {
+    let current = true;
+    bridge.listWorktrees().then(
+      (list) => {
+        const worktrees = byRepo(list).find((all) => all.some((w) => w.path === worktree));
+        const own = worktrees?.find((w) => w.path === worktree);
+        if (current && worktrees && own) setFound({ worktree, repo: worktrees[0].path, branch: own.branch });
+      },
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [bridge, worktree]);
+
+  useEffect(() => {
+    if (repo === undefined) return;
+    const changed = () => setSettingsChanges((n) => n + 1);
+    const stopProfiles = bridge.onProfilesChanged(changed);
+    const stopRepo = bridge.onRepoSettingsChanged((changedRepo) => changedRepo === repo && changed());
+    return () => {
+      stopProfiles();
+      stopRepo();
+    };
+  }, [bridge, repo]);
+
+  useEffect(() => {
+    if (repo === undefined) return;
+    let current = true;
+    bridge.repoProfile(repo).then(
+      (name) => current && setProfile(name),
+      () => current && setProfile(null),
+    );
+    return () => {
+      current = false;
+    };
+  }, [bridge, repo, settingsChanges]);
+
+  return { branch: mine?.branch ?? null, profile: repo === undefined ? null : profile };
 }
 
 /** Why the Chat/Terminal switch is off, as its tooltip says. null while it is on. */
@@ -268,6 +344,7 @@ type ChatMessage = AgentMessage | typeof RESUMED;
  * It follows the conversation while `shown`, and gets the whole of it again each time it is shown.
  */
 function ChatView({
+  strip,
   bridge,
   session,
   agent,
@@ -283,6 +360,8 @@ function ChatView({
   onChangeAgent,
   onModelChoice,
 }: {
+  /** Goes right under the composer. */
+  strip: ReactNode;
   bridge: Bridge;
   session: SessionId;
   agent: Agent;
@@ -540,12 +619,15 @@ function ChatView({
             ref={composer}
             aria-label="Message"
             rows={1}
-            placeholder={declining ? "Send a message to decline and redirect the agent" : `Ask ${name} anything`}
+            placeholder={
+              declining ? "Send a message to decline and redirect the agent" : `Ask ${name} anything. @ files, / commands`
+            }
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
           />
           <div className="composer-row">
+            <span className="spacer" />
             <Picker
               agent={agent}
               agentLocked={agentLocked}
@@ -554,7 +636,6 @@ function ChatView({
               onAgent={changeAgent}
               onChoose={choose}
             />
-            <span className="spacer" />
             {working ? (
               <button className="send stop" aria-label="Interrupt" title="Interrupt the turn" onClick={interrupt}>
                 <Square aria-hidden="true" />
@@ -566,6 +647,7 @@ function ChatView({
             )}
           </div>
         </div>
+        {strip}
       </div>
     </>
   );
