@@ -601,6 +601,7 @@ export function App({ bridge }: { bridge: Bridge }) {
               waiting={attentionQueue.length}
               onJump={jump}
               onOpenProfiles={() => selected && open(selected, "Profile")}
+              onShowSidebar={() => layout.sidebarOpen || toggleSidebar()}
               accounts={accounts}
               appearance={appearance}
               onAppearance={setAppearance}

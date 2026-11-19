@@ -1,5 +1,6 @@
 import { Bell, Ellipsis, Plus, Search, Settings2, SlidersHorizontal } from "lucide-react";
 import { useEffect, useEffectEvent, useId, useRef, useState, type FormEvent } from "react";
+import { flushSync } from "react-dom";
 
 import type {
   Account,
@@ -78,6 +79,7 @@ export function Sidebar({
   waiting,
   onJump,
   onOpenProfiles,
+  onShowSidebar,
   accounts,
   appearance,
   onAppearance,
@@ -108,6 +110,8 @@ export function Sidebar({
   onJump(): void;
   /** Opens the selected worktree's Profile panel. */
   onOpenProfiles(): void;
+  /** Shows the sidebar when it is collapsed. Cmd-K calls it before it puts focus in Search. */
+  onShowSidebar?(): void;
   /** Each agent's login: null when nobody is logged in, missing until a session reports it. */
   accounts: Partial<Record<Agent, Account | null>>;
   appearance: Appearance;
@@ -197,6 +201,8 @@ export function Sidebar({
       newWorktree();
     } else if (key === "k") {
       event.preventDefault();
+      // Shown first, since a hidden box takes no focus.
+      flushSync(() => onShowSidebar?.());
       searchBox.current?.focus();
     }
   });

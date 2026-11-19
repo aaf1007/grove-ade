@@ -1,10 +1,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode, useState } from "react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 
 import { App } from "./App";
 import type { Agent, AgentState, StateSource, Workspace } from "./bridge";
 import { DEFAULT_WORKSPACE, fakeBridge } from "./fakeBridge";
+import appStyles from "./styles.css?raw";
 
 // The diff view and xterm.js need a real browser. These tests cover only which panels exist and
 // which ones are shown. ChatPanel.test.tsx covers the agent panel itself.
@@ -420,6 +421,33 @@ test("the title bar collapses the sidebar and shows it again", async () => {
 
   expect(toggle.getAttribute("aria-pressed")).toBe("true");
   expect(await screen.findByRole("button", { name: "feat-36" })).toBeTruthy();
+});
+
+test("Cmd-K with the sidebar collapsed shows the sidebar and puts focus in Search", async () => {
+  render(<App bridge={await trackedBridge()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Sidebar" }));
+
+  fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+
+  const sidebar = screen.getByRole("complementary", { name: "Worktrees" });
+  expect(document.activeElement).toBe(within(sidebar).getByRole("searchbox", { name: "Search" }));
+  expect(screen.getByRole("button", { name: "Sidebar" }).getAttribute("aria-pressed")).toBe("true");
+});
+
+test("the title bar sits in the window's top row, over the chat area and the panel area", async () => {
+  const style = document.createElement("style");
+  style.textContent = appStyles;
+  document.head.append(style);
+  onTestFinished(() => style.remove());
+  const { container } = render(<App bridge={await trackedBridge()} />);
+  const box = (selector: string) => {
+    const found = getComputedStyle(container.querySelector(selector)!);
+    return [found.gridRow, found.gridColumn];
+  };
+
+  expect(box(".window-top")).toEqual(["1", "3 / -1"]);
+  expect(box(".chat-area")).toEqual(["2", "3"]);
+  expect(box(".sidebar-region")).toEqual(["1 / -1", "1"]);
 });
 
 test("the title bar collapses the panel area and shows it again", async () => {

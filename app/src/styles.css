@@ -60,8 +60,9 @@ svg {
   height: 100vh;
 }
 
-/* The title bar and the core's warnings, over the chat area and the panel area. */
-.window-top {
+/* The title bar and the core's warnings, over the chat area and the panel area. It outranks
+   `.regions > *`, which puts every other region in row 2. */
+.regions > .window-top {
   grid-row: 1;
   grid-column: 3 / -1;
   min-width: 0;
