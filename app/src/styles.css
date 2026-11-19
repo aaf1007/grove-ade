@@ -1046,12 +1046,6 @@ svg {
   padding: 0 var(--space-12) var(--space-12);
 }
 
-.file-rows {
-  margin: 0;
-  padding: var(--space-4) 0;
-  list-style: none;
-}
-
 .batch-items {
   margin: 0;
   padding: 0;
@@ -1071,15 +1065,6 @@ svg {
 
 .batch-item code {
   justify-self: start;
-}
-
-.file-row {
-  padding: var(--space-4) var(--space-12);
-  overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: var(--text-code-sm-size);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .composer-wrap {

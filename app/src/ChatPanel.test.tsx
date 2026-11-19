@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import type { Agent, AgentStateChanged, Question, Reply } from "./bridge";
 import { ChatPanel } from "./ChatPanel";
-import { fakeBridge, type FakeBridge, type FakeMessage } from "./fakeBridge";
+import { fakeBridge, type FakeBridge, type FakeChange, type FakeDiffs, type FakeMessage } from "./fakeBridge";
 
 // TerminalPanel.test.tsx covers the terminal itself. The stub says which session it shows.
 vi.mock("./TerminalPanel", () => ({
@@ -665,33 +665,108 @@ test("reopening a panel calls subscribe and shows the history without repeats", 
   expect(screen.getAllByText("now the lexer")).toHaveLength(1);
 });
 
-test("a turn's edits show as a files-changed card that opens the diff", async () => {
-  const bridge = await started();
-  const onOpenDiff = vi.fn();
-  await shownPanel(bridge, { onOpenDiff });
+function headChange(newPath: string, added: number, removed: number): FakeChange {
+  return {
+    file: { status: "Modified", oldPath: newPath, newPath, binary: false, added, removed },
+    versions: { old: "", new: "", binary: false },
+  };
+}
 
-  act(() =>
-    bridge.messages(
-      "0",
-      { type: "TurnStarted" },
-      { type: "ToolCall", id: "1", tool: "Edit", input: { file_path: `${worktree}/src/a.ts` } },
-      { type: "ToolCall", id: "2", tool: "Write", input: { file_path: `${worktree}/src/b.ts` } },
-      { type: "ToolCall", id: "3", tool: "MultiEdit", input: { file_path: `${worktree}/src/a.ts` } },
-      { type: "ToolCall", id: "4", tool: "NotebookEdit", input: { notebook_path: "/elsewhere/n.ipynb" } },
-      { type: "ToolCall", id: "5", tool: "Read", input: { file_path: `${worktree}/src/c.ts` } },
-      { type: "TurnEnded", outcome: "Completed" },
-    ),
-  );
+// A panel on a worktree whose Head diff is `changes`. Tests may change the list, then call `diffChanged`.
+async function withChanges(changes: FakeChange[], props: Partial<Parameters<typeof Panel>[0]> = {}) {
+  const diffs: FakeDiffs = { [worktree]: { Head: changes } };
+  const bridge = fakeBridge({ [worktree]: [{ path: worktree, branch: "feat-116", isMain: true }] }, diffs);
+  await bridge.addRepo(worktree);
+  await bridge.spawnAgent(worktree, "Claude", null);
+  const view = await shownPanel(bridge, props);
+  return { bridge, diffs, view };
+}
+
+const aTurn: FakeMessage[] = [
+  { type: "User", text: "fix it" },
+  { type: "TurnStarted" },
+  { type: "TextDelta", text: "Fixed." },
+  { type: "TurnEnded", outcome: "Completed" },
+];
+
+function changedCard() {
+  return screen.queryByRole("group", { name: /changed files?$/ });
+}
+
+test("a completed turn shows the worktree's changed files with their counts and the totals", async () => {
+  const { bridge } = await withChanges([headChange("src/a.ts", 250, 10), headChange("src/b.ts", 12, 5)]);
+
+  act(() => bridge.messages("0", ...aTurn));
   nextFrame();
+  await act(async () => {});
 
-  const card = screen.getByRole("group", { name: "3 files changed" });
+  const card = changedCard()!;
+  expect(card.getAttribute("aria-label")).toBe("2 changed files");
+  expect(card.querySelector(".files-head")!.textContent).toBe("2 changed files+262−15Review diff");
   expect(within(card).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
-    "src/a.ts",
-    "src/b.ts",
-    "/elsewhere/n.ipynb",
+    "src/a.ts+250−10",
+    "src/b.ts+12−5",
   ]);
-  fireEvent.click(within(card).getByRole("button", { name: "Review diff" }));
-  expect(onOpenDiff).toHaveBeenCalledOnce();
+  const text = screen.getByText("Fixed.");
+  expect(text.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("Review diff opens the diff, and a file opens the diff on that file", async () => {
+  const onOpenDiff = vi.fn();
+  const { bridge } = await withChanges([headChange("src/a.ts", 1, 0), headChange("src/b.ts", 2, 1)], { onOpenDiff });
+  act(() => bridge.messages("0", ...aTurn));
+  nextFrame();
+  await act(async () => {});
+
+  fireEvent.click(within(changedCard()!).getByRole("button", { name: "Review diff" }));
+  fireEvent.click(within(changedCard()!).getByRole("button", { name: /^src\/b\.ts/ }));
+
+  expect(onOpenDiff.mock.calls).toEqual([[], ["src/b.ts"]]);
+});
+
+test("the card follows the worktree's diff, and goes when the diff is empty", async () => {
+  const { bridge, diffs } = await withChanges([headChange("src/a.ts", 1, 0)]);
+  act(() => bridge.messages("0", ...aTurn));
+  nextFrame();
+  await act(async () => {});
+  expect(changedCard()!.getAttribute("aria-label")).toBe("1 changed file");
+
+  diffs[worktree].Head!.push(headChange("src/c.ts", 4, 4));
+  await act(async () => bridge.diffChanged(worktree));
+  expect(changedCard()!.getAttribute("aria-label")).toBe("2 changed files");
+
+  diffs[worktree].Head = [];
+  await act(async () => bridge.diffChanged(worktree));
+  expect(changedCard()).toBeNull();
+});
+
+test("no card while a turn runs, and after a second turn only the second has one", async () => {
+  const { bridge, view } = await withChanges([headChange("src/a.ts", 1, 0)]);
+  act(() => bridge.messages("0", ...aTurn));
+  nextFrame();
+  await act(async () => {});
+  expect(changedCard()).toBeTruthy();
+
+  view.rerender(<Panel bridge={bridge} state={working("Working")} />);
+  act(() => bridge.messages("0", { type: "User", text: "and the docs" }, { type: "TurnStarted" }));
+  nextFrame();
+  expect(changedCard()).toBeNull();
+
+  act(() => bridge.messages("0", { type: "TextDelta", text: "Docs done." }, { type: "TurnEnded", outcome: "Completed" }));
+  nextFrame();
+  view.rerender(<Panel bridge={bridge} state={working("Done")} />);
+  expect(screen.getAllByRole("group", { name: "1 changed file" })).toHaveLength(1);
+  const second = screen.getByText("Docs done.");
+  expect(second.compareDocumentPosition(changedCard()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("a conversation with no ended turn shows no card", async () => {
+  const { bridge } = await withChanges([headChange("src/a.ts", 1, 0)]);
+  act(() => bridge.messages("0", { type: "User", text: "fix it" }, { type: "TurnStarted" }));
+  nextFrame();
+  await act(async () => {});
+
+  expect(changedCard()).toBeNull();
 });
 
 test("a review batch shows as a card with each comment's place and what it says", async () => {

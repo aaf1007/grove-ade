@@ -10,10 +10,14 @@ import appStyles from "./styles.css?raw";
 
 // The diff view and xterm.js need a real browser. These tests cover only which panels exist and
 // which ones are shown. ChatPanel.test.tsx covers the agent panel itself.
-// DiffView.test.tsx covers the Diff panel. The stub only says which base it was last opened on.
+// DiffView.test.tsx covers the Diff panel. The stub only says which base it was last opened on,
+// and which file the app asked it to show.
 vi.mock("./DiffView", () => ({
-  DiffView: ({ opened }: { opened?: { base: string; request: number } }) => (
-    <p>Diff opened on {opened ? `${opened.base} ${opened.request}` : "nothing"}</p>
+  DiffView: ({ opened, reveal }: { opened?: { base: string; request: number }; reveal?: string | null }) => (
+    <>
+      <p>Diff opened on {opened ? `${opened.base} ${opened.request}` : "nothing"}</p>
+      {reveal && <p>Diff on {reveal}</p>}
+    </>
   ),
 }));
 // FilesPanel.test.tsx covers the Files panel. The stub only says which worktree it shows.
@@ -74,7 +78,7 @@ function FakeChatPanel({
   focusRequest: number;
   onFocus?: () => void;
   onBlur?: () => void;
-  onOpenDiff(): void;
+  onOpenDiff(path?: string): void;
   onChangeAgent?: (agent: Agent) => void;
 }) {
   const [draft, setDraft] = useState("");
@@ -95,7 +99,8 @@ function FakeChatPanel({
     >
       <b>{agent}</b>
       <input aria-label="Draft" value={draft} onChange={(event) => setDraft(event.target.value)} />
-      <button onClick={onOpenDiff}>Review diff</button>
+      <button onClick={() => onOpenDiff()}>Review diff</button>
+      <button onClick={() => onOpenDiff("b.rs")}>Open b.rs in the diff</button>
       <button onClick={() => onChangeAgent?.("Codex")}>Switch to Codex</button>
     </section>
   );
@@ -723,6 +728,22 @@ test("a warning the core sends while grove runs is shown", async () => {
   act(() => bridge.warn(loginShellWarning));
 
   expect(screen.getByRole("status").textContent).toContain(loginShellWarning.reason);
+});
+
+test("a file the chat opens in the diff opens the Diff panel on that file", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  const panel = await screen.findByRole("region", { name: "Panel 0" });
+  fireEvent.click(screen.getByRole("button", { name: "Panel area" }));
+  expect(screen.queryByRole("region", { name: "Panel area" })).toBeNull();
+
+  fireEvent.click(within(panel).getByRole("button", { name: "Open b.rs in the diff" }));
+
+  expect(screen.getByRole("region", { name: "Panel area" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Diff", selected: true })).toBeTruthy();
+  expect(await screen.findByText("Diff on b.rs")).toBeTruthy();
 });
 
 test("the files-changed card's Review diff shows the collapsed panel area", async () => {
