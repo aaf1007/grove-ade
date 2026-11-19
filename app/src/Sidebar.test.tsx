@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { createRef } from "react";
 import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 
+import type { Worktree } from "./bridge";
 import { fakeBridge, type FakeBridge } from "./fakeBridge";
 import sidebarStyles from "./styles.css?raw";
 import { Sidebar, type SidebarHandle } from "./Sidebar";
@@ -706,6 +707,23 @@ test("cancelling the folder picker adds nothing and shows no error", async () =>
   expect(added).not.toHaveBeenCalled();
   expect(screen.queryByRole("alert")).toBeNull();
   expect(screen.queryByRole("region", { name: "grove" })).toBeNull();
+});
+
+test("a worktree list that answers late never replaces a newer one", async () => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  const listWorktrees = bridge.listWorktrees.bind(bridge);
+  let answerFirst: (worktrees: Worktree[]) => void = () => {};
+  vi.spyOn(bridge, "listWorktrees")
+    .mockImplementationOnce(() => new Promise((resolve) => (answerFirst = resolve)))
+    .mockImplementation(listWorktrees);
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  addRepo(bridge, "/code/grove");
+  await screen.findByRole("region", { name: "grove" });
+
+  // The list asked for at start, before the repo was added, answers last.
+  await act(async () => answerFirst([]));
+
+  expect(screen.getByRole("region", { name: "grove" })).toBeTruthy();
 });
 
 test("a repo added after an error clears the error", async () => {

@@ -154,23 +154,23 @@ export function Sidebar({
     [bridge],
   );
 
-  // The core outlives the webview, so a reloaded window starts from what the core tracks.
-  useEffect(() => {
+  // The number of the latest list asked for. An older one that answers late is dropped.
+  const latestList = useRef(0);
+  function refresh() {
+    const asked = ++latestList.current;
     bridge
       .listWorktrees()
       .then((list) => {
+        if (asked !== latestList.current) return;
         setWorktrees(list);
         setListed(true);
       })
       .catch((e: unknown) => setError(String(e)));
-  }, [bridge]);
-
-  function refresh() {
-    bridge
-      .listWorktrees()
-      .then(setWorktrees)
-      .catch((e: unknown) => setError(String(e)));
   }
+
+  // The core outlives the webview, so a reloaded window starts from what the core tracks.
+  const listAtStart = useEffectEvent(refresh);
+  useEffect(() => listAtStart(), [bridge]);
 
   // `repo` opens, so the new worktree's selected row shows.
   function created(repo: string, worktree: Worktree, startAgent: boolean) {
