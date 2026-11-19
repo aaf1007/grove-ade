@@ -1,10 +1,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode, useState } from "react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 
 import { App } from "./App";
-import type { Account, Agent, AgentState, StateSource, Workspace } from "./bridge";
+import type { Agent, AgentState, StateSource, Workspace } from "./bridge";
 import { DEFAULT_WORKSPACE, fakeBridge } from "./fakeBridge";
+import appStyles from "./styles.css?raw";
 
 // The diff view and xterm.js need a real browser. These tests cover only which panels exist and
 // which ones are shown. ChatPanel.test.tsx covers the agent panel itself.
@@ -58,7 +59,6 @@ function FakeChatPanel({
   session,
   agent,
   shown,
-  account,
   focusRequest,
   onFocus,
   onBlur,
@@ -68,7 +68,6 @@ function FakeChatPanel({
   session: string;
   agent: Agent;
   shown: boolean;
-  account: Account | null | undefined;
   focusRequest: number;
   onFocus?: () => void;
   onBlur?: () => void;
@@ -92,7 +91,6 @@ function FakeChatPanel({
       onBlur={onBlur}
     >
       <b>{agent}</b>
-      <p>{account === undefined ? "no account" : (account?.email ?? "logged out")}</p>
       <input aria-label="Draft" value={draft} onChange={(event) => setDraft(event.target.value)} />
       <button onClick={() => onOpenDiff()}>Review diff</button>
       <button onClick={() => onOpenDiff("b.rs")}>Open b.rs in the diff</button>
@@ -429,6 +427,33 @@ test("the title bar collapses the sidebar and shows it again", async () => {
   expect(await screen.findByRole("button", { name: "feat-36" })).toBeTruthy();
 });
 
+test("Cmd-K with the sidebar collapsed shows the sidebar and puts focus in Search", async () => {
+  render(<App bridge={await trackedBridge()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Sidebar" }));
+
+  fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+
+  const sidebar = screen.getByRole("complementary", { name: "Worktrees" });
+  expect(document.activeElement).toBe(within(sidebar).getByRole("searchbox", { name: "Search" }));
+  expect(screen.getByRole("button", { name: "Sidebar" }).getAttribute("aria-pressed")).toBe("true");
+});
+
+test("the title bar sits in the window's top row, over the chat area and the panel area", async () => {
+  const style = document.createElement("style");
+  style.textContent = appStyles;
+  document.head.append(style);
+  onTestFinished(() => style.remove());
+  const { container } = render(<App bridge={await trackedBridge()} />);
+  const box = (selector: string) => {
+    const found = getComputedStyle(container.querySelector(selector)!);
+    return [found.gridRow, found.gridColumn];
+  };
+
+  expect(box(".window-top")).toEqual(["1", "3 / -1"]);
+  expect(box(".chat-area")).toEqual(["2", "3"]);
+  expect(box(".sidebar-region")).toEqual(["1 / -1", "1"]);
+});
+
 test("the title bar collapses the panel area and shows it again", async () => {
   render(<App bridge={await trackedBridge()} />);
   await select("feat-36");
@@ -540,7 +565,7 @@ test("the palette and theme switches set the window's tokens and survive a reloa
   const root = document.documentElement;
   expect(root.dataset).toMatchObject({ palette: "default", theme: "dark" });
 
-  fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
   expect(pressed("Default")).toBe("true");
   fireEvent.click(screen.getByRole("button", { name: "Modern" }));
   fireEvent.click(screen.getByRole("button", { name: "Light" }));
@@ -564,7 +589,7 @@ test("the System theme follows the OS color scheme as it changes", async () => {
   setSystemDark(true);
   expect(root.dataset.theme).toBe("dark");
 
-  fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
   fireEvent.click(screen.getByRole("button", { name: "Light" }));
   setSystemDark(false);
   setSystemDark(true);
@@ -586,7 +611,7 @@ test("a saved appearance with an unknown palette id keeps its theme and falls ba
   localStorage.setItem("grove.appearance", JSON.stringify({ palette: "solarized", theme: "light" }));
 
   render(<App bridge={await trackedBridge()} />);
-  fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
 
   expect(document.documentElement.dataset).toMatchObject({ palette: "default", theme: "light" });
   expect(pressed("Default")).toBe("true");
@@ -624,9 +649,9 @@ test("a setting that cannot be saved still applies", async () => {
   expect(console.warn).toHaveBeenCalled();
 });
 
-test("Escape closes the Appearance menu and puts focus back on its button", async () => {
+test("Escape closes the appearance menu and puts focus back on Settings", async () => {
   render(<App bridge={await trackedBridge()} />);
-  const appearance = screen.getByRole("button", { name: "Appearance" });
+  const appearance = screen.getByRole("button", { name: "Settings" });
   fireEvent.click(appearance);
   const light = screen.getByRole("button", { name: "Light" });
   light.focus();
@@ -638,9 +663,9 @@ test("Escape closes the Appearance menu and puts focus back on its button", asyn
 });
 
 // Tab can leave the open menu. Escape then belongs to wherever focus went, such as a terminal.
-test("Escape with focus outside the Appearance menu closes it and leaves focus where it is", async () => {
+test("Escape with focus outside the appearance menu closes it and leaves focus where it is", async () => {
   render(<App bridge={await trackedBridge()} />);
-  fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
   const panelArea = screen.getByRole("button", { name: "Panel area" });
   panelArea.focus();
 
@@ -774,19 +799,17 @@ test("a worktree's Files panel stays open, hidden, while another worktree is sel
   expect(screen.getByRole("tabpanel", { name: "Files" }).textContent).toContain(`Files of ${main}`);
 });
 
-test("Claude's account reaches its agent panels, also one reported before the window opened", async () => {
+test("the sidebar footer shows Claude's account, also one reported before the window opened", async () => {
   const bridge = await trackedBridge();
   const account = { email: "ann@example.com", organization: null, plan: "max", apiKeySource: null };
   bridge.accountChanged({ agent: "Claude", account });
   render(<App bridge={bridge} />);
-  await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
-  await screen.findByRole("region", { name: "Panel 0" });
-  expect(screen.getByText("ann@example.com")).toBeTruthy();
+  const footer = screen.getByRole("group", { name: "Account and settings" });
+  expect(within(footer).getByText("ann@example.com · max plan")).toBeTruthy();
 
   act(() => bridge.accountChanged({ agent: "Claude", account: null }));
 
-  expect(screen.getByText("logged out")).toBeTruthy();
+  expect(within(footer).getByText("Not logged in")).toBeTruthy();
 });
 
 test("picking Codex before the first message starts a Codex session in the same panel and ends the Claude one", async () => {
@@ -864,37 +887,24 @@ test("a failed switch keeps the Claude session and says why", async () => {
   expect(bridge.killed).toEqual([]);
 });
 
-test("each agent's account reaches only its own agent panels", async () => {
-  const bridge = await trackedBridge();
-  bridge.accountChanged({
-    agent: "Codex",
-    account: { email: "cody@example.com", organization: null, plan: "plus", apiKeySource: null },
-  });
-  render(<App bridge={bridge} />);
-  await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
-  await screen.findByRole("region", { name: "Panel 0" });
-  expect(screen.getByText("no account")).toBeTruthy();
-
-  fireEvent.click(screen.getByRole("button", { name: "Switch to Codex" }));
-
-  await screen.findByRole("region", { name: "Panel 1" });
-  expect(screen.getByText("cody@example.com")).toBeTruthy();
-});
-
 function startAgent() {
   fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
 }
 
+function needsYou() {
+  return screen.getByRole("button", { name: /^Needs you/ });
+}
+
+// The Needs you row's count: the attention queue's length.
 function waiting() {
-  return screen.getByRole("button", { name: /waiting/ });
+  return needsYou().querySelector(".count")?.textContent;
 }
 
 async function pressJump() {
   await act(async () => fireEvent.keyDown(document.body, { key: "j", metaKey: true }));
 }
 
-test("with nothing waiting the title bar says so, and the key does nothing", async () => {
+test("with nothing waiting Needs you counts 0, and the key does nothing", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
@@ -905,7 +915,7 @@ test("with nothing waiting the title bar says so, and the key does nothing", asy
 
   await pressJump();
 
-  expect(waiting().textContent).toBe("Nothing waiting⌘J");
+  expect(waiting()).toBe("0");
   expect(screen.getByRole("button", { name: "main (main worktree)" }).getAttribute("aria-current")).toBe("true");
   expect(bridge.focused).toEqual([]);
 });
@@ -927,7 +937,7 @@ test("the key focuses the head of the attention queue's agent panel in another w
   await act(async () =>
     bridge.agentStateChanged({ session: "1", state: "NeedsInput", kind: "Approval", source: "Protocol" }),
   );
-  expect(waiting().textContent).toBe("2 waiting⌘J");
+  expect(waiting()).toBe("2");
 
   await pressJump();
 
@@ -938,7 +948,7 @@ test("the key focuses the head of the attention queue's agent panel in another w
 
   // The user answers, and the agent goes back to work.
   await act(async () => bridge.agentStateChanged({ session: "1", state: "Working", source: "Protocol" }));
-  expect(waiting().textContent).toBe("1 waiting⌘J");
+  expect(waiting()).toBe("1");
   await pressJump();
 
   expect(screen.getByRole("button", { name: "feat-36" }).getAttribute("aria-current")).toBe("true");
@@ -948,7 +958,7 @@ test("the key focuses the head of the attention queue's agent panel in another w
   expect(bridge.focused).toEqual(["1", "0"]);
 });
 
-test("clicking the waiting button jumps as the key does", async () => {
+test("clicking Needs you jumps as the key does", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
@@ -957,7 +967,7 @@ test("clicking the waiting button jumps as the key does", async () => {
   await act(async () => bridge.agentStateChanged({ session: "0", state: "Failed", source: "Protocol" }));
   await select("main (main worktree)");
 
-  await act(async () => fireEvent.click(waiting()));
+  await act(async () => fireEvent.click(needsYou()));
 
   expect(screen.getByLabelText("Panel 0").hidden).toBe(false);
   expect(document.activeElement).toBe(screen.getByLabelText("Panel 0"));
@@ -972,12 +982,12 @@ test("jumping to a Done session's panel makes it Idle, which leaves the queue", 
   await screen.findByRole("region", { name: "Panel 0" });
   await act(async () => bridge.agentStateChanged({ session: "0", state: "Done", source: "Protocol" }));
   await select("main (main worktree)");
-  expect(waiting().textContent).toBe("1 waiting⌘J");
+  expect(waiting()).toBe("1");
 
   await pressJump();
 
   expect(rowState("feat-36")).toBe("Idle");
-  expect(waiting().textContent).toBe("Nothing waiting⌘J");
+  expect(waiting()).toBe("0");
 });
 
 // The window has no panel for a session the core runs that no workspace names, such as a subagent.
@@ -986,7 +996,7 @@ test("the key opens and focuses a waiting session that has no panel", async () =
   const session = bridge.spawnAgentWithoutPanel(feature, "Claude");
   bridge.agentStateChanged({ session, state: "NeedsInput", kind: "Approval", source: "Protocol" });
   render(<App bridge={bridge} />);
-  await screen.findByRole("button", { name: /1 waiting/ });
+  await expect.poll(waiting).toBe("1");
 
   await pressJump();
 
@@ -1017,7 +1027,7 @@ test("clicking a notification for a waiting session with no panel opens and focu
   const session = bridge.spawnAgentWithoutPanel(feature, "Claude");
   bridge.agentStateChanged({ session, state: "NeedsInput", kind: "Approval", source: "Protocol" });
   render(<App bridge={bridge} />);
-  await screen.findByRole("button", { name: /1 waiting/ });
+  await expect.poll(waiting).toBe("1");
 
   await act(async () => bridge.clickNotification({ session, worktree: feature }));
 
@@ -1039,14 +1049,14 @@ test("clicking a notification for a session grove no longer has changes nothing"
   expect(bridge.focused).toEqual([]);
 });
 
-test("the title bar counts sessions that were waiting before the window opened", async () => {
+test("Needs you counts sessions that were waiting before the window opened", async () => {
   const bridge = await trackedBridge();
   const session = await bridge.spawnAgent(feature, "Claude", null);
   bridge.agentStateChanged({ session, state: "NeedsInput", kind: "Question", source: "Protocol" });
 
   render(<App bridge={bridge} />);
 
-  expect((await screen.findByRole("button", { name: /1 waiting/ })).textContent).toBe("1 waiting⌘J");
+  await expect.poll(waiting).toBe("1");
 });
 
 test("Cmd-Q asks first while an agent session works, and quits at once after it is done", async () => {
@@ -1632,18 +1642,18 @@ test("the Details button opens the card, shows whether it is open, and closes it
   expect(screen.getByRole("button", { name: "Details" })).toHaveProperty("disabled", true);
   await select("feat-36");
   const button = screen.getByRole("button", { name: "Details" });
-  expect(button.getAttribute("aria-expanded")).toBe("false");
+  expect(button.getAttribute("aria-pressed")).toBe("false");
 
   await act(async () => fireEvent.click(button));
 
   expect(within(detailsCard()).getByText(feature)).toBeTruthy();
-  expect(button.getAttribute("aria-expanded")).toBe("true");
+  expect(button.getAttribute("aria-pressed")).toBe("true");
 
   // Its own button closes it, rather than a click outside that the button then opens again.
   fireEvent.pointerDown(button);
   await act(async () => fireEvent.click(button));
   expect(screen.queryByRole("region", { name: "Details" })).toBeNull();
-  expect(button.getAttribute("aria-expanded")).toBe("false");
+  expect(button.getAttribute("aria-pressed")).toBe("false");
 
   await act(async () => fireEvent.click(button));
   fireEvent.keyDown(document.body, { key: "Escape" });
@@ -1665,7 +1675,7 @@ test("the Details card stays closed after its worktree is deleted, until it is o
   await select("feat-36");
 
   expect(screen.queryByRole("region", { name: "Details" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Details" }).getAttribute("aria-expanded")).toBe("false");
+  expect(screen.getByRole("button", { name: "Details" }).getAttribute("aria-pressed")).toBe("false");
 });
 
 test("Start and Stop in the Details card's scripts row follow the run session's state", async () => {
@@ -1753,4 +1763,71 @@ test("the Details card shows the new session of a panel that changed agent while
 
   const session = within(detailsCard()).getByRole("group", { name: "Session" });
   expect(within(session).getByText("Codex")).toBeTruthy();
+});
+
+// Window shell (#29).
+
+test("each title bar switch opens and closes its region, and shows as pressed while it is open", async () => {
+  render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+  const regions: [string, () => HTMLElement | null][] = [
+    ["Details", () => screen.queryByRole("region", { name: "Details" })],
+    ["Terminal", () => screen.queryByRole("button", { name: "Open shell" })],
+    ["Panel area", () => screen.queryByRole("region", { name: "Panel area" })],
+  ];
+
+  for (const [name, region] of regions) {
+    const open = region() !== null;
+    expect(pressed(name)).toBe(String(open));
+
+    await clickButton(name);
+    expect(region() !== null).toBe(!open);
+    expect(pressed(name)).toBe(String(!open));
+
+    await clickButton(name);
+    expect(region() !== null).toBe(open);
+    expect(pressed(name)).toBe(String(open));
+  }
+});
+
+test("the title bar's switches are in order: details card, terminal, panel area", async () => {
+  render(<App bridge={await trackedBridge()} />);
+  const titleBar = screen.getByRole("banner");
+
+  const names = within(titleBar)
+    .getAllByRole("button")
+    .map((button) => button.getAttribute("aria-label"));
+
+  expect(names.slice(-3)).toEqual(["Details", "Terminal", "Panel area"]);
+  expect(within(titleBar).queryByRole("button", { name: /waiting|Settings|Appearance/ })).toBeNull();
+});
+
+test("the title bar names the selected worktree's repo, with its badge, then the worktree", async () => {
+  const bridge = fakeBridge({
+    [main]: [
+      { path: main, branch: "main", isMain: true },
+      { path: feature, branch: "feat-36", isMain: false, displayName: "Title bar" },
+    ],
+  });
+  await bridge.addRepo(main);
+  render(<App bridge={bridge} />);
+  const titleBar = screen.getByRole("banner");
+  expect(titleBar.textContent).toContain("No worktree selected");
+
+  await select("Title bar");
+
+  expect(within(titleBar).getByText("GR").className).toContain("repo-badge");
+  expect(within(titleBar).getByText("grove")).toBeTruthy();
+  expect(within(titleBar).getByText("Title bar")).toBeTruthy();
+});
+
+test("Profiles in the sidebar opens the Profile panel, and the panel area with it", async () => {
+  render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+  await clickButton("Panel area");
+
+  await clickButton("Profiles");
+
+  expect(screen.getByRole("tab", { name: "Profile", selected: true })).toBeTruthy();
+  expect(pressed("Panel area")).toBe("true");
 });
