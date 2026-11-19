@@ -13,7 +13,6 @@ import {
 } from "react";
 
 import type {
-  Account,
   Agent,
   AgentMessage,
   AgentStateChanged,
@@ -78,7 +77,6 @@ export function ChatPanel({
   shown,
   order,
   state,
-  account,
   focusRequest,
   onFocus,
   onBlur,
@@ -100,8 +98,6 @@ export function ChatPanel({
   order?: number;
   /** The session's latest state. None until its first. */
   state: AgentStateChanged | undefined;
-  /** The agent's login: null when nobody is logged in, undefined until the agent reports it. */
-  account: Account | null | undefined;
   /** Each new number puts focus in the composer once the panel is shown. 0 asks for nothing. */
   focusRequest: number;
   /** Called each time the panel gets focus. */
@@ -220,7 +216,6 @@ export function ChatPanel({
           worktree={worktree}
           shown={shown}
           state={state}
-          account={account}
           focusRequest={focusRequest}
           draft={draft}
           onDraft={setDraft}
@@ -279,7 +274,6 @@ function ChatView({
   worktree,
   shown,
   state,
-  account,
   focusRequest,
   draft,
   onDraft: setDraft,
@@ -295,7 +289,6 @@ function ChatView({
   worktree: string;
   shown: boolean;
   state: AgentStateChanged | undefined;
-  account: Account | null | undefined;
   focusRequest: number;
   draft: string;
   onDraft: Dispatch<SetStateAction<string>>;
@@ -575,11 +568,6 @@ function ChatView({
             )}
           </div>
         </div>
-        {account !== undefined && (
-          <div className="composer-foot">
-            <span>{describeAccount(account)}</span>
-          </div>
-        )}
       </div>
     </>
   );
@@ -1105,15 +1093,6 @@ function describeAnswers(item: QuestionItem, reply: Reply): string {
   const headers = item.questions.length > 1 ? item.questions : null;
   const answers = reply.answers.map((a, i) => (headers ? `${headers[i].header}: ` : "") + a.join(", "));
   return `Answered: ${answers.join("; ")}`;
-}
-
-function describeAccount(account: Account | null): string {
-  if (account === null) return "Not logged in";
-  const who = account.email ?? account.organization ?? "Logged in";
-  const how = account.plan
-    ? `${account.plan} plan`
-    : account.apiKeySource && `API key from ${account.apiKeySource}`;
-  return how ? `${who} · ${how}` : who;
 }
 
 /**

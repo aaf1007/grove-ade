@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { Profiler } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import type { Account, Agent, AgentMessage, AgentStateChanged, Question, Reply } from "./bridge";
+import type { Agent, AgentMessage, AgentStateChanged, Question, Reply } from "./bridge";
 import { ChatPanel } from "./ChatPanel";
 import { fakeBridge, type FakeBridge } from "./fakeBridge";
 
@@ -83,7 +83,6 @@ function Panel({
   agent = "Claude",
   shown = true,
   state,
-  account,
   focusRequest = 0,
   onOpenDiff = () => {},
   onChangeAgent,
@@ -92,7 +91,6 @@ function Panel({
   agent?: Agent;
   shown?: boolean;
   state?: AgentStateChanged;
-  account?: Account | null;
   focusRequest?: number;
   onOpenDiff?: () => void;
   onChangeAgent?: (agent: Agent) => Promise<void>;
@@ -105,7 +103,6 @@ function Panel({
       worktree={worktree}
       shown={shown}
       state={state}
-      account={account}
       focusRequest={focusRequest}
       onOpenDiff={onOpenDiff}
       onChangeAgent={onChangeAgent}
@@ -666,21 +663,10 @@ test("the header shows the agent, its state with the source, and Chat mode", asy
   expect((within(mode).getByRole("button", { name: "Terminal" }) as HTMLButtonElement).disabled).toBe(true);
 });
 
-test.each<[string, Account | null]>([
-  ["ann@example.com · max plan", { email: "ann@example.com", organization: null, plan: "max", apiKeySource: null }],
-  ["Ann's org · API key from ANTHROPIC_API_KEY", { email: null, organization: "Ann's org", plan: null, apiKeySource: "ANTHROPIC_API_KEY" }],
-  ["Not logged in", null],
-])("the composer's footer shows %s and no model", async (shown, account) => {
+// The account line moved to the sidebar's footer (#29).
+test("the composer has no account line", async () => {
   const bridge = await started();
-  await shownPanel(bridge, { account });
-
-  expect(footer()).toBe(shown);
-  expect(pickerButton().textContent).toContain("Default (recommended) · high effort");
-});
-
-test("the composer has no footer until the agent reports its account", async () => {
-  const bridge = await started();
-  await shownPanel(bridge, { account: undefined });
+  await shownPanel(bridge);
 
   expect(document.querySelector(".composer-foot")).toBeNull();
   expect(pickerButton().textContent).toContain("Default (recommended) · high effort");
@@ -698,7 +684,6 @@ test("the pane head names the session as the sidebar does", async () => {
         worktree={worktree}
         shown
         state={undefined}
-        account={undefined}
         focusRequest={0}
         onOpenDiff={() => {}}
       />,
@@ -716,10 +701,6 @@ function openPicker() {
 
 function option(picker: HTMLElement, name: string | RegExp) {
   return within(picker).getByRole("button", { name }) as HTMLButtonElement;
-}
-
-function footer() {
-  return document.querySelector(".composer-foot")!.textContent;
 }
 
 function pickerButton() {
@@ -1368,7 +1349,6 @@ test("the panel reports its session's mode and model choice as they change", asy
       worktree={worktree}
       shown
       state={undefined}
-      account={undefined}
       focusRequest={0}
       onOpenDiff={() => {}}
       onMode={onMode}
@@ -1396,7 +1376,6 @@ test("a panel that takes another session reports that session's mode", async () 
     worktree,
     shown: true,
     state: undefined,
-    account: undefined,
     focusRequest: 0,
     onOpenDiff: () => {},
   };
