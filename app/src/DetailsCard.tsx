@@ -1,13 +1,34 @@
-import { Copy, FolderOpen, SlidersHorizontal } from "lucide-react";
+import {
+  AppWindow,
+  Bot,
+  ChevronDown,
+  FileDiff as FileDiffIcon,
+  FolderOpen,
+  GitBranch,
+  Laptop,
+  type LucideIcon,
+  Play,
+  Plus,
+  Server,
+  Square,
+} from "lucide-react";
 import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "react";
 
-import type { Agent, Bridge, Editor, FileDiff, Mode, RunSession, SessionId, StateSource, Worktree } from "./bridge";
+import type {
+  Agent,
+  Bridge,
+  DiffBase,
+  Editor,
+  FileDiff,
+  Mode,
+  SessionId,
+  RunSession,
+  StateSource,
+  Worktree,
+} from "./bridge";
 import type { ModelChoice } from "./Picker";
-import { useSetting } from "./settings";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { ChangeBaseDialog } from "./WorktreeDialogs";
-import { Button } from "./ui/Button";
-import { Card } from "./ui/Card";
 import { IconButton } from "./ui/IconButton";
 import { Menu } from "./ui/Menu";
 import "./DetailsCard.css";
@@ -17,9 +38,6 @@ export const DETAILS_CARD_ID = "details-card";
 
 // An open popup: a menu or picker, by the button that opened it, or a dialog.
 const OTHER_POPUP = '[aria-haspopup][aria-expanded="true"], [role="dialog"]';
-
-const ROWS = ["Worktree", "Open in", "Scripts", "Servers", "Branch", "Changes", "Session"] as const;
-type Row = (typeof ROWS)[number];
 
 const EDITORS: [Editor, string][] = [
   ["Zed", "Zed"],
@@ -48,10 +66,11 @@ export interface RunTab {
 }
 
 /**
- * Where the selected worktree is, what runs in it and what changed: its folder, the editors to
- * open it in, its run sessions and their ports, its branch and base, its changes since HEAD, and
- * the focused agent session. Each row can be hidden, and stays hidden. Escape or a click outside
- * closes it, except on the button that opens it, which closes it itself.
+ * Where the selected worktree is, what runs in it and what changed, one row each: its folder, the
+ * editors to open it in, a row per run session that starts or stops it, its branch, its changes
+ * since the base branch, its servers and the focused agent session. A row whose data the worktree
+ * does not have is left out. Escape or a click outside closes it, except on the button that opens
+ * it, which closes it itself.
  */
 export function DetailsCard({
   bridge,
@@ -60,6 +79,7 @@ export function DetailsCard({
   session,
   onStartRun,
   onOpenDiff,
+  onOpenProfile,
   onClose,
 }: {
   bridge: Bridge;
@@ -68,21 +88,28 @@ export function DetailsCard({
   /** null when the worktree has no agent session. */
   session: FocusedSession | null;
   onStartRun(name: string): void;
-  onOpenDiff(): void;
+  /** Opens the Diff on the base the Changes row counts against. */
+  onOpenDiff(base: DiffBase): void;
+  onOpenProfile(): void;
   onClose(): void;
 }) {
-  const [hidden, setHidden] = useSetting<Row[]>("details-card-hidden-rows", [], isRowList);
-  const [tracked, setTracked] = useState<{ worktree: Worktree; repo: string } | null>(null);
+  const [tracked, setTracked] = useState<{
+    worktree: Worktree;
+    repo: string;
+  } | null>(null);
   // Bumped after the base branch changes, to list the worktree again.
   const [listings, setListings] = useState(0);
   const [runSessions, setRunSessions] = useState<RunSession[] | null>(null);
   // Bumped when a profile or the repo's settings change, to list its run sessions again.
   const [settingsChanges, setSettingsChanges] = useState(0);
-  const [changes, setChanges] = useState<{ files: FileDiff[] } | { error: string } | null>(null);
+  // The diff keeps the base it counts against, so a base that just changed shows no old counts.
+  const [diff, setDiff] = useState<{ base: string | null; result: { files: FileDiff[] } | { error: string } } | null>(
+    null,
+  );
   const [diffChanges, setDiffChanges] = useState(0);
   const [changingBase, setChangingBase] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const card = useRef<HTMLDivElement>(null);
+  const card = useRef<HTMLElement>(null);
 
   useEffect(() => {
     let current = true;
@@ -127,16 +154,20 @@ export function DetailsCard({
     [bridge, worktree],
   );
 
+  // Changes count against the base branch. A worktree with none, such as the main worktree,
+  // counts its uncommitted changes.
+  const base = tracked ? (tracked.worktree.baseBranch ?? null) : undefined;
   useEffect(() => {
+    if (base === undefined) return;
     let current = true;
-    bridge.diff(worktree, "Head").then(
-      (files) => current && setChanges({ files }),
-      (e: unknown) => current && setChanges({ error: String(e) }),
+    bridge.diff(worktree, base === null ? "Head" : "MergeBase").then(
+      (files) => current && setDiff({ base, result: { files } }),
+      (e: unknown) => current && setDiff({ base, result: { error: String(e) } }),
     );
     return () => {
       current = false;
     };
-  }, [bridge, worktree, diffChanges]);
+  }, [bridge, worktree, base, diffChanges]);
 
   const onPointerDown = useEffectEvent((event: PointerEvent) => {
     const target = event.target as Element;
@@ -178,164 +209,168 @@ export function DetailsCard({
   // A running run session keeps its row until it exits, also when the settings dropped it or
   // cannot be read.
   const listed = runSessions ?? [];
-  const scripts = [...listed, ...runs.filter((run) => run.running && !listed.some(({ name }) => name === run.name))];
+  const scripts: {
+    name: string;
+    command: string | null;
+    port: number | null;
+  }[] = [
+    ...listed,
+    ...runs
+      .filter((run) => run.running && !listed.some(({ name }) => name === run.name))
+      .map(({ name, port }) => ({ name, command: null, port })),
+  ];
   const servers = scripts.flatMap(({ name, port }) => {
     const live = running.get(name);
     const served = live?.port ?? port;
-    return live && served !== null ? [{ name, port: served }] : [];
+    return live && served !== null ? [`:${served} ${name}`] : [];
   });
-
-  const rows: Record<Row, ReactNode> = {
-    Worktree: (
-      <div className="details-line">
-        <span className="details-code details-path" title={worktree}>
-          {worktree}
-        </span>
-        <IconButton
-          icon={Copy}
-          label="Copy path"
-          size="xs"
-          onClick={() => act(navigator.clipboard.writeText(worktree))}
-        />
-        <IconButton
-          icon={FolderOpen}
-          label="Reveal in Finder"
-          size="xs"
-          onClick={() => act(bridge.revealInFinder(worktree))}
-        />
-      </div>
-    ),
-    "Open in": (
-      <div className="details-line">
-        {EDITORS.map(([editor, label]) => (
-          <Button key={editor} size="xs" onClick={() => act(bridge.openInEditor(editor, worktree, "", 1))}>
-            {label}
-          </Button>
-        ))}
-      </div>
-    ),
-    Scripts:
-      scripts.length === 0 ? (
-        <span className="details-faint">
-          {runSessions === null ? "Loading" : "No run sessions in this repo's profile"}
-        </span>
-      ) : (
-        <ul className="details-list">
-          {scripts.map(({ name }) => {
-            const run = runs.find((tab) => tab.name === name);
-            const live = running.get(name);
-            return (
-              <li key={name} aria-label={name} className="details-line">
-                <span className="details-code">{name}</span>
-                <span className={live ? "details-state running" : "details-state"}>
-                  {live ? "Running" : run ? "Stopped" : "Not started"}
-                </span>
-                {live ? (
-                  <Button size="xs" aria-label={`Stop ${name}`} onClick={() => act(bridge.kill(live.session))}>
-                    Stop
-                  </Button>
-                ) : (
-                  <Button size="xs" aria-label={`Start ${name}`} onClick={() => onStartRun(name)}>
-                    Start
-                  </Button>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      ),
-    Servers:
-      servers.length === 0 ? (
-        <span className="details-faint">No server running</span>
-      ) : (
-        <ul className="details-list">
-          {servers.map(({ name, port }) => (
-            <li key={name} className="details-line">
-              <span className="details-code">{name}</span>
-              <span className="details-code details-muted">localhost:{port}</span>
-            </li>
-          ))}
-        </ul>
-      ),
-    Branch: tracked && (
-      <div className="details-line details-wrap">
-        <span className="details-code" title={tracked.worktree.branch ?? undefined}>
-          {tracked.worktree.branch ?? "Detached HEAD"}
-        </span>
-        <span className="details-faint">base</span>
-        <span className="details-code">{tracked.worktree.baseBranch ?? "None"}</span>
-        <Button size="xs" variant="ghost" onClick={() => setChangingBase(true)}>
-          Change base
-        </Button>
-      </div>
-    ),
-    Changes:
-      changes === null ? (
-        <span className="details-faint">Loading</span>
-      ) : "error" in changes ? (
-        <span className="details-faint">{changes.error}</span>
-      ) : changes.files.length === 0 ? (
-        <span className="details-faint">No changes</span>
-      ) : (
-        <Button size="xs" variant="ghost" title="Open the Diff panel" onClick={onOpenDiff}>
-          <span>
-            {changes.files.length} {changes.files.length === 1 ? "file" : "files"}
-          </span>
-          <span className="details-add">+{sum(changes.files, "added")}</span>
-          <span className="details-del">-{sum(changes.files, "removed")}</span>
-        </Button>
-      ),
-    Session:
-      session === null ? (
-        <span className="details-faint">No agent session</span>
-      ) : (
-        <div className="details-line details-wrap">
-          <span>{AGENT_NAMES[session.agent]}</span>
-          {session.model && <span className="details-muted">{session.model.model.name}</span>}
-          {session.model?.effort && <span className="details-muted">{session.model.effort} effort</span>}
-          {session.mode && <span className="details-muted">{session.mode} mode</span>}
-          {session.source && <span className="details-faint">State from {session.source}</span>}
-        </div>
-      ),
-  };
-
-  const shown = ROWS.filter((row) => !hidden.includes(row));
+  const sessionDetails = session && [session.model?.model.name, session.model?.effort, session.mode].filter(Boolean);
+  const changes = diff && diff.base === base ? diff.result : null;
+  const diffError = changes && "error" in changes ? changes.error : null;
+  const alert = error ?? diffError;
 
   return (
     <div className="details-holder">
-      <div ref={card} id={DETAILS_CARD_ID} className="details-card">
-        <Card
-          title="Details"
-          actions={
-            <Menu
-              label="Rows"
-              icon={SlidersHorizontal}
-              heading="Show"
-              align="end"
-              items={ROWS.map((row) => ({
-                key: row,
-                label: row,
-                checked: !hidden.includes(row),
-                onSelect: () =>
-                  setHidden((rows) => (rows.includes(row) ? rows.filter((r) => r !== row) : [...rows, row])),
-              }))}
+      <section ref={card} id={DETAILS_CARD_ID} className="details-card" aria-label="Details">
+        <ul className="details-rows">
+          <li aria-label="Worktree" className="details-row">
+            <Laptop aria-hidden="true" />
+            <span className="details-path" title={worktree}>
+              {worktree}
+            </span>
+            <IconButton
+              icon={FolderOpen}
+              label="Reveal in Finder"
+              size="xs"
+              className="details-end"
+              onClick={() => act(bridge.revealInFinder(worktree))}
             />
-          }
-        >
-          {shown.length === 0 && <p className="details-faint">Every row is hidden. Rows shows them again.</p>}
-          {shown.map((row) => (
-            <div key={row} role="group" aria-label={row} className="details-row">
-              <span className="details-label">{row}</span>
-              <div className="details-value">{rows[row]}</div>
-            </div>
-          ))}
-          {error && (
-            <p role="alert" className="details-error">
-              {error}
-            </p>
+          </li>
+          <li aria-label="Open in">
+            <Menu
+              label="Open in"
+              icon={AppWindow}
+              items={EDITORS.map(([editor, name]) => ({
+                key: editor,
+                label: name,
+                onSelect: () => act(bridge.openInEditor(editor, worktree, "", 1)),
+              }))}
+              trigger={<RowContent icon={AppWindow} label="Open in" end={<Chevron />} />}
+            />
+          </li>
+          {scripts.map(({ name, command }) => {
+            const live = running.has(name);
+            const stopped = runs.some((run) => run.name === name);
+            return (
+              <li key={name} aria-label={`Run ${name}`}>
+                <button
+                  type="button"
+                  className="details-row"
+                  aria-label={live ? `Stop ${name}` : `Start ${name}`}
+                  onClick={() => {
+                    const run = running.get(name);
+                    if (run) act(bridge.kill(run.session));
+                    else onStartRun(name);
+                  }}
+                >
+                  <RowContent
+                    icon={live ? Square : Play}
+                    label={`Run ${name}`}
+                    end={
+                      live ? (
+                        <span className="details-running">Running</span>
+                      ) : stopped ? (
+                        <span className="details-faint">Stopped</span>
+                      ) : (
+                        command && <span className="details-faint details-code">{command}</span>
+                      )
+                    }
+                  />
+                </button>
+              </li>
+            );
+          })}
+          <li aria-label="Add run session">
+            <button type="button" className="details-row" onClick={onOpenProfile}>
+              <RowContent icon={Plus} label="Add run session" />
+            </button>
+          </li>
+          <li role="separator" className="details-divider" />
+          {tracked && (
+            <li aria-label="Branch">
+              <Menu
+                label="Branch"
+                icon={GitBranch}
+                items={[
+                  {
+                    key: "base",
+                    label: "Change base",
+                    onSelect: () => setChangingBase(true),
+                  },
+                ]}
+                trigger={
+                  <RowContent
+                    icon={GitBranch}
+                    label={<span className="details-code">{tracked.worktree.branch ?? "Detached HEAD"}</span>}
+                    end={<Chevron />}
+                  />
+                }
+              />
+            </li>
           )}
-        </Card>
-      </div>
+          {changes && "files" in changes && (
+            <li aria-label="Changes">
+              <button
+                type="button"
+                className="details-row"
+                title="Open the Diff panel"
+                onClick={() => onOpenDiff(base ? "MergeBase" : "Head")}
+              >
+                <RowContent
+                  icon={FileDiffIcon}
+                  label={
+                    <>
+                      Changes
+                      <span className="details-muted">vs {base ?? "HEAD"}</span>
+                    </>
+                  }
+                  end={
+                    <span className="details-code">
+                      <span className="details-add">+{sum(changes.files, "added")}</span>{" "}
+                      <span className="details-del">−{sum(changes.files, "removed")}</span>
+                    </span>
+                  }
+                />
+              </button>
+            </li>
+          )}
+          {servers.length > 0 && (
+            <li aria-label="Servers" className="details-row">
+              <RowContent
+                icon={Server}
+                label="Servers"
+                end={<span className="details-muted details-code">{servers.join(", ")}</span>}
+              />
+            </li>
+          )}
+          {session && (
+            <li aria-label="Session" className="details-row" title={session.source && `State from ${session.source}`}>
+              <RowContent
+                icon={Bot}
+                label={AGENT_NAMES[session.agent]}
+                end={
+                  sessionDetails?.length ? <span className="details-muted">{sessionDetails.join(" · ")}</span> : null
+                }
+              />
+            </li>
+          )}
+        </ul>
+        {alert && (
+          <p role="alert" className="details-error">
+            {alert}
+          </p>
+        )}
+      </section>
       {changingBase && tracked && (
         <ChangeBaseDialog
           bridge={bridge}
@@ -351,10 +386,21 @@ export function DetailsCard({
   );
 }
 
-function sum(files: FileDiff[], field: "added" | "removed"): number {
-  return files.reduce((total, file) => total + file[field], 0);
+/** A row's icon, its label, and what sits at its right edge. */
+function RowContent({ icon: Icon, label, end }: { icon: LucideIcon; label: ReactNode; end?: ReactNode }) {
+  return (
+    <>
+      <Icon aria-hidden="true" />
+      <span className="details-label">{label}</span>
+      {end && <span className="details-end">{end}</span>}
+    </>
+  );
 }
 
-function isRowList(value: unknown): value is Row[] {
-  return Array.isArray(value) && value.every((row) => (ROWS as readonly unknown[]).includes(row));
+function Chevron() {
+  return <ChevronDown aria-hidden="true" className="details-chevron" />;
+}
+
+function sum(files: FileDiff[], field: "added" | "removed"): number {
+  return files.reduce((total, file) => total + file[field], 0);
 }

@@ -96,6 +96,13 @@ button.tool:hover {
   white-space: nowrap;
 }
 
+.tool-time {
+  flex: none;
+  color: var(--muted);
+  font: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Under the row's label: past its icon and gap. */
 .tool-output,
 .tool-calls {
