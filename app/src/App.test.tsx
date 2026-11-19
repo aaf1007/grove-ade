@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest"
 import { App } from "./App";
 import type { Agent, AgentState, StateSource, Workspace } from "./bridge";
 import { DEFAULT_WORKSPACE, fakeBridge } from "./fakeBridge";
+import { menuItems } from "./testing";
 import appStyles from "./styles.css?raw";
 
 // The diff view and xterm.js need a real browser. These tests cover only which panels exist and
@@ -162,9 +163,10 @@ function agentRow(name: string) {
   return screen.getByText(name, { selector: ".session-name" }).closest("button")!;
 }
 
-// The state chip on a worktree's row in the sidebar. null when it has none.
+// The state the status dot on a worktree's row names. null when it has none, as for Idle.
 function rowState(worktree: string) {
-  return screen.getByRole("button", { name: worktree }).querySelector(".ui-agent-state")?.textContent ?? null;
+  const row = screen.getByRole("button", { name: worktree }).closest(".wt-row");
+  return row?.querySelector(".status-dot")?.getAttribute("aria-label") ?? null;
 }
 
 test("opening a shell starts one in the selected worktree and shows its panel", async () => {
@@ -268,12 +270,12 @@ test("closing a shell that already exited shows no error", async () => {
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
-test("starting Claude Code in a worktree opens its panel, and the worktree's row stands for its one session", async () => {
+test("starting Claude Code in a worktree opens its panel, and the session nests under the worktree's row", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
 
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
 
   const panel = await screen.findByRole("region", { name: "Panel 0" });
   expect(panel.hidden).toBe(false);
@@ -282,7 +284,7 @@ test("starting Claude Code in a worktree opens its panel, and the worktree's row
   ]);
   expect(screen.getByRole("button", { name: "feat-36" }).getAttribute("aria-current")).toBe("true");
   expect(rowState("feat-36")).toBeNull();
-  expect(document.querySelector(".session-row")).toBeNull();
+  expect(agentRow("Claude Code")).toBeTruthy();
 });
 
 test.each<[string, AgentState, StateSource]>([
@@ -293,11 +295,12 @@ test.each<[string, AgentState, StateSource]>([
   ["Idle", { state: "Idle" }, "Heuristic"],
   ["Failed", { state: "Failed" }, "Heuristic"],
   ["Exited", { state: "Exited" }, "Hook"],
-])("a worktree's row shows its one agent session's %s, without its source", async (shown, state, source) => {
+])("a worktree's row shows its one agent session's %s, without its source", async (word, state, source) => {
+  const shown = word === "Idle" || word === "Exited" ? null : word;
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
 
   act(() => bridge.agentStateChanged({ session: "0", ...state, source }));
@@ -306,27 +309,27 @@ test.each<[string, AgentState, StateSource]>([
   expect(screen.getByRole("button", { name: "feat-36" }).textContent).not.toMatch(source);
 });
 
-test("focusing a Done agent session's panel calls focus, and its worktree's row shows Idle", async () => {
+test("focusing a Done agent session's panel calls focus, and its worktree's row goes to Idle, with no dot", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   const panel = await screen.findByRole("region", { name: "Panel 0" });
   act(() => bridge.agentStateChanged({ session: "0", state: "Done", source: "Hook" }));
 
   await act(async () => panel.focus());
 
   expect(bridge.focused).toEqual(["0"]);
-  expect(rowState("feat-36")).toBe("Idle");
+  expect(rowState("feat-36")).toBeNull();
 });
 
 test("clicking an agent session's row selects its worktree, whose panels show side by side", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   await screen.findByRole("region", { name: "Panel 1" });
   await select("main (main worktree)");
   expect(screen.getByLabelText("Panel 0").hidden).toBe(true);
@@ -345,9 +348,8 @@ test("a double click starts one agent session", async () => {
   render(<App bridge={bridge} />);
   await select("feat-36");
 
-  const start = screen.getByRole("button", { name: "Start Claude Code" });
-  fireEvent.click(start);
-  fireEvent.click(start);
+  startAgent();
+  startAgent();
 
   await screen.findByRole("region", { name: "Panel 0" });
   expect(bridge.spawnedAgents).toHaveLength(1);
@@ -361,7 +363,7 @@ test("an agent session that fails to start shows the core's error and opens no p
   render(<App bridge={bridge} />);
   await select("feat-36");
 
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
 
   expect((await screen.findByRole("alert")).textContent).toBe(error);
   expect(screen.queryByLabelText(/^Panel \d/)).toBeNull();
@@ -372,7 +374,7 @@ test("a turn that ends while its panel has focus goes straight to Idle", async (
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   const panel = await screen.findByRole("region", { name: "Panel 0" });
   await act(async () => panel.focus());
   act(() => bridge.agentStateChanged({ session: "0", state: "Working", source: "Hook" }));
@@ -380,14 +382,14 @@ test("a turn that ends while its panel has focus goes straight to Idle", async (
   await act(async () => bridge.agentStateChanged({ session: "0", state: "Done", source: "Hook" }));
 
   expect(bridge.focused).toEqual(["0", "0"]);
-  expect(rowState("feat-36")).toBe("Idle");
+  expect(rowState("feat-36")).toBeNull();
 });
 
 test("a turn that ends after focus has left its panel stays Done", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   const panel = await screen.findByRole("region", { name: "Panel 0" });
   await act(async () => panel.focus());
   act(() => screen.getByRole("button", { name: "feat-36" }).focus());
@@ -499,7 +501,7 @@ test("the chat area shows the selected worktree's agent panel", async () => {
   const chat = screen.getByRole("main");
   expect(within(chat).getByText("No agent session yet")).toBeTruthy();
 
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
 
   expect(await within(chat).findByRole("region", { name: "Panel 0" })).toBeTruthy();
   expect(within(chat).queryByText("No agent session yet")).toBeNull();
@@ -631,11 +633,11 @@ test("an agent session that fails to start shows its error beside an agent panel
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
   vi.spyOn(bridge, "spawnAgent").mockRejectedValueOnce("out of ptys");
 
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
 
   expect((await screen.findByRole("alert")).textContent).toBe("out of ptys");
   expect(screen.getByLabelText("Panel 0").hidden).toBe(false);
@@ -732,7 +734,7 @@ test("a file the chat opens in the diff opens the Diff panel on that file", asyn
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   const panel = await screen.findByRole("region", { name: "Panel 0" });
   fireEvent.click(screen.getByRole("button", { name: "Panel area" }));
   expect(screen.queryByRole("region", { name: "Panel area" })).toBeNull();
@@ -748,7 +750,7 @@ test("the files-changed card's Review diff shows the collapsed panel area", asyn
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
   fireEvent.click(screen.getByRole("button", { name: "Panel area" }));
   expect(screen.queryByRole("region", { name: "Panel area" })).toBeNull();
@@ -822,7 +824,7 @@ test("picking Codex before the first message starts a Codex session in the same 
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
   fireEvent.change(screen.getByRole("textbox", { name: "Draft" }), { target: { value: "add a test" } });
 
@@ -834,8 +836,8 @@ test("picking Codex before the first message starts a Codex session in the same 
   expect((within(panel).getByRole("textbox", { name: "Draft" }) as HTMLInputElement).value).toBe("add a test");
   expect(bridge.spawnedAgents.map((s) => s.agent)).toEqual(["Claude", "Codex"]);
   expect(bridge.killed).toEqual(["0"]);
-  // The Codex session took the Claude one's place, so the worktree has one session and no nested rows.
-  expect(document.querySelector(".session-row")).toBeNull();
+  // The Codex session took the Claude one's place, so the worktree has one session.
+  expect([...document.querySelectorAll(".session-row")].map((row) => row.textContent)).toEqual(["Codex"]);
 });
 
 // The core starts the Codex session in a panel of its own. The switch drops that panel, even when
@@ -844,7 +846,7 @@ test("a switch leaves one panel, with the Codex session, in the saved workspace"
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
   const spawnAgent = bridge.spawnAgent.bind(bridge);
   vi.spyOn(bridge, "spawnAgent").mockImplementation(async (worktree, agent, panel) => {
@@ -867,7 +869,7 @@ test("a focused panel that switches agent stays focused on the new session", asy
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   const panel = await screen.findByRole("region", { name: "Panel 0" });
   act(() => panel.focus());
 
@@ -882,7 +884,7 @@ test("a failed switch keeps the Claude session and says why", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
   vi.spyOn(bridge, "spawnAgent").mockRejectedValueOnce("codex is not on PATH");
 
@@ -893,8 +895,11 @@ test("a failed switch keeps the Claude session and says why", async () => {
   expect(bridge.killed).toEqual([]);
 });
 
+// Starts Claude Code from the selected worktree's menu.
 function startAgent() {
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  const row = screen.getAllByRole("button", { current: true }).find((button) => button.classList.contains("wt-name"))!;
+  fireEvent.click(within(row.closest(".wt-row") as HTMLElement).getByRole("button", { name: /^Actions for / }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Start Claude Code" }));
 }
 
 function needsYou() {
@@ -992,7 +997,7 @@ test("jumping to a Done session's panel makes it Idle, which leaves the queue", 
 
   await pressJump();
 
-  expect(rowState("feat-36")).toBe("Idle");
+  expect(rowState("feat-36")).toBeNull();
   expect(waiting()).toBe("0");
 });
 
@@ -1069,7 +1074,7 @@ test("Cmd-Q asks first while an agent session works, and quits at once after it 
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
 
   act(() => bridge.agentStateChanged({ session: "0", state: "Working", source: "Protocol" }));
@@ -1126,8 +1131,9 @@ test("Claude Code starts in a new worktree once its setup script succeeds, and t
 
   await createWorktree("feat-52");
 
-  expect(await screen.findByText("Setup running")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Start Claude Code" })).toBeNull();
+  expect(await screen.findByRole("img", { name: "Setup running" })).toBeTruthy();
+  expect(menuItems("feat-52")).not.toContain("Start Claude Code");
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
   expect(bridge.spawnedAgents).toEqual([]);
 
   act(() => bridge.finishSetup("/grovecode/worktrees/grove/feat-52", 0));
@@ -1136,8 +1142,8 @@ test("Claude Code starts in a new worktree once its setup script succeeds, and t
   expect(bridge.spawnedAgents).toEqual([
     { session: "0", worktree: "/grovecode/worktrees/grove/feat-52", agent: "Claude" },
   ]);
-  expect(screen.queryByText("Setup running")).toBeNull();
-  expect(screen.getByRole("button", { name: "Start Claude Code" })).toBeTruthy();
+  expect(screen.queryByRole("img", { name: "Setup running" })).toBeNull();
+  expect(menuItems("feat-52")).toContain("Start Claude Code");
 });
 
 // Issue #158: a start that waits for setup holds back none of the worktree's saves.
@@ -1146,7 +1152,7 @@ test("a change made while setup runs saves at once, and the session still gets i
   const worktree = "/grovecode/worktrees/grove/feat-52";
   render(<App bridge={bridge} />);
   await createWorktree("feat-52");
-  await screen.findByText("Setup running");
+  await screen.findByRole("img", { name: "Setup running" });
 
   fireEvent.click(screen.getByRole("button", { name: "Open a panel" }));
   fireEvent.click(within(screen.getByRole("menu", { name: "Open a panel" })).getByRole("menuitemcheckbox", { name: "Logs" }));
@@ -1175,7 +1181,7 @@ test("a change saved over a session started after setup puts its panel back", as
   });
   render(<App bridge={bridge} />);
   await createWorktree("feat-52");
-  await screen.findByText("Setup running");
+  await screen.findByRole("img", { name: "Setup running" });
   const release = bridge.holdWorkspaceChanges();
   act(() => bridge.finishSetup(worktree, 0));
   await expect.poll(() => bridge.spawnedAgents.length).toBe(1);
@@ -1206,7 +1212,7 @@ test("a session started after setup whose core copy then does not load shows as 
   });
   render(<App bridge={bridge} />);
   await createWorktree("feat-52");
-  await screen.findByText("Setup running");
+  await screen.findByRole("img", { name: "Setup running" });
   // The core's change comes after the start's own load.
   const release = bridge.holdWorkspaceChanges();
 
@@ -1234,7 +1240,7 @@ test("a session started after setup whose panel then does not save shows as star
   });
   render(<App bridge={bridge} />);
   await createWorktree("feat-52");
-  await screen.findByText("Setup running");
+  await screen.findByRole("img", { name: "Setup running" });
   bridge.holdWorkspaceChanges();
   act(() => bridge.finishSetup(worktree, 0));
   await expect.poll(() => bridge.spawnedAgents.length).toBe(1);
@@ -1256,7 +1262,7 @@ test("a setup script that fails shows on the row and in the chat area, and start
   const bridge = await rustRepo();
   render(<App bridge={bridge} />);
   await createWorktree("feat-52");
-  await screen.findByText("Setup running");
+  await screen.findByRole("img", { name: "Setup running" });
 
   act(() => bridge.finishSetup("/grovecode/worktrees/grove/feat-52", 3));
 
@@ -1267,7 +1273,7 @@ test("a setup script that fails shows on the row and in the chat area, and start
     ),
   ).toBeTruthy();
   expect(bridge.spawnedAgents).toEqual([]);
-  expect(screen.getByRole("button", { name: "Start Claude Code" })).toBeTruthy();
+  expect(menuItems("feat-52")).toContain("Start Claude Code");
 });
 
 // Makes worktree feat-52 with no profile, so no setup script runs.
@@ -1789,7 +1795,7 @@ test("the Details card's session row shows the worktree's agent session and wher
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
-  fireEvent.click(screen.getByRole("button", { name: "Start Claude Code" }));
+  startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
   act(() => bridge.agentStateChanged({ session: "0", state: "Working", source: "Protocol" }));
 
@@ -1889,4 +1895,23 @@ test("Profiles in the sidebar opens the Profile panel, and the panel area with i
 
   expect(screen.getByRole("tab", { name: "Profile", selected: true })).toBeTruthy();
   expect(pressed("Panel area")).toBe("true");
+});
+
+// Sidebar tree (#32).
+
+test("clicking the second of two nested agent sessions focuses its panel", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 0" });
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 1" });
+  await select("main (main worktree)");
+
+  await act(async () => fireEvent.click(agentRow("Claude Code 2")));
+
+  expect(screen.getByLabelText("Panel 1").hidden).toBe(false);
+  expect(document.activeElement).toBe(screen.getByLabelText("Panel 1"));
+  expect(bridge.focused).toEqual(["1"]);
 });

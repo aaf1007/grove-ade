@@ -48,7 +48,7 @@
 
 /* Only Working moves: its icon pulses between full and half opacity. */
 .ui-agent-state-working svg {
-  animation: ui-agent-state-pulse 2s steps(6) infinite;
+  animation: ui-agent-state-pulse var(--working-pulse);
 }
 
 @keyframes ui-agent-state-pulse {
