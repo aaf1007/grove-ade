@@ -248,8 +248,10 @@ svg {
 }
 
 /* New worktree, Search, Needs you and Profiles, over the list. */
+/* One column as wide as the sidebar. An auto one would grow to the Search box's own width. */
 .sidebar-nav {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   flex: none;
   padding: var(--space-8);
 }
@@ -307,8 +309,10 @@ svg {
   cursor: text;
 }
 
+/* It takes the room the row has left, never its own default width. */
 .search-row input {
   flex: 1;
+  width: 0;
   min-width: 0;
   height: 100%;
   padding: 0;

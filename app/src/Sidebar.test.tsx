@@ -302,6 +302,20 @@ test("a worktree whose setup script runs shows Setup running in place of its sta
   expect(screen.getAllByText("Setup running")).toHaveLength(1);
 });
 
+test("the top rows fit the sidebar's width, so each key hint shows in full", async () => {
+  const style = document.createElement("style");
+  style.textContent = sidebarStyles;
+  document.head.append(style);
+  onTestFinished(() => style.remove());
+  render(<Sidebar bridge={fakeBridge({})} selected={null} onSelect={() => {}} {...noAgents} />);
+  const nav = getComputedStyle(screen.getByRole("navigation", { name: "Sidebar" }));
+  const search = getComputedStyle(screen.getByRole("searchbox", { name: "Search" }));
+
+  // An auto column grows to the Search box's own width and pushes the hints past the edge.
+  expect(nav.gridTemplateColumns).toBe("minmax(0, 1fr)");
+  expect([search.minWidth, search.width]).toEqual(["0px", "0px"]);
+});
+
 test("a long worktree name is cut with an ellipsis, and its chip is never cut", async () => {
   const style = document.createElement("style");
   style.textContent = sidebarStyles + agentStateStyles;
