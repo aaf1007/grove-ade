@@ -1,9 +1,9 @@
 name: CI
 
-# Manual runs only, since Nov 14, 2026: the month's Actions minutes ran out, and every push
-# made a run GitHub refused to start. The reviewer runs the same gates on this Mac (issue #253).
-# Bring back pull_request and push to main when minutes come back.
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:

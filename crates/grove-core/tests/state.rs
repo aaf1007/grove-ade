@@ -115,7 +115,7 @@ fn every_change_to_repos_and_worktrees_survives_a_restart() {
         &["worktree", "add", "-q", "--detach", "../detached"],
     );
     let detached = dir.path().join("detached").canonicalize().unwrap();
-    let issue = "https://github.com/aaf1007/grove-ade/issues/50";
+    let issue = "https://example.com/issues/50";
     let (core, _events) = start(dir.path());
 
     block_on(core.add_repo(&first)).unwrap();
@@ -125,7 +125,7 @@ fn every_change_to_repos_and_worktrees_survives_a_restart() {
     let new = NewWorktree {
         branch: "login".into(),
         display_name: Some("Fix login".into()),
-        issue_link: Some("https://github.com/aaf1007/grove-ade/issues/20".into()),
+        issue_link: Some("https://example.com/issues/20".into()),
         base_branch: None,
     };
     let added = block_on(core.create_worktree(&first, new))

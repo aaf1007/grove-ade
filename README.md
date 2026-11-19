@@ -90,11 +90,7 @@ Run from the repo root.
 | TS lint (in `app/`) | `npx eslint .` |
 | TS tests (in `app/`) | `npx vitest run` |
 
-To run the gates on every push, enable the pre-push hook once in the main checkout:
-
-```bash
-git config core.hooksPath .githooks
-```
+CI runs the Rust and TS gates on every pull request and every push to `main`.
 
 How work is planned, built and reviewed: [`docs/workflow.md`](docs/workflow.md). Tests each milestone must pass: [`docs/acceptance.md`](docs/acceptance.md).
 

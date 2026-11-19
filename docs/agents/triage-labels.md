@@ -12,7 +12,7 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
-Agents write all code, `crates/` included, so tickets are `AFK` unless the developer has to do the work. See `CLAUDE.local.md`.
+Agents write all code, `crates/` included, so tickets are `AFK` unless the developer has to do the work, such as a manual measurement.
 
 Other labels from `docs/workflow.md`: `spike`, `dogfood`, `adr-needed`.
 
