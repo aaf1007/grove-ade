@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { fileLines, findLines } from "./anchor";
 import type { AgentStateChanged, Bridge, DiffBase, FileDiff, FileVersions, SessionId } from "./bridge";
@@ -17,6 +17,8 @@ export function DiffView({
   worktree,
   agentStates,
   onSent,
+  reveal = null,
+  onRevealed,
 }: {
   bridge: Bridge;
   worktree: string;
@@ -24,6 +26,10 @@ export function DiffView({
   agentStates: Record<SessionId, AgentStateChanged>;
   /** Called with the agent session a review batch went to. */
   onSent(session: SessionId): void;
+  /** A file to show on the HEAD base, by its path in the worktree. */
+  reveal?: string | null;
+  /** Called once the view took `reveal`, so the next request for the same file shows it again. */
+  onRevealed?: () => void;
 }) {
   const [base, setBase] = useState<DiffBase>("Head");
   // The files keep the base they came from, so their versions come from that same base.
@@ -34,6 +40,19 @@ export function DiffView({
   // Bumped on each DiffChanged for this worktree, to load the diff again.
   const [changes, setChanges] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
+  // The reveal taken so far. It follows the prop during render, as state that follows a prop does.
+  const [taken, setTaken] = useState<string | null>(null);
+  if (reveal !== taken) {
+    setTaken(reveal);
+    if (reveal !== null) {
+      setBase("Head");
+      setSelected(reveal);
+    }
+  }
+  const revealed = useEffectEvent(() => onRevealed?.());
+  useEffect(() => {
+    if (reveal !== null) revealed();
+  }, [reveal]);
   // The last versions loaded. They stay on screen until the next ones arrive, so a refresh
   // never empties the editor.
   const [shown, setShown] = useState<Shown | null>(null);

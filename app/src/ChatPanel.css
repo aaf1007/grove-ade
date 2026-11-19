@@ -247,6 +247,69 @@ button.tool:hover {
   border-radius: var(--radius-full);
 }
 
+/* The worktree's changed files after the last turn. */
+.files-card {
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: calc(var(--radius-lg) + var(--space-2));
+  background: var(--code-bg);
+}
+
+.files-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-12);
+  font: var(--text-label);
+}
+
+.files-rows {
+  margin: 0;
+  padding: 0 0 var(--space-6);
+  list-style: none;
+}
+
+.files-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-12);
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: var(--text-code-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.files-row:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.files-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files-counts {
+  display: inline-flex;
+  gap: var(--space-6);
+  font-family: var(--font-mono);
+}
+
+.files-counts .added {
+  color: var(--add);
+}
+
+.files-counts .removed {
+  color: var(--del);
+}
+
 /* The agent's mark, in its color. */
 .agent-mark {
   display: inline-flex;

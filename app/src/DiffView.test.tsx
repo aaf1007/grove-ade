@@ -147,6 +147,32 @@ test("switching the diff base changes the file list and the editor", async () =>
   expect(listed()).toEqual(["a.rs +1 -1"]);
 });
 
+test("a file asked for from outside opens on the HEAD base, and the view says it did", async () => {
+  const diffs: FakeDiffs = {
+    [worktree]: {
+      Head: [
+        change({ newPath: "a.rs", added: 1, removed: 1 }, "old a\n", "new a\n"),
+        change({ newPath: "b.rs", status: "Added", added: 1 }, null, "new b\n"),
+      ],
+      MergeBase: [change({ newPath: "c.rs", status: "Added", added: 1 }, null, "new c\n")],
+    },
+  };
+  const bridge = fakeBridge(repos, diffs);
+  await bridge.addRepo(worktree);
+  const onRevealed = vi.fn();
+  const props = { bridge, worktree, agentStates: {}, onSent: () => {}, onRevealed };
+  const view = render(<DiffView {...props} reveal={null} />);
+  const bases = await screen.findByRole("group", { name: "Diff base" });
+  fireEvent.click(within(bases).getByRole("button", { name: "Merge base" }));
+  await screen.findByText("new c");
+
+  view.rerender(<DiffView {...props} reveal="b.rs" />);
+
+  await screen.findByText("new b");
+  expect(within(bases).getByRole("button", { name: "HEAD" }).getAttribute("aria-pressed")).toBe("true");
+  expect(onRevealed).toHaveBeenCalledOnce();
+});
+
 test("a base the core rejects shows its error and no files", async () => {
   const diffs: FakeDiffs = { [worktree]: { Head: [change({ newPath: "a.rs" }, "a\n", "b\n")] } };
 
