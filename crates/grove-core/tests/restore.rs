@@ -292,6 +292,10 @@ impl Setup {
     }
 
     fn spawn(&self, agent: Agent, mode: Mode) -> SessionId {
+        self.spawn_in(&self.worktree, agent, mode)
+    }
+
+    fn spawn_in(&self, worktree: &Path, agent: Agent, mode: Mode) -> SessionId {
         let spec = AgentSpec {
             agent,
             mode,
@@ -300,13 +304,39 @@ impl Setup {
             rows: 30,
             panel: None,
         };
-        self.core().spawn_agent(&self.worktree, spec).unwrap()
+        self.core().spawn_agent(worktree, spec).unwrap()
+    }
+
+    // A new worktree of the repo, on a new branch.
+    fn add_worktree(&self, branch: &str) -> PathBuf {
+        let new = NewWorktree {
+            branch: branch.into(),
+            ..NewWorktree::default()
+        };
+        block_on(self.core().create_worktree(&self.worktree, new))
+            .unwrap()
+            .worktree
+            .path
+    }
+
+    // The worktree whose agent session started a subagent in `worktree`, as the list says.
+    fn linked_from(&self, worktree: &Path) -> Option<PathBuf> {
+        block_on(self.core().list_worktrees())
+            .into_iter()
+            .find(|w| w.path == worktree)
+            .unwrap()
+            .linked_from
     }
 
     // Has `parent`, a Claude session in chat mode, ask grove for a Claude subagent the way
     // grove-mcp does, with its own token. Returns the subagent.
     fn spawn_subagent(&self, parent: SessionId) -> SessionId {
-        let reply = self.ask_for_subagent(parent);
+        self.spawn_subagent_in(parent, None)
+    }
+
+    // `spawn_subagent` in `worktree`, or else in the parent's own.
+    fn spawn_subagent_in(&self, parent: SessionId, worktree: Option<&Path>) -> SessionId {
+        let reply = self.ask_for_subagent_in(parent, worktree);
         let child: u64 = reply["result"]["session"]
             .as_str()
             .unwrap()
@@ -317,6 +347,10 @@ impl Setup {
 
     // The core's reply when `parent` asks for a subagent, with the token of its latest launch.
     fn ask_for_subagent(&self, parent: SessionId) -> Value {
+        self.ask_for_subagent_in(parent, None)
+    }
+
+    fn ask_for_subagent_in(&self, parent: SessionId, worktree: Option<&Path>) -> Value {
         let token = wait_for("the parent's token", || {
             read_log(&self.claude_chat).iter().rev().find_map(|line| {
                 let env = line.get("env")?;
@@ -324,10 +358,14 @@ impl Setup {
                     .then(|| env["GROVE_SESSION_TOKEN"].as_str().unwrap().to_owned())
             })
         });
+        let mut ask = json!({"type": "subagent_spawn", "agent": "claude", "prompt": "hi"});
+        if let Some(worktree) = worktree {
+            ask["worktree"] = json!(worktree);
+        }
         let request = json!({
             "session": parent.to_string(),
             "token": token,
-            "request": {"type": "subagent_spawn", "agent": "claude", "prompt": "hi"},
+            "request": ask,
         });
         let mut stream = UnixStream::connect(&self.cfg.socket).unwrap();
         stream.write_all(request.to_string().as_bytes()).unwrap();
@@ -553,6 +591,45 @@ fn a_subagent_lists_its_parent_and_comes_back_with_it_after_a_restart() {
     s.restart();
     wait_launches(&s.claude_chat, 4);
     assert_eq!(s.sessions(), listed);
+}
+
+#[test]
+fn a_subagent_in_another_worktree_links_it_to_the_parents_and_the_link_outlives_both_and_a_restart()
+{
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let other = s.add_worktree("feat-linked");
+    let parent = s.spawn(Agent::Claude, Mode::Chat);
+    assert_eq!(s.linked_from(&other), None);
+
+    let child = s.spawn_subagent_in(parent, Some(&other));
+
+    assert_eq!(s.linked_from(&other), Some(s.worktree.clone()));
+    assert_eq!(s.linked_from(&s.worktree), None);
+    s.core().kill(child).unwrap();
+    s.core().kill(parent).unwrap();
+    s.wait_state(parent, AgentState::Exited);
+    assert_eq!(s.linked_from(&other), Some(s.worktree.clone()));
+    s.restart();
+    assert_eq!(s.linked_from(&other), Some(s.worktree.clone()));
+}
+
+#[test]
+fn a_worktree_keeps_its_first_link_and_a_subagent_in_its_parents_own_worktree_links_nothing() {
+    let _serial = serial();
+    let s = setup(Scenarios::default());
+    let other = s.add_worktree("feat-linked");
+    let third = s.add_worktree("feat-third");
+    let first_parent = s.spawn(Agent::Claude, Mode::Chat);
+    s.spawn_subagent_in(first_parent, Some(&other));
+    let second_parent = s.spawn_in(&third, Agent::Claude, Mode::Chat);
+
+    s.spawn_subagent_in(second_parent, Some(&other));
+    s.spawn_subagent(first_parent);
+
+    assert_eq!(s.linked_from(&other), Some(s.worktree.clone()));
+    assert_eq!(s.linked_from(&s.worktree), None);
+    assert_eq!(s.linked_from(&third), None);
 }
 
 #[test]
@@ -1117,7 +1194,7 @@ fn a_session_saved_before_grove_kept_models_comes_back_with_no_choice() {
     // The state file as grove wrote it before version 7: no model on any session.
     let path = s.cfg.home.join("state.json");
     let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(state["version"], json!(7));
+    assert_eq!(state["version"], json!(8));
     fn forget_models(value: &mut Value) {
         match value {
             Value::Object(object) => {

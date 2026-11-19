@@ -101,6 +101,11 @@ export interface FakeBridge extends Bridge {
   willPickFolder(path: string | null): void;
   /** How many times `pickFolder` was opened. */
   readonly foldersPicked: number;
+  /**
+   * Links the worktree as the core does when an agent session in `from` starts a subagent in it:
+   * only when it has no link yet.
+   */
+  linkWorktree(worktree: string, from: string): void;
   /** Every shell session started, in order. */
   spawned: { session: SessionId; worktree: string; cols: number; rows: number }[];
   /** Every agent session started, in order. */
@@ -582,6 +587,7 @@ export function fakeBridge(
           displayName: w.branch ?? folderName(w.path),
           issueLink: null,
           baseBranch: "main",
+          linkedFrom: null,
           setup: null,
           ...w,
         })),
@@ -598,6 +604,11 @@ export function fakeBridge(
     },
     get foldersPicked() {
       return foldersPicked;
+    },
+    linkWorktree(worktree, from) {
+      const found = tracked.find((w) => w.path === worktree);
+      if (!found) throw `grove does not track ${worktree}`;
+      found.linkedFrom ??= from;
     },
     async listWorktrees() {
       return tracked.map((w) => ({ ...w }));
@@ -921,6 +932,7 @@ export function fakeBridge(
         displayName: worktree.displayName ?? branch,
         issueLink: worktree.issueLink,
         baseBranch: worktree.baseBranch ?? own[0].baseBranch,
+        linkedFrom: null,
         setup: null,
       };
       tracked.splice(tracked.indexOf(own[own.length - 1]) + 1, 0, added);

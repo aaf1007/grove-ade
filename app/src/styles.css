@@ -565,7 +565,15 @@ svg {
   color: var(--fg);
 }
 
-.session-row::before {
+/* A linked worktree nests under its parent's row like a session, with the same tree line. Its
+   name lines up with the sessions' names. */
+.agent-sessions .wt-row {
+  position: relative;
+  padding-left: calc(var(--space-32) - var(--space-2));
+}
+
+.session-row::before,
+.agent-sessions .wt-row::before {
   position: absolute;
   top: -17px;
   bottom: 50%;
@@ -577,7 +585,8 @@ svg {
   content: "";
 }
 
-.agent-sessions li:not(:last-child) .session-row::after {
+.agent-sessions li:not(:last-child) .session-row::after,
+.agent-sessions li:not(:last-child) > .wt-row::after {
   position: absolute;
   top: 50%;
   bottom: -17px;

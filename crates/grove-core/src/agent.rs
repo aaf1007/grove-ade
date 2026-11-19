@@ -676,7 +676,8 @@ impl Core {
     }
 
     /// Starts a subagent for agent session `parent`: a new agent session in chat mode, in
-    /// `worktree` or else the parent's own, at the parent's size (ADR 0006, 0013). Sends
+    /// `worktree` or else the parent's own, at the parent's size (ADR 0006, 0013). A worktree
+    /// other than the parent's, with no link yet, is linked from the parent's. Sends
     /// `PanelRequested` with the parent. Returns the new session and its worktree.
     pub(crate) fn spawn_subagent(
         &self,
@@ -699,7 +700,9 @@ impl Core {
             });
         }
         drop(live);
-        let worktree = worktree.unwrap_or(parent_worktree);
+        let worktree = worktree.unwrap_or_else(|| parent_worktree.clone());
+        // Linked before the spawn, so the list is right by the new session's first state.
+        let linked = worktree != parent_worktree && self.link_worktree(&worktree, &parent_worktree);
         let spec = AgentSpec {
             agent,
             mode: Mode::Chat,
@@ -708,7 +711,16 @@ impl Core {
             rows,
             panel: None,
         };
-        let session = self.spawn_agent_under(&worktree, spec, Some(parent))?;
+        let session = self
+            .spawn_agent_under(&worktree, spec, Some(parent))
+            .inspect_err(|_| {
+                if linked {
+                    self.unlink_worktree(&worktree);
+                }
+            })?;
+        if linked {
+            self.saves.request();
+        }
         // Having no receivers is fine.
         let _ = self.events.send(CoreEvent::PanelRequested {
             parent: Some(parent),

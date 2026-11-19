@@ -156,6 +156,7 @@ test("creating a worktree adds it to its repo, selects it, sets the repo's profi
     displayName: "Worktree UI",
     issueLink: "#52",
     baseBranch: "feat-35-tauri-sidebar",
+    linkedFrom: null,
     setup: { state: "Running" },
   });
   expect(await bridge.repoProfile("/code/grove")).toBe("Rust crate");

@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { createRef } from "react";
 import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 
+import type { AgentStateChanged } from "./bridge";
 import { fakeBridge, type FakeBridge } from "./fakeBridge";
 import sidebarStyles from "./styles.css?raw";
 import { Sidebar, type SidebarHandle } from "./Sidebar";
@@ -720,4 +721,77 @@ test("the sidebar's addRepo handle opens the picker and adds the folder, as Add 
 
   expect(await screen.findByRole("region", { name: "grove" })).toBeTruthy();
   expect(bridge.foldersPicked).toBe(1);
+});
+
+// Each worktree row's name and the path of the worktree row it nests under, null at the top level.
+function nesting() {
+  return screen
+    .getAllByRole("button")
+    .filter((button) => button.classList.contains("wt-name"))
+    .map((button) => [button.textContent, button.closest("li")!.parentElement!.closest("li")?.title ?? null]);
+}
+
+const linkedRepo = [
+  { path: "/code/grove", branch: "main", isMain: true },
+  { path: "/code/grove-wt/feat-35", branch: "feat-35", isMain: false, linkedFrom: "/code/grove-wt/plan" },
+  { path: "/code/grove-wt/plan", branch: "plan", isMain: false },
+  { path: "/code/grove-wt/deep", branch: "deep", isMain: false, linkedFrom: "/code/grove-wt/feat-35" },
+  { path: "/code/grove-wt/spike", branch: "spike", isMain: false, linkedFrom: "/code/other-repo" },
+  { path: "/code/grove-wt/loop-a", branch: "loop-a", isMain: false, linkedFrom: "/code/grove-wt/loop-b" },
+  { path: "/code/grove-wt/loop-b", branch: "loop-b", isMain: false, linkedFrom: "/code/grove-wt/loop-a" },
+];
+
+test("a linked worktree nests one level deep under the top worktree it is linked from", async () => {
+  const bridge = fakeBridge({ "/code/grove": linkedRepo });
+  await bridge.addRepo("/code/grove");
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await screen.findByRole("region", { name: "grove" });
+
+  // A link to another repo's worktree, or a loop of links, nests nothing.
+  expect(nesting()).toEqual([
+    ["main (main worktree)", null],
+    ["plan", null],
+    ["feat-35", "/code/grove-wt/plan"],
+    ["deep", "/code/grove-wt/plan"],
+    ["spike", null],
+    ["loop-a", null],
+    ["loop-b", null],
+  ]);
+  fireEvent.click(screen.getByRole("button", { name: "Sessions of plan" }));
+  expect(nesting().map(([name]) => name)).not.toContain("feat-35");
+});
+
+test("a linked worktree stays nested after the agent session that linked it ended", async () => {
+  const bridge = fakeBridge({ "/code/grove": linkedRepo });
+  await bridge.addRepo("/code/grove");
+  render(
+    <Sidebar
+      bridge={bridge}
+      selected={null}
+      onSelect={() => {}}
+      {...noAgents}
+      agents={[{ session: "1", worktree: "/code/grove-wt/plan", agent: "Claude", panel: "1" }]}
+      agentStates={{ "1": { session: "1", state: "Exited", source: "Protocol" } }}
+    />,
+  );
+  await screen.findByRole("region", { name: "grove" });
+
+  expect(nesting()).toContainEqual(["feat-35", "/code/grove-wt/plan"]);
+});
+
+test("the first state of a session the sidebar has not seen lists the worktrees again", async () => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  await bridge.addRepo("/code/grove");
+  const sidebar = (agentStates: Record<string, AgentStateChanged>) => (
+    <Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} agentStates={agentStates} />
+  );
+  const { rerender } = render(sidebar({}));
+  await screen.findByRole("region", { name: "grove" });
+  expect(nesting()).toContainEqual(["feat-35-tauri-sidebar", null]);
+
+  // A subagent of a session in the main worktree starts in feat-35.
+  bridge.linkWorktree(feature, "/code/grove");
+  rerender(sidebar({ "9": { session: "9", state: "Working", source: "Protocol" } }));
+
+  await vi.waitFor(() => expect(nesting()).toContainEqual(["feat-35-tauri-sidebar", "/code/grove"]));
 });

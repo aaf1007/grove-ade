@@ -23,6 +23,9 @@ pub struct WorktreeInfo {
     pub issue_link: Option<String>,
     /// What a whole-branch diff compares against. None when the repo has no default branch.
     pub base_branch: Option<String>,
+    /// The worktree of the agent session that first started a subagent here, when that was
+    /// another worktree. It stays after both sessions end.
+    pub linked_from: Option<PathBuf>,
 }
 
 /// A worktree to add with `Core::create_worktree`.
@@ -200,6 +203,24 @@ impl Core {
         f(needed, &mut watches)
     }
 
+    // Links `worktree` to `from` unless it has a link. True when it set one.
+    pub(crate) fn link_worktree(&self, worktree: &Path, from: &Path) -> bool {
+        let mut tracked = self.tracked();
+        match tracked.iter_mut().find(|w| w.path == worktree) {
+            Some(found) if found.linked_from.is_none() => {
+                found.linked_from = Some(from.to_path_buf());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn unlink_worktree(&self, worktree: &Path) {
+        if let Some(found) = self.tracked().iter_mut().find(|w| w.path == worktree) {
+            found.linked_from = None;
+        }
+    }
+
     fn update(&self, worktree: &Path, change: impl FnOnce(&mut WorktreeInfo)) -> Result<()> {
         let mut tracked = self.tracked();
         let found = tracked
@@ -248,6 +269,7 @@ fn parse(porcelain: &[u8]) -> Vec<WorktreeInfo> {
                 is_main: worktrees.is_empty(),
                 issue_link: None,
                 base_branch: None,
+                linked_from: None,
             });
         } else if let Some(name) = field.strip_prefix(b"branch ")
             && let Some(worktree) = worktrees.last_mut()
@@ -314,6 +336,7 @@ fn add(repo: &Path, folder: PathBuf, new: NewWorktree) -> Result<WorktreeInfo> {
         is_main: false,
         issue_link: new.issue_link,
         base_branch: base,
+        linked_from: None,
     })
 }
 
