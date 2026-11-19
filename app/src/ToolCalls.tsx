@@ -21,32 +21,133 @@ export interface ToolCall {
   result?: { output: string; isError: boolean };
 }
 
-/** A run of tool calls: one quiet row each, which opens to show the call's output. */
-export function ToolCalls({ calls, worktree }: { calls: ToolCall[]; worktree: string }) {
+/**
+ * A run of tool calls as quiet rows. Calls of the same kind in a row fold into one row with a
+ * count, which opens to list them. A failed call has a row of its own, with its error under it.
+ * While `live`, a call with no result yet shimmers.
+ */
+export function ToolCalls({ calls, worktree, live }: { calls: ToolCall[]; worktree: string; live: boolean }) {
   return (
     <div className="tools">
-      {calls.map((call) => (
-        <ToolRow key={call.id} call={call} worktree={worktree} />
-      ))}
+      {fold(calls).map((run) =>
+        run.length === 1 ? (
+          <ToolRow key={run[0].id} call={run[0]} worktree={worktree} live={live} />
+        ) : (
+          <FoldedRow key={run[0].id} calls={run} worktree={worktree} live={live} />
+        ),
+      )}
     </div>
   );
 }
 
-function ToolRow({ call, worktree }: { call: ToolCall; worktree: string }) {
+function ToolRow({ call, worktree, live }: { call: ToolCall; worktree: string; live: boolean }) {
   const [open, setOpen] = useState(false);
-  const failed = call.result?.isError ?? false;
-  const { label, icon } = describe(call, worktree);
-  const Icon = failed ? X : icon;
+  const { label, icon: Icon } = describe(call, worktree);
+  if (call.result?.isError) {
+    return (
+      <>
+        <div className="tool failed">
+          <X aria-hidden="true" />
+          <span className="tool-label">{label}</span>
+        </div>
+        <pre className="tool-output failed">{call.result.output}</pre>
+      </>
+    );
+  }
   return (
     <>
-      <button className={failed ? "tool failed" : "tool"} aria-expanded={open} onClick={() => setOpen(!open)}>
+      <button className="tool" aria-expanded={open} onClick={() => setOpen(!open)}>
         <Icon aria-hidden="true" />
-        <span className="tool-label">{label}</span>
+        <Label text={label} running={live && !call.result} />
         <ChevronRight aria-hidden="true" className="chevron" />
       </button>
       {open && <pre className="tool-output">{call.result ? call.result.output : "Running"}</pre>}
     </>
   );
+}
+
+/** Calls of one kind in a row: "Read 4 files", which opens to list each, one line per target. */
+function FoldedRow({ calls, worktree, live }: { calls: ToolCall[]; worktree: string; live: boolean }) {
+  const [open, setOpen] = useState(false);
+  const kind = KINDS[calls[0].tool];
+  const all = calls.flatMap((call) => targets(call)!.map((target) => relative(target, worktree)));
+  // A file read or edited twice is one file. A command run twice ran twice.
+  const listed = kind.unique ? [...new Set(all)] : all;
+  const label =
+    listed.length === 1 ? describe(calls[0], worktree).label : `${kind.verb} ${listed.length} ${kind.noun}`;
+  return (
+    <>
+      <button className="tool" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <kind.icon aria-hidden="true" />
+        <Label text={label} running={live && calls.some((call) => !call.result)} />
+        <ChevronRight aria-hidden="true" className="chevron" />
+      </button>
+      {open && (
+        <ul className="tool-calls" aria-label={label}>
+          {listed.map((target, i) => (
+            <li key={i}>{target}</li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+function Label({ text, running }: { text: string; running: boolean }) {
+  return <span className={running ? "tool-label shimmer" : "tool-label"}>{text}</span>;
+}
+
+/** The kinds of call that fold, by tool. */
+interface Kind {
+  verb: string;
+  noun: string;
+  /** Count each target once. */
+  unique: boolean;
+  icon: LucideIcon;
+}
+const READ: Kind = { verb: "Read", noun: "files", unique: true, icon: FileText };
+const EDIT: Kind = { verb: "Edited", noun: "files", unique: true, icon: Pencil };
+const COMMAND: Kind = { verb: "Ran", noun: "commands", unique: false, icon: SquareTerminal };
+const KINDS: Record<string, Kind> = {
+  Read: READ,
+  Edit: EDIT,
+  Write: EDIT,
+  MultiEdit: EDIT,
+  NotebookEdit: EDIT,
+  fileChange: EDIT,
+  Bash: COMMAND,
+  commandExecution: COMMAND,
+};
+
+/** `calls` split into runs: calls of one kind in a row share a run, and every other call has its own. */
+function fold(calls: ToolCall[]): ToolCall[][] {
+  const runs: ToolCall[][] = [];
+  let kind: Kind | null = null;
+  for (const call of calls) {
+    const own = folds(call) ? KINDS[call.tool] : null;
+    if (own && own === kind) runs[runs.length - 1].push(call);
+    else runs.push([call]);
+    kind = own;
+  }
+  return runs;
+}
+
+function folds(call: ToolCall): boolean {
+  return KINDS[call.tool] !== undefined && !call.result?.isError && targets(call) !== null;
+}
+
+/** The files or commands a call acts on, as the agent named them. null when its input has none. */
+function targets({ tool, input }: ToolCall): string[] | null {
+  if (tool === "fileChange") {
+    const changes = (input as { changes?: unknown } | null)?.changes;
+    if (!Array.isArray(changes)) return null;
+    const paths = changes.map((change) => (change as { path?: unknown } | null)?.path);
+    return paths.length > 0 && paths.every((path) => typeof path === "string") ? (paths as string[]) : null;
+  }
+  const field = SENTENCES[tool]?.field;
+  const target = field ? (input as Record<string, unknown> | null)?.[field] : undefined;
+  if (typeof target !== "string" || target === "") return null;
+  return [KINDS[tool] === COMMAND ? target.split("\n")[0] : target];
 }
 
 /** How each tool's call reads: the input field it acts on, the sentence, and the icon. */

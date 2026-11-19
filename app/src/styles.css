@@ -782,71 +782,6 @@ svg {
   opacity: 1;
 }
 
-/* Tool calls: one quiet row each, 2px apart. */
-.tools {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.tool {
-  display: flex;
-  width: 100%;
-  min-height: var(--control-xs);
-  align-items: center;
-  gap: var(--space-8);
-  padding: 0 var(--space-2);
-  border: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--muted);
-  font: var(--text-body);
-  text-align: left;
-}
-
-.tool:hover {
-  background: var(--hover);
-}
-
-.tool svg {
-  width: var(--icon);
-  height: var(--icon);
-  color: var(--faint);
-  stroke-width: 1.75;
-}
-
-.tool.failed > svg:first-child {
-  color: var(--failed);
-}
-
-.tool .chevron {
-  width: var(--space-12);
-  height: var(--space-12);
-  transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.tool[aria-expanded="true"] .chevron {
-  transform: rotate(90deg);
-}
-
-.tool-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Under the row's label: past its padding, icon and gap. */
-.tool-output {
-  max-height: calc(var(--space-32) * 8);
-  margin: var(--space-2) 0 var(--space-4) calc(var(--space-24) + var(--space-2));
-  overflow: auto;
-  color: var(--muted);
-  font: var(--text-code);
-  white-space: pre;
-}
-
 .notice-line {
   color: var(--faint);
   font-size: var(--text-meta-size);
@@ -859,50 +794,6 @@ svg {
   align-items: center;
   color: var(--muted);
   font: var(--text-body);
-}
-
-/* An approval, in the conversation where the agent stopped. */
-.ask {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-8);
-}
-
-.ask-title {
-  color: var(--muted);
-  font: var(--text-body);
-}
-
-.ask-command {
-  max-height: calc(var(--space-32) * 5);
-  margin: 0;
-  overflow: auto;
-  color: var(--fg);
-  font: var(--text-code-sm);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.ask-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-8);
-}
-
-.ask-waiting {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-4);
-  margin-right: var(--space-4);
-  color: var(--needs);
-  font: var(--text-label);
-}
-
-.ask-waiting svg {
-  width: var(--icon);
-  height: var(--icon);
-  stroke-width: 1.75;
 }
 
 .card {
@@ -937,75 +828,11 @@ svg {
   color: var(--failed);
 }
 
-.card.ask {
-  border-color: color-mix(in srgb, var(--needs) 50%, var(--line));
-}
-
 .card-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-6);
   padding: 0 var(--space-12) var(--space-12);
-}
-
-.question {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  margin: 0;
-  padding: var(--space-10) var(--space-12);
-  border: 0;
-}
-
-.question legend {
-  float: left;
-  margin-bottom: var(--space-4);
-  padding: 0;
-}
-
-.question-header {
-  margin-right: var(--space-8);
-  padding: var(--space-2) var(--space-6);
-  border-radius: var(--radius-sm);
-  background: var(--raised);
-  color: var(--muted);
-  font-size: var(--text-label-size);
-}
-
-.option {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-8);
-  padding: var(--space-4) 0;
-}
-
-.option b {
-  font-weight: 500;
-}
-
-.option-description {
-  margin-left: var(--space-8);
-  color: var(--muted);
-}
-
-.own-answer {
-  height: 28px;
-  margin-top: var(--space-4);
-  padding: 0 var(--space-8);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--bg);
-  color: inherit;
-  font: inherit;
-}
-
-.record {
-  color: var(--muted);
-  font-size: var(--text-meta-size);
-}
-
-.record.expired {
-  color: var(--faint);
 }
 
 .file-rows {
@@ -1895,8 +1722,7 @@ svg {
     animation: none !important;
   }
 
-  .send,
-  .tool .chevron {
+  .send {
     transition: none;
   }
 }

@@ -1,4 +1,4 @@
-import { ArrowUp, Columns2, Shield, Square, X } from "lucide-react";
+import { ArrowUp, Columns2, Ellipsis, Shield, Square, X } from "lucide-react";
 import {
   type Dispatch,
   type KeyboardEvent,
@@ -25,6 +25,7 @@ import type {
   SessionId,
 } from "./bridge";
 import { AgentMarkdown } from "./AgentMarkdown";
+import "./ChatPanel.css";
 import { type ModelChoice, Picker, useModelChoice } from "./Picker";
 import { AGENT_NAMES } from "./Sidebar";
 import { TerminalPanel } from "./TerminalPanel";
@@ -32,6 +33,7 @@ import { relative, type ToolCall, ToolCalls } from "./ToolCalls";
 import { AgentState } from "./ui/AgentState";
 import { Button } from "./ui/Button";
 import { IconButton } from "./ui/IconButton";
+import { Menu } from "./ui/Menu";
 import { Segmented } from "./ui/Segmented";
 
 // The tools whose calls change files, and the input field naming the file.
@@ -311,6 +313,8 @@ function ChatView({
   // What the user sent that the core has not echoed back yet, oldest first.
   const [unechoed, setUnechoed] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Requests the core refused an answer to: they ended before the panel heard.
+  const [refused, setRefused] = useState<string[]>([]);
   // How many messages the conversation had when it came back from terminal mode.
   const resumedAt = useRef<number | null>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -406,8 +410,16 @@ function ChatView({
   const working = state?.state === "Working";
   // A turn runs from its start until it ends, through any requests it waits on.
   const turnRunning = working || state?.state === "NeedsInput";
+  const waiting = items.filter((item): item is RequestItem => "request" in item && isPending(item, refused));
+  // A message sent while an approval waits declines it, and tells the agent what to do instead.
+  const declining = waiting.find((item): item is ApprovalItem => item.kind === "approval");
+  const question = waiting.find((item): item is QuestionItem => item.kind === "question");
   // The first message waits for the model it runs with.
-  const canSend = draft.trim() !== "" && !turnRunning && models !== null && !changingAgent && !switchingMode;
+  const canSend =
+    draft.trim() !== "" &&
+    !changingAgent &&
+    !switchingMode &&
+    (declining !== undefined || (!turnRunning && models !== null));
   const agentLocked =
     unechoed.length > 0 || messages.some((m) => m.type === "User" || m.type === "ReviewBatch");
 
@@ -420,6 +432,7 @@ function ChatView({
   function send() {
     const text = draft;
     if (!canSend) return;
+    if (declining) return decline(declining.request, text);
     setDraft("");
     setUnechoed((sent) => [...sent, text]);
     following.current = true;
@@ -460,8 +473,25 @@ function ChatView({
     bridge.interrupt(session).catch(() => {});
   }
 
+  // A refused answer means the request has ended.
   function answer(request: string, reply: Reply) {
-    return bridge.answer(session, request, reply);
+    return bridge.answer(session, request, reply).catch((e: unknown) => {
+      setRefused((known) => [...known, request]);
+      throw e;
+    });
+  }
+
+  // The message comes back to the composer if the core refuses it.
+  function decline(request: string, text: string) {
+    setDraft("");
+    following.current = true;
+    answer(request, { type: "Deny", message: text }).then(
+      () => setError(null),
+      (e: unknown) => {
+        setError(String(e));
+        setDraft((typed) => [text, typed].filter(Boolean).join("\n"));
+      },
+    );
   }
 
   // Stable, so a finished reply is not parsed again while the next one streams.
@@ -491,6 +521,8 @@ function ChatView({
               item={item}
               agentName={name}
               worktree={worktree}
+              turnRunning={turnRunning}
+              refused={refused}
               onOpenDiff={onOpenDiff}
               onAnswer={answer}
               onOpenLink={openLink}
@@ -511,12 +543,13 @@ function ChatView({
             {error ?? modelError}
           </p>
         )}
+        {question && <QuestionCard key={question.request} item={question} agentName={name} onAnswer={answer} />}
         <div className="composer">
           <textarea
             ref={composer}
             aria-label="Message"
             rows={1}
-            placeholder={`Ask ${name} anything`}
+            placeholder={declining ? "Send a message to decline and redirect the agent" : `Ask ${name} anything`}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
@@ -557,11 +590,24 @@ function fitComposer(el: HTMLTextAreaElement) {
   el.style.height = `${el.scrollHeight}px`;
 }
 
+/** One turn's work, as its items share it. */
+interface Turn {
+  /** Where the turn's items start in the message list. */
+  start: number;
+  ended: boolean;
+  /** Set once the turn has a tool call. */
+  head: WorkItem | null;
+}
+
+/** The header of a turn's work. */
+type WorkItem = { kind: "work"; turn: Turn };
+
 /** One thing the message list shows. */
 type ThreadItem =
   | { kind: "user"; text: string }
   | { kind: "agent"; text: string }
-  | { kind: "tools"; calls: ToolCall[] }
+  | WorkItem
+  | { kind: "tools"; calls: ToolCall[]; turn: Turn }
   | { kind: "files"; paths: string[] }
   | { kind: "review"; comments: BatchComment[] }
   | { kind: "notice"; text: string }
@@ -576,11 +622,15 @@ type RequestItem = {
   reply: Reply | null;
   /** Its turn ended with no reply. */
   expired: boolean;
-} & ({ kind: "approval"; tool: string; input: unknown } | { kind: "question"; questions: Question[] });
+} & ({ kind: "approval"; call: ToolCall; turn: Turn } | { kind: "question"; questions: Question[] });
+
+type ApprovalItem = Extract<RequestItem, { kind: "approval" }>;
+type QuestionItem = Extract<RequestItem, { kind: "question" }>;
 
 /**
- * What the message list shows for `messages`: the agent's deltas joined, each run of tool calls
- * grouped with their results, and each turn's edited files in a card at its end.
+ * What the message list shows for `messages`: the agent's deltas joined, each turn's work under
+ * one header, each run of tool calls with their results, and each turn's edited files in a card at
+ * its end. An approval takes the place of its tool call's row, and a question's call has no row.
  */
 function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
   const items: ThreadItem[] = [];
@@ -588,24 +638,51 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
   // The current turn's requests, by id.
   const requests = new Map<string, RequestItem>();
   let edited: string[] = [];
+  let turn: Turn = { start: 0, ended: false, head: null };
+
+  // The header goes where the turn started, before anything the agent said first.
+  function workStarts() {
+    if (turn.head) return;
+    turn.head = { kind: "work", turn };
+    items.splice(turn.start, 0, turn.head);
+  }
+
+  // The row of the call a request is about, as the agent sent it before the request.
+  function takeCall(id: string): ToolCall | undefined {
+    const call = calls.get(id);
+    if (!call) return undefined;
+    const at = items.findIndex((item) => item.kind === "tools" && item.calls.includes(call));
+    if (at < 0) return call;
+    const run = items[at] as Extract<ThreadItem, { kind: "tools" }>;
+    run.calls = run.calls.filter((other) => other !== call);
+    if (run.calls.length === 0) items.splice(at, 1);
+    return call;
+  }
+
   for (const message of messages) {
-    const last = items[items.length - 1];
     switch (message.type) {
       case "User":
         items.push({ kind: "user", text: message.text });
         break;
       case "TurnStarted":
         edited = [];
+        turn = { start: items.length, ended: false, head: null };
         break;
-      case "TextDelta":
+      case "TextDelta": {
+        const last = items[items.length - 1];
         if (last?.kind === "agent") last.text += message.text;
         else items.push({ kind: "agent", text: message.text });
         break;
+      }
       case "ToolCall": {
+        // Its approval came first and shows it already.
+        if (calls.has(message.id)) break;
         const call = { id: message.id, tool: message.tool, input: message.input };
         calls.set(call.id, call);
+        workStarts();
+        const last = items[items.length - 1];
         if (last?.kind === "tools") last.calls.push(call);
-        else items.push({ kind: "tools", calls: [call] });
+        else items.push({ kind: "tools", calls: [call], turn });
         const path = editedPath(message.tool, message.input);
         if (path && !edited.includes(path)) edited.push(path);
         break;
@@ -617,13 +694,17 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
       }
       case "ApprovalRequested": {
         const { request, tool, input } = message;
-        const item: RequestItem = { kind: "approval", request, tool, input, reply: null, expired: false };
+        const call = takeCall(request) ?? { id: request, tool, input };
+        calls.set(request, call);
+        workStarts();
+        const item: RequestItem = { kind: "approval", request, call, turn, reply: null, expired: false };
         requests.set(request, item);
         items.push(item);
         break;
       }
       case "QuestionAsked": {
         const { request, questions } = message;
+        takeCall(request);
         const item: RequestItem = { kind: "question", request, questions, reply: null, expired: false };
         requests.set(request, item);
         items.push(item);
@@ -641,6 +722,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
         items.push({ kind: "resumed" });
         break;
       case "TurnEnded":
+        turn.ended = true;
         requests.forEach((item) => (item.expired = !item.reply));
         requests.clear();
         if (edited.length > 0) {
@@ -669,10 +751,17 @@ function editedPath(tool: string, input: unknown): string | null {
   return typeof path === "string" ? path : null;
 }
 
+/** Waiting on the user: no reply yet, the turn still runs, and the core has not refused an answer. */
+function isPending(item: RequestItem, refused: string[]): boolean {
+  return !item.reply && !item.expired && !refused.includes(item.request);
+}
+
 function Item({
   item,
   agentName,
   worktree,
+  turnRunning,
+  refused,
   onOpenDiff,
   onAnswer,
   onOpenLink,
@@ -680,20 +769,39 @@ function Item({
   item: ThreadItem;
   agentName: string;
   worktree: string;
+  /** The session's latest turn runs, by its agent state. */
+  turnRunning: boolean;
+  /** Requests the core refused an answer to. */
+  refused: string[];
   onOpenDiff(): void;
   onAnswer(request: string, reply: Reply): Promise<void>;
   onOpenLink(link: string): void;
 }) {
   switch (item.kind) {
+    case "work":
+      return <WorkHead running={turnRunning && !item.turn.ended} />;
+    case "tools":
+      return <ToolCalls calls={item.calls} worktree={worktree} live={turnRunning && !item.turn.ended} />;
     case "approval":
+      return (
+        <Approval
+          item={item}
+          agentName={agentName}
+          worktree={worktree}
+          live={turnRunning && !item.turn.ended}
+          pending={isPending(item, refused)}
+          onAnswer={onAnswer}
+        />
+      );
     case "question":
-      return <RequestCard item={item} agentName={agentName} onAnswer={onAnswer} />;
+      // Pending, it is a card above the composer.
+      if (isPending(item, refused)) return null;
+      if (item.reply) return <div className="record">{describeAnswers(item, item.reply)}</div>;
+      return <div className="record expired">Expired: {item.questions[0]?.question}</div>;
     case "user":
       return <div className="msg-user">{item.text}</div>;
     case "agent":
       return <AgentMarkdown text={item.text} onOpenLink={onOpenLink} />;
-    case "tools":
-      return <ToolCalls calls={item.calls} worktree={worktree} />;
     case "files": {
       const label = `${item.paths.length} ${item.paths.length === 1 ? "file" : "files"} changed`;
       return (
@@ -768,148 +876,170 @@ function Item({
   }
 }
 
+/** The header of a turn's work: "Working" while the turn runs, "Worked" after. */
+function WorkHead({ running }: { running: boolean }) {
+  return (
+    <div className="work-head">
+      <span className={running ? "shimmer" : undefined}>{running ? "Working" : "Worked"}</span>
+    </div>
+  );
+}
+
 /** Where a review comment is, as the agent reads it: `path:line` or `path:first-last`. */
 function placeOf({ path, startLine, endLine }: BatchComment): string {
   return startLine === endLine ? `${path}:${startLine}` : `${path}:${startLine}-${endLine}`;
 }
 
 /**
- * A pending request as a card that answers it, and as a one-line record once answered or expired.
- * A card scrolls into view when it comes, and answers once.
+ * An approval: the call's row, and under it what the user can do while it waits, or what they did.
+ * A pending one scrolls into view when it comes, and answers once.
  */
-function RequestCard({
+function Approval({
   item,
   agentName,
+  worktree,
+  live,
+  pending,
   onAnswer,
 }: {
-  item: RequestItem;
+  item: ApprovalItem;
   agentName: string;
+  worktree: string;
+  live: boolean;
+  pending: boolean;
   onAnswer(request: string, reply: Reply): Promise<void>;
 }) {
   const [sending, setSending] = useState(false);
-  // The core refused the answer: the request ended before the panel heard.
-  const [refused, setRefused] = useState(false);
-  const card = useRef<HTMLDivElement>(null);
-  const expired = item.expired || refused;
-  const pending = !item.reply && !expired;
+  const line = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
-    if (pending) card.current!.scrollIntoView({ block: "nearest" });
+    if (pending) line.current!.scrollIntoView({ block: "nearest" });
   }, [pending]);
 
   function answer(reply: Reply) {
     if (sending) return;
     setSending(true);
-    // The card becomes a record when the core's `Answered` comes.
-    onAnswer(item.request, reply).catch(() => setRefused(true));
+    // The line becomes a record when the core's `Answered` comes. A refused answer is reported
+    // through `pending`.
+    onAnswer(item.request, reply).catch(() => {});
   }
 
-  if (item.reply) return <div className="record">{describeReply(item, item.reply)}</div>;
-  if (expired) {
-    const asked =
-      item.kind === "approval" ? `${agentName} asked to use ${item.tool}` : item.questions[0]?.question;
-    return <div className="record expired">Expired: {asked}</div>;
-  }
-  if (item.kind === "approval") {
-    const title = `${agentName} wants to use ${item.tool}`;
-    return (
-      <div className="ask" role="group" aria-label={title} ref={card}>
-        <div className="ask-title">{title}</div>
-        <pre className="ask-command">{describeInput(item.input)}</pre>
-        <div className="ask-actions">
-          <span className="ask-waiting">
+  return (
+    <div className="approval">
+      <ToolCalls calls={[item.call]} worktree={worktree} live={live} />
+      {item.reply ? (
+        <div className="approval-line record">{describeApproval(item.reply)}</div>
+      ) : !pending ? (
+        <div className="approval-line record expired">Expired</div>
+      ) : (
+        <div
+          className="approval-line"
+          role="group"
+          aria-label={`${agentName} wants to use ${item.call.tool}`}
+          ref={line}
+        >
+          <span className="approval-waiting">
             <Shield aria-hidden="true" />
             Waiting for approval
           </span>
-          <Button variant="primary" size="xs" disabled={sending} onClick={() => answer({ type: "AllowOnce" })}>
-            Allow
-          </Button>
-          <Button size="xs" disabled={sending} onClick={() => answer({ type: "Deny", message: null })}>
-            Deny
-          </Button>
-          <Button
-            variant="ghost"
-            size="xs"
+          <span aria-hidden="true">·</span>
+          <button
+            type="button"
+            className="approval-action"
             disabled={sending}
-            onClick={() => answer({ type: "AllowForSession" })}
+            onClick={() => answer({ type: "Deny", message: null })}
           >
-            Always allow this session
-          </Button>
+            Decline
+          </button>
+          <button
+            type="button"
+            className="approval-action approve"
+            disabled={sending}
+            onClick={() => answer({ type: "AllowOnce" })}
+          >
+            Approve
+          </button>
+          <Menu
+            label="More approval options"
+            icon={Ellipsis}
+            items={[
+              {
+                key: "session",
+                label: "Always allow this session",
+                onSelect: () => answer({ type: "AllowForSession" }),
+              },
+            ]}
+          />
         </div>
-      </div>
-    );
-  }
-  const title = `${agentName} is asking`;
-  return (
-    <div className="card ask" role="group" aria-label={title} ref={card}>
-      <div className="card-head">
-        <b>{title}</b>
-      </div>
-      <QuestionForm request={item.request} questions={item.questions} sending={sending} onAnswer={answer} />
+      )}
     </div>
   );
 }
 
 /**
- * The questions of one request, each with its options and a field for the user's own answer,
- * which takes the place of any option picked.
+ * A pending question, as a card above the composer. Each question of the request shows in turn,
+ * with its options and a field for the user's own answer, which takes the place of any option
+ * picked. The last one sends every answer, once.
  */
-function QuestionForm({
-  request,
-  questions,
-  sending,
+function QuestionCard({
+  item,
+  agentName,
   onAnswer,
 }: {
-  request: string;
-  questions: Question[];
-  sending: boolean;
-  onAnswer(reply: Reply): void;
+  item: QuestionItem;
+  agentName: string;
+  onAnswer(request: string, reply: Reply): Promise<void>;
 }) {
+  const { request, questions } = item;
+  const [at, setAt] = useState(0);
   const [picked, setPicked] = useState<string[][]>(() => questions.map(() => []));
   const [typed, setTyped] = useState<string[]>(() => questions.map(() => ""));
+  const [sending, setSending] = useState(false);
   // In the options' order, whatever order they were picked in.
   const answers = questions.map((q, i) =>
     typed[i].trim()
       ? [typed[i].trim()]
       : q.options.map((o) => o.label).filter((label) => picked[i].includes(label)),
   );
-  const complete = answers.every((answer) => answer.length > 0);
+  const question = questions[at];
+  const last = at === questions.length - 1;
 
-  function pick(i: number, label: string, multi: boolean) {
-    const was = picked[i];
-    const now = !multi ? [label] : was.includes(label) ? was.filter((l) => l !== label) : [...was, label];
-    setPicked(picked.map((p, j) => (j === i ? now : p)));
-    setTyped(typed.map((t, j) => (j === i ? "" : t)));
+  function pick(label: string) {
+    const was = picked[at];
+    const now = !question.multiSelect ? [label] : was.includes(label) ? was.filter((l) => l !== label) : [...was, label];
+    setPicked(picked.map((p, j) => (j === at ? now : p)));
+    setTyped(typed.map((t, j) => (j === at ? "" : t)));
   }
 
-  function type(i: number, text: string) {
-    setTyped(typed.map((t, j) => (j === i ? text : t)));
-    if (text) setPicked(picked.map((p, j) => (j === i ? [] : p)));
+  function type(text: string) {
+    setTyped(typed.map((t, j) => (j === at ? text : t)));
+    if (text) setPicked(picked.map((p, j) => (j === at ? [] : p)));
   }
 
   return (
-    <form
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (complete) onAnswer({ type: "Answers", answers });
-      }}
-    >
-      {questions.map((q, i) => (
-        <fieldset key={i} className="question" disabled={sending}>
-          <legend>
-            <span className="question-header">{q.header}</span>
-            {q.question}
-          </legend>
-          {q.options.map((option) => (
+    <div className="question-card" role="group" aria-label={`${agentName} is asking`}>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (answers[at].length === 0 || sending) return;
+          if (!last) return setAt(at + 1);
+          setSending(true);
+          // The card goes when the core's `Answered` comes. A refused answer expires it.
+          onAnswer(request, { type: "Answers", answers }).catch(() => {});
+        }}
+      >
+        <fieldset key={at} className="question" disabled={sending}>
+          <legend className="question-text">{question.question}</legend>
+          {question.options.map((option) => (
             <label key={option.label} className="option">
               <input
-                type={q.multiSelect ? "checkbox" : "radio"}
-                name={`${request} ${i}`}
-                checked={picked[i].includes(option.label)}
-                onChange={() => pick(i, option.label, q.multiSelect)}
+                type={question.multiSelect ? "checkbox" : "radio"}
+                name={`${request} ${at}`}
+                checked={picked[at].includes(option.label)}
+                onChange={() => pick(option.label)}
               />
               <span>
-                <b>{option.label}</b>
+                {option.label}
                 {option.description && <span className="option-description">{option.description}</span>}
               </span>
             </label>
@@ -917,44 +1047,48 @@ function QuestionForm({
           <input
             type="text"
             className="own-answer"
-            aria-label={`Your own answer to ${q.header}`}
+            aria-label={`Your own answer to ${question.header}`}
             placeholder="Or type your own answer"
-            value={typed[i]}
-            onChange={(event) => type(i, event.target.value)}
+            value={typed[at]}
+            onChange={(event) => type(event.target.value)}
           />
         </fieldset>
-      ))}
-      <div className="card-actions">
-        <Button type="submit" variant="primary" size="sm" disabled={!complete || sending}>
-          Answer
-        </Button>
-      </div>
-    </form>
+        <div className="question-actions">
+          <Button
+            type="submit"
+            variant="primary"
+            size="sm"
+            className="question-submit"
+            disabled={answers[at].length === 0 || sending}
+          >
+            {last ? "Submit answer" : "Next question"}
+          </Button>
+        </div>
+      </form>
+    </div>
   );
 }
 
-/** What an approval asks to run: a command as is, any other input as JSON. */
-function describeInput(input: unknown): string {
-  const command = (input as { command?: unknown } | null)?.command;
-  return typeof command === "string" ? command : JSON.stringify(input, null, 2);
-}
-
-/** The one-line record of an answered request, such as "Allowed Bash once". */
-function describeReply(item: RequestItem, reply: Reply): string {
-  const asked = item.kind === "approval" ? item.tool : "the question";
+/** The record of an answered approval, such as "Approved" or "Declined: use vitest". */
+function describeApproval(reply: Reply): string {
   switch (reply.type) {
     case "AllowOnce":
-      return `Allowed ${asked} once`;
+      return "Approved";
     case "AllowForSession":
-      return `Allowed ${asked} for this session`;
+      return "Approved for this session";
     case "Deny":
-      return `Denied ${asked}`;
-    case "Answers": {
-      const headers = item.kind === "question" && item.questions.length > 1 ? item.questions : null;
-      const answers = reply.answers.map((a, i) => (headers ? `${headers[i].header}: ` : "") + a.join(", "));
-      return `Answered: ${answers.join("; ")}`;
-    }
+      return reply.message ? `Declined: ${reply.message}` : "Declined";
+    case "Answers":
+      return "Answered";
   }
+}
+
+/** The record of an answered question, such as "Answered: vitest". */
+function describeAnswers(item: QuestionItem, reply: Reply): string {
+  if (reply.type !== "Answers") return "Declined the question";
+  const headers = item.questions.length > 1 ? item.questions : null;
+  const answers = reply.answers.map((a, i) => (headers ? `${headers[i].header}: ` : "") + a.join(", "));
+  return `Answered: ${answers.join("; ")}`;
 }
 
 function describeAccount(account: Account | null): string {
