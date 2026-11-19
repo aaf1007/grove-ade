@@ -1,4 +1,5 @@
 import {
+  Ban,
   Bot,
   ChevronRight,
   FileText,
@@ -36,6 +37,20 @@ export function ToolCalls({ calls, worktree, live }: { calls: ToolCall[]; worktr
           <FoldedRow key={run[0].id} calls={run} worktree={worktree} live={live} />
         ),
       )}
+    </div>
+  );
+}
+
+/**
+ * A call the user declined. It never ran, so its row shows what it would have acted on, with no
+ * output: the agent's result for it only repeats why it was declined.
+ */
+export function DeclinedCall({ call, worktree }: { call: ToolCall; worktree: string }) {
+  const what = targets(call)?.map((target) => relative(target, worktree)).join(", ") ?? call.tool;
+  return (
+    <div className="tool declined">
+      <Ban aria-hidden="true" />
+      <span className="tool-label">{what}</span>
     </div>
   );
 }

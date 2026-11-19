@@ -29,7 +29,7 @@ import "./ChatPanel.css";
 import { type ModelChoice, Picker, useModelChoice } from "./Picker";
 import { AGENT_NAMES } from "./Sidebar";
 import { TerminalPanel } from "./TerminalPanel";
-import { relative, type ToolCall, ToolCalls } from "./ToolCalls";
+import { DeclinedCall, relative, type ToolCall, ToolCalls } from "./ToolCalls";
 import { AgentState } from "./ui/AgentState";
 import { Button } from "./ui/Button";
 import { IconButton } from "./ui/IconButton";
@@ -515,9 +515,9 @@ function ChatView({
         }}
       >
         <div className="thread">
-          {items.map((item, i) => (
+          {items.map((item) => (
             <Item
-              key={i}
+              key={ITEM_KEYS.get(item)}
               item={item}
               agentName={name}
               worktree={worktree}
@@ -628,12 +628,24 @@ type ApprovalItem = Extract<RequestItem, { kind: "approval" }>;
 type QuestionItem = Extract<RequestItem, { kind: "question" }>;
 
 /**
+ * Each item's key. A run of calls can leave the list when an approval takes its last call, so a
+ * key by position would hand the next row the state of the one before it.
+ */
+const ITEM_KEYS = new WeakMap<ThreadItem, number>();
+
+/**
  * What the message list shows for `messages`: the agent's deltas joined, each turn's work under
  * one header, each run of tool calls with their results, and each turn's edited files in a card at
  * its end. An approval takes the place of its tool call's row, and a question's call has no row.
  */
 function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
   const items: ThreadItem[] = [];
+  // Items get their keys in the order they are made, which stays the same as messages come.
+  let made = 0;
+  function keyed<T extends ThreadItem>(item: T): T {
+    ITEM_KEYS.set(item, made++);
+    return item;
+  }
   const calls = new Map<string, ToolCall>();
   // The current turn's requests, by id.
   const requests = new Map<string, RequestItem>();
@@ -643,7 +655,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
   // The header goes where the turn started, before anything the agent said first.
   function workStarts() {
     if (turn.head) return;
-    turn.head = { kind: "work", turn };
+    turn.head = keyed<WorkItem>({ kind: "work", turn });
     items.splice(turn.start, 0, turn.head);
   }
 
@@ -662,7 +674,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
   for (const message of messages) {
     switch (message.type) {
       case "User":
-        items.push({ kind: "user", text: message.text });
+        items.push(keyed({ kind: "user", text: message.text }));
         break;
       case "TurnStarted":
         edited = [];
@@ -671,7 +683,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
       case "TextDelta": {
         const last = items[items.length - 1];
         if (last?.kind === "agent") last.text += message.text;
-        else items.push({ kind: "agent", text: message.text });
+        else items.push(keyed({ kind: "agent", text: message.text }));
         break;
       }
       case "ToolCall": {
@@ -682,7 +694,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
         workStarts();
         const last = items[items.length - 1];
         if (last?.kind === "tools") last.calls.push(call);
-        else items.push({ kind: "tools", calls: [call], turn });
+        else items.push(keyed({ kind: "tools", calls: [call], turn }));
         const path = editedPath(message.tool, message.input);
         if (path && !edited.includes(path)) edited.push(path);
         break;
@@ -699,7 +711,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
         workStarts();
         const item: RequestItem = { kind: "approval", request, call, turn, reply: null, expired: false };
         requests.set(request, item);
-        items.push(item);
+        items.push(keyed(item));
         break;
       }
       case "QuestionAsked": {
@@ -707,7 +719,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
         takeCall(request);
         const item: RequestItem = { kind: "question", request, questions, reply: null, expired: false };
         requests.set(request, item);
-        items.push(item);
+        items.push(keyed(item));
         break;
       }
       case "Answered": {
@@ -716,27 +728,27 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
         break;
       }
       case "ReviewBatch":
-        items.push({ kind: "review", comments: message.comments });
+        items.push(keyed({ kind: "review", comments: message.comments }));
         break;
       case "Resumed":
-        items.push({ kind: "resumed" });
+        items.push(keyed({ kind: "resumed" }));
         break;
       case "TurnEnded":
         turn.ended = true;
         requests.forEach((item) => (item.expired = !item.reply));
         requests.clear();
         if (edited.length > 0) {
-          items.push({ kind: "files", paths: edited.map((path) => relative(path, worktree)) });
+          items.push(keyed({ kind: "files", paths: edited.map((path) => relative(path, worktree)) }));
           edited = [];
         }
         if (message.outcome === "Interrupted") {
-          items.push({ kind: "notice", text: "You interrupted the turn." });
+          items.push(keyed({ kind: "notice", text: "You interrupted the turn." }));
         } else if (message.outcome === "Failed") {
-          items.push({ kind: "error", text: message.message });
+          items.push(keyed({ kind: "error", text: message.message }));
         }
         break;
       case "NotDelivered":
-        items.push({ kind: "undelivered", text: message.text });
+        items.push(keyed({ kind: "undelivered", text: message.text }));
         break;
     }
   }
@@ -926,7 +938,11 @@ function Approval({
 
   return (
     <div className="approval">
-      <ToolCalls calls={[item.call]} worktree={worktree} live={live} />
+      {item.reply?.type === "Deny" ? (
+        <DeclinedCall call={item.call} worktree={worktree} />
+      ) : (
+        <ToolCalls calls={[item.call]} worktree={worktree} live={live} />
+      )}
       {item.reply ? (
         <div className="approval-line record">{describeApproval(item.reply)}</div>
       ) : !pending ? (

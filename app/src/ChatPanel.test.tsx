@@ -942,8 +942,47 @@ test.each<[string, Reply, string]>([
 
   expect(bridge.answered).toEqual([{ session: "0", request: "toolu_01", reply }]);
   expect(screen.queryByRole("group", { name: "Claude Code wants to use Bash" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Ran npm test" })).toBeTruthy();
   expect(screen.getByText(record)).toBeTruthy();
+});
+
+test("two approvals from one run each answer by button, one after the other", async () => {
+  const lint: AgentMessage = { type: "ToolCall", id: "toolu_02", tool: "Bash", input: { command: "npm run lint" } };
+  const bridge = await asked(bashCall, lint, approval);
+  fireEvent.click(within(approvalLine()).getByRole("button", { name: "Approve" }));
+  await settle();
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "ToolResult", id: "toolu_01", output: "ok", isError: false },
+      { type: "ApprovalRequested", request: "toolu_02", tool: "Bash", input: { command: "npm run lint" } },
+    ),
+  );
+  nextFrame();
+  const approve = within(approvalLine()).getByRole("button", { name: "Approve" }) as HTMLButtonElement;
+  expect(approve.disabled).toBe(false);
+  fireEvent.click(approve);
+  await settle();
+
+  expect(bridge.answered.map((a) => a.request)).toEqual(["toolu_01", "toolu_02"]);
+});
+
+test("a declined call shows as declined, not as a failed call, with the message once", async () => {
+  const bridge = await asked(bashCall, approval);
+  fireEvent.change(composer(), { target: { value: "use vitest instead" } });
+  fireEvent.keyDown(composer(), { key: "Enter" });
+  await settle();
+
+  // The agent reports the declined call as a failed result carrying the message.
+  act(() => bridge.messages("0", { type: "ToolResult", id: "toolu_01", output: "use vitest instead", isError: true }));
+  nextFrame();
+
+  expect(document.querySelector(".tool.failed")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Ran npm test" })).toBeNull();
+  expect(document.querySelector(".tool.declined")!.textContent).toBe("npm test");
+  expect(screen.getAllByText(/use vitest instead/).map((el) => el.textContent)).toEqual([
+    "Declined: use vitest instead",
+  ]);
 });
 
 test("the approval's menu allows the tool for the rest of the session", async () => {
@@ -1093,7 +1132,7 @@ test("a question the core no longer has pending shows as expired when answered",
   expect(screen.getByText("Expired: Which test runner?")).toBeTruthy();
 });
 
-test("a new approval scrolls into view", async () => {
+test("a new approval scrolls into view, and its controls take keyboard focus in order", async () => {
   const scrolled: Element[] = [];
   Element.prototype.scrollIntoView = function (this: Element) {
     scrolled.push(this);
@@ -1101,6 +1140,15 @@ test("a new approval scrolls into view", async () => {
   await asked(bashCall, approval);
 
   expect(scrolled).toContain(approvalLine());
+  const buttons = within(approvalLine()).getAllByRole("button");
+  expect(buttons.map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([
+    "Decline",
+    "Approve",
+    "More approval options",
+  ]);
+  buttons[0].focus();
+  expect(document.activeElement).toBe(buttons[0]);
+  expect(buttons.every((b) => b.tabIndex === 0)).toBe(true);
 });
 
 test("a request answered before the panel opened shows as its record", async () => {

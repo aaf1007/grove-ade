@@ -17,6 +17,7 @@
 .shimmer {
   background: linear-gradient(90deg, var(--muted) 40%, var(--fg) 50%, var(--muted) 60%);
   background-size: 300% 100%;
+  /* impeccable-disable-next-line gradient-text -- the shimmer of a running label (#30) */
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
