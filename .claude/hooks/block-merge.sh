@@ -1,5 +1,5 @@
 #!/bin/sh
-# PreToolUse hook: only the owner merges (CLAUDE.local.md). Blocks merging a PR and turning on
+# PreToolUse hook: only the repo owner merges PRs. Blocks merging a PR and turning on
 # auto-merge, from Bash and from the desktop app's PR tool. Exit 2 blocks the call and shows
 # stderr to Claude.
 #
@@ -9,7 +9,7 @@
 hook_input=$(cat)
 
 refuse() {
-  echo "Blocked: $1 Only the owner merges or turns on auto-merge in grove (CLAUDE.local.md). Ask the owner. If the command only mentions merging in text (a PR body or a comment), put that text in a file and pass it with --body-file." >&2
+  echo "Blocked: $1 Only the repo owner merges or turns on auto-merge in grove. Ask the owner. If the command only mentions merging in text (a PR body or a comment), put that text in a file and pass it with --body-file." >&2
   exit 2
 }
 

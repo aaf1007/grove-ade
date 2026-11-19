@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: grove's PR reviewer on this Mac. Always runs the gates on a PR's head commit, in place of CI. When CodeRabbit did not review that commit, also runs Anthropic's code-review plugin and a spec check, posts threads with gh, and rechecks once. Never changes code.
+description: grove's PR reviewer on this Mac. Always reads and reports a PR's `rust` and `ts` CI checks on its head commit. When CodeRabbit did not review that commit, also runs Anthropic's code-review plugin and a spec check, posts threads with gh, and rechecks once. Never changes code.
 model: fable
 effort: high
 skills:

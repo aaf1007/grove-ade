@@ -6,8 +6,7 @@ and the reason for each on stderr. The last line, `apt_packages=`, repeats the v
 group named in the argument: the one whose steps need the apt packages of the job.
 
 No path on stdin runs every group. ci.yml sends none for a push to main and when it could not
-list the changed files. .githooks/pre-push also runs it, and sends none when it could not list
-the files a push changes.
+list the changed files.
 
 Usage: git diff --name-only --no-renames -z <base> <head> |
     step_groups_to_run.py <step group that needs the job's apt packages>

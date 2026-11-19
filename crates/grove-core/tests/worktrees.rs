@@ -553,7 +553,7 @@ fn display_name_and_issue_link_are_stored_and_listed() {
     let repo = new_repo(dir.path());
     let (core, _events) = start(dir.path());
     block_on(core.add_repo(&repo)).unwrap();
-    let link = "https://github.com/aaf1007/grove-ade/issues/20";
+    let link = "https://example.com/issues/20";
     let given = NewWorktree {
         display_name: Some("Fix login".into()),
         issue_link: Some(link.into()),

@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Check a grove pull request on this Mac. Always runs the six gates on the PR's head commit, in place of CI. When CodeRabbit did not review that commit, also runs Anthropic's code-review plugin and a spec check against the issue, and posts one thread per finding with gh. Use for "review PR N", "recheck PR N", or a reviewer dry run.
+description: Check a grove pull request on this Mac. Always reads the PR's `rust` and `ts` CI checks on its head commit and reports them. When CodeRabbit did not review that commit, also runs Anthropic's code-review plugin and a spec check against the issue, and posts one thread per finding with gh. Use for "review PR N", "recheck PR N", or a reviewer dry run.
 ---
 
 # Reviewer
@@ -15,13 +15,11 @@ You check one pull request and post what you find. You read and report: the code
 
 Scripts below live in this skill's folder, written `<skill>/`. Run them from a checkout of grove. Keep your JSON files in your scratchpad.
 
-The gates need `pv` for the load-session check, as CI did. When `command -v pv` finds nothing, stop and ask the owner to run `brew install pv`.
-
 ## 0. Which parts run
 
-A `recheck` skips this step: it runs the gates (step 1), then step 5.
+A `recheck` skips this step: it reads the CI checks (step 1), then does step 5.
 
-CodeRabbit is the first reviewer. The gates always run, since GitHub Actions is off. The review (steps 2 and 3, and threads in step 4) runs only when CodeRabbit did not review the head commit:
+CodeRabbit is the first reviewer. The CI checks are always read and reported. The review (steps 2 and 3, and threads in step 4) runs only when CodeRabbit did not review the head commit:
 
 ```bash
 python3 <skill>/post_review.py coderabbit aaf1007/grove-ade <number>
@@ -29,9 +27,9 @@ python3 <skill>/post_review.py coderabbit aaf1007/grove-ade <number>
 
 - `gates-only`: CodeRabbit reviewed the head commit. Do steps 1 and 4, with no findings.
 - `full-review`: its notice for the head commit is "Review limit reached", or it said nothing for 15 minutes after the push. Do every step.
-- `wait`: CodeRabbit may still review. Stop and report when to ask again.
+- `wait`: CodeRabbit may still review. Read the CI checks (step 1), report them, and say when to ask again. Do no other step.
 
-The first line is the answer and the full sha of the head commit it is about, such as `gates-only 54f5930...`. The second line says why. Keep it: steps 1 and 4 use that commit, so the gates and the post match the decision.
+The first line is the answer and the full sha of the head commit it is about, such as `gates-only 54f5930...`. The second line says why. Keep it: steps 1 and 4 use that commit, so the checks and the post match the decision.
 
 With `--force-review`, skip this check and do every step. Say so in the summary.
 
@@ -44,23 +42,43 @@ The code-review plugin is missing. Install it, then run the reviewer again:
 
 The review is the plugin's. Without it, there is no review.
 
-## 1. Gates on the head commit
+## 1. CI checks on the head commit
+
+The `rust` and `ts` jobs of `.github/workflows/ci.yml` run on every PR. A PR run skips the gate steps whose paths it did not change, so a pass can mean a step was skipped. The step `Find the step groups this run needs` in each job's log says which groups ran. Read the result for the head commit:
 
 ```bash
 pr=<number>
 commit=<the sha step 0 printed>
-git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main "pull/$pr/head" &&
-  git show origin/main:.claude/skills/reviewer/run_gates.sh > <scratchpad>/run_gates.sh &&
-  sh <scratchpad>/run_gates.sh "$commit"
+head=$(gh pr view "$pr" --repo aaf1007/grove-ade --json headRefOid -q .headRefOid)
+if [ "$head" != "$commit" ]; then echo "Head moved to $head."; else
+  gh pr checks "$pr" --repo aaf1007/grove-ade --json name,state,bucket,link \
+    -q '.[] | select(.name == "rust" or .name == "ts") | [.name, .bucket, .link] | @tsv' | grep . ||
+    echo "No rust or ts check: CI did not run on the PR."; fi
 ```
 
 A recheck, or a run with `--force-review`, skips step 0: set `commit=$(gh pr view "$pr" --repo aaf1007/grove-ade --json headRefOid -q .headRefOid)` instead.
 
-The gate list comes from `main`, so a PR cannot change what checks it. When the fetch fails or `main` has no `run_gates.sh`, stop and report it.
+When the head is no longer `$commit`, start again from step 0.
 
-It checks the commit out in a fresh folder, runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, the fixture and hook checks CI ran, then `tsc --noEmit`, `eslint` and `vitest run` in `app` and `sidecar/claude`, and prints PASS or FAIL per gate. It takes minutes, so run it in the background and do steps 2 and 3 meanwhile. A recheck does neither: it goes from step 1 straight to step 5, and reports a gate failure in its recheck summary.
+- `pass` for both: report them as passed.
+- `pending`: the checks are still running. On a full review, do steps 2 and 3 meanwhile. Then read them again. The jobs time out after 15 and 10 minutes, so when one is still pending 20 minutes after the push, report that and stop.
+- `cancel` with no failed step: report the cancellation with the job link.
+- `fail`, or `cancel` after a step failed: find the failing step. The link ends in `/actions/runs/<run>/job/<job>`:
 
-Any FAIL ends the review: post the summary alone, even on a full review, (step 4) with each gate's result and the last lines of each failing log. The implementer fixes it and asks again.
+  ```bash
+  gh run view <run> --repo aaf1007/grove-ade --json jobs \
+    -q '.jobs[] | .name as $job | .steps[] | select(.conclusion == "failure") | "\($job): \(.name)"'
+  # A failed job:
+  gh run view --job <job> --repo aaf1007/grove-ade --log-failed | tail -n 40
+  # A cancelled job: --log-failed skips it, so keep the failing step's lines of the full log.
+  gh run view --job <job> --repo aaf1007/grove-ade --log | awk -F '\t' -v step="<failing step>" '$2 == step' | tail -n 40
+  ```
+
+- `rust` or `ts` missing from the list: CI did not run on the PR. Report it and stop.
+
+A PR that changes `.github/` changes its own checks. Say so in "For the owner".
+
+Any failed check ends the review: post the summary alone, even on a full review, (step 4) with each check's result, the failing step and the last lines of its log. The implementer fixes it and asks again. A recheck goes from step 1 straight to step 5, and reports a failed check in its recheck summary.
 
 ## 2. Bugs and rules
 
@@ -90,7 +108,7 @@ Write `review.json`:
 ```
 
 - A thread body says what is wrong, why (the bug, or the rule quoted, with a link to it when it is in `CLAUDE.md`, or "`CLAUDE.local.md`" and its section when it is there), and the fix. Use the link form the plugin uses: full commit sha, `#L<start>-L<end>`.
-- The summary starts with which parts ran and why: the `coderabbit` line, or `--force-review`. Then a gate table. On a gates-only run, that is all. A full review adds the plugin's result (finding count, "No issues found", or why it stopped), and the spec check table. Add "For the owner" when you have items for it.
+- The summary starts with which parts ran and why: the `coderabbit` line, or `--force-review`. Then a table of the `rust` and `ts` checks with their links. On a gates-only run, that is all. A full review adds the plugin's result (finding count, "No issues found", or why it stopped), and the spec check table. Add "For the owner" when you have items for it.
 - Plain short sentences, no em dashes, no signature or attribution line.
 
 ```bash
@@ -105,7 +123,7 @@ The recheck follows a full review. After a gates-only run, a new push gets a fre
 
 When the implementer has pushed fixes:
 
-1. Run the gates on the new head (step 1).
+1. Read the CI checks on the new head (step 1).
 2. List your threads: `python3 <skill>/post_review.py threads aaf1007/grove-ade <number>`.
 3. Read only what changed since your review: `git diff <reviewed sha> <new head>`. The reviewed sha is at the end of your first summary.
 4. For each of your threads: when fixed, reply with where and set `"resolve": true`. When not fixed, reply why and leave it open.
@@ -125,4 +143,4 @@ The script refuses new findings, threads you did not open, and a second recheck.
 
 ## Report
 
-Tell whoever ran you: the gate results, the threads you posted with their links, the spec check, and the "For the owner" list. On a dry run, paste what the script printed. Name work as "issue #N (PR #M)".
+Tell whoever ran you: the CI check results, the threads you posted with their links, the spec check, and the "For the owner" list. On a dry run, paste what the script printed. Name work as "issue #N (PR #M)".

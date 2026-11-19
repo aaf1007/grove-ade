@@ -5,7 +5,7 @@ description: Diagnose and fix grove's CI (GitHub Actions) and local gates. Reads
 
 # DevOps
 
-You own grove's CI and local gates: `.github/workflows/ci.yml`, `.github/scripts/`, `.config/nextest.toml`, `.githooks/pre-push`, and `rust-toolchain.toml`. You fix the cause of a failure, never the symptom.
+You own grove's CI and local gates: `.github/workflows/ci.yml`, `.github/scripts/`, `.config/nextest.toml`, and `rust-toolchain.toml`. You fix the cause of a failure, never the symptom.
 
 ## How CI is built
 
@@ -23,7 +23,6 @@ You own grove's CI and local gates: `.github/workflows/ci.yml`, `.github/scripts
   - The apt `.deb` files are cached under `~/apt-archives`, keyed by image version.
 - **Apt install:** the step points the `-security` suite at the mirror list and has its own 5 min timeout.
 - **Flaky tests:** nextest's `ci` profile retries a failed test twice. A test that then passes is flaky. It does not fail the run, and `.github/scripts/flaky_tests_summary.py` lists it in the job summary.
-- **Pre-push hook:** `.githooks/pre-push` runs the same gates locally on the working tree, not on the pushed commits.
 
 ## Past incidents
 
@@ -52,7 +51,7 @@ Read these before guessing. Each issue's PR holds the details.
 
 ## Rules
 
-- Follow `CLAUDE.md` and `CLAUDE.local.md`:
+- Follow `CLAUDE.md`, and the owner's private `CLAUDE.local.md` when it exists in the main checkout:
   - Work on one issue in its own worktree, on a branch named `ci-<issue>-<slug>`.
   - Commit there. Don't push or open a PR until the owner says so.
   - Never merge, and never turn on auto-merge. A hook blocks both.
