@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest"
 import { App } from "./App";
 import type { Agent, AgentState, StateSource, Workspace } from "./bridge";
 import { DEFAULT_WORKSPACE, fakeBridge } from "./fakeBridge";
+import { menuItems } from "./testing";
 import appStyles from "./styles.css?raw";
 
 // The diff view and xterm.js need a real browser. These tests cover only which panels exist and
@@ -873,12 +874,6 @@ function startAgent() {
   const row = screen.getAllByRole("button", { current: true }).find((button) => button.classList.contains("wt-name"))!;
   fireEvent.click(within(row.closest(".wt-row") as HTMLElement).getByRole("button", { name: /^Actions for / }));
   fireEvent.click(screen.getByRole("menuitem", { name: "Start Claude Code" }));
-}
-
-// The menu items of the worktree named `name`. Leaves the menu open.
-function menuItems(name: string) {
-  fireEvent.click(screen.getByRole("button", { name: `Actions for ${name}` }));
-  return screen.getAllByRole("menuitem").map((item) => item.textContent);
 }
 
 function needsYou() {

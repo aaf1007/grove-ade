@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import { fakeBridge, type FakeBridge, type FakeFiles } from "./fakeBridge";
 import { Sidebar } from "./Sidebar";
+import { menuItems } from "./testing";
 
 afterEach(cleanup);
 
@@ -471,9 +472,3 @@ test("a delete that ends after its dialog was cancelled leaves a dialog opened s
   expect(screen.getByRole("dialog", { name: "New worktree" })).toBe(dialog);
   expect(within(dialog).getByLabelText<HTMLInputElement>("Branch name").value).toBe("feat-52");
 });
-
-// The menu items of the worktree named `name`. Leaves the menu open.
-function menuItems(name: string) {
-  fireEvent.click(screen.getByRole("button", { name: `Actions for ${name}` }));
-  return screen.getAllByRole("menuitem").map((item) => item.textContent);
-}

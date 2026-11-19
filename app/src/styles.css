@@ -430,6 +430,12 @@ svg {
   color: var(--muted);
 }
 
+/* Search keeps every repo open, so the toggle rests without looking greyed out. */
+.repo-toggle:disabled {
+  color: inherit;
+  cursor: default;
+}
+
 .repo-folder .repo-add {
   opacity: 0;
 }

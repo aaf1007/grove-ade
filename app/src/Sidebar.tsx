@@ -58,9 +58,9 @@ type OpenDialog =
   | { kind: Exclude<WorktreeAction, "start">; worktree: Worktree };
 
 /**
- * Lists every tracked worktree under its repo with its agent sessions, adds repos, selects a
- * worktree, and starts an agent session in the selected one. Each repo's + adds a worktree, and
- * each worktree's menu changes its base branch, forgets it or deletes it.
+ * Lists every tracked worktree under its repo with its agent sessions, adds repos and selects a
+ * worktree. Each repo's + adds a worktree, and each worktree's menu starts Claude Code in it,
+ * changes its base branch, forgets it or deletes it.
  *
  * Above the list: New worktree, Search, Needs you and Profiles. Below it: each agent's account and
  * the appearance menu.
@@ -288,12 +288,18 @@ export function Sidebar({
         {error && <p role="alert">{error}</p>}
         {shownRepos.map(({ head, worktrees: repo }) => {
           const name = folderName(head.path);
-          // Search shows the matching rows of a folded repo too.
-          const open = query.trim() !== "" || !foldedRepos.includes(head.path);
+          // Search shows the matching rows of a folded repo too, and keeps it from folding.
+          const searching = query.trim() !== "";
+          const open = searching || !foldedRepos.includes(head.path);
           return (
             <section key={head.path} aria-label={name}>
               <div className="repo-folder">
-                <button className="repo-toggle" aria-expanded={open} onClick={() => toggleRepo(head.path)}>
+                <button
+                  className="repo-toggle"
+                  aria-expanded={open}
+                  disabled={searching}
+                  onClick={() => toggleRepo(head.path)}
+                >
                   <span className="repo-name">{name}</span>
                   {open ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
                 </button>
@@ -572,8 +578,8 @@ function StatusDot({ id, state, word }: { id?: string; state: State | undefined;
 }
 
 /**
- * A failed setup script. A running one shows as the chip on the worktree's row, and one that
- * succeeded shows nothing.
+ * A failed setup script. A running one shows as the Working dot on the worktree's row, named
+ * "Setup running", and one that succeeded shows nothing.
  */
 function SetupStatus({ setup }: { setup: SetupState }) {
   if (setup.state !== "Failed") return null;

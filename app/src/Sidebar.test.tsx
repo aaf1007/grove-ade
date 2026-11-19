@@ -4,6 +4,7 @@ import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 import { fakeBridge } from "./fakeBridge";
 import sidebarStyles from "./styles.css?raw";
 import { Sidebar } from "./Sidebar";
+import { menuItems } from "./testing";
 
 afterEach(() => {
   cleanup();
@@ -589,6 +590,20 @@ test("Search shows the matching rows of a folded repo", async () => {
   expect(rowNames()).toEqual(["feat-35-tauri-sidebar"]);
 });
 
+test("a repo folder cannot fold while Search has text, since Search keeps it open", async () => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  await bridge.addRepo("/code/grove");
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await worktreeRow("feat-35-tauri-sidebar");
+  search("tauri");
+
+  fireEvent.click(folder("grove"));
+  search("");
+
+  expect(folder("grove").getAttribute("aria-expanded")).toBe("true");
+  expect(rowNames()).toContain("feat-35-tauri-sidebar");
+});
+
 test("a repo folder's + opens the new worktree dialog for that repo", async () => {
   const bridge = await twoRepos();
   const asked = vi.spyOn(bridge, "suggestProfile");
@@ -601,10 +616,6 @@ test("a repo folder's + opens the new worktree dialog for that repo", async () =
   expect(asked).toHaveBeenLastCalledWith("/code/site");
 });
 
-function menuItems(worktree: string) {
-  fireEvent.click(screen.getByRole("button", { name: `Actions for ${worktree}` }));
-  return screen.getAllByRole("menuitem").map((item) => item.textContent);
-}
 
 test("the menu keeps every action: Start Claude Code, Change base branch, Forget and Delete", async () => {
   const bridge = fakeBridge({ "/code/grove": groveRepo });
