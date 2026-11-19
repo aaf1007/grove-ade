@@ -19,6 +19,7 @@ import type {
   AgentStateChanged,
   BatchComment,
   Bridge,
+  FileDiff,
   Mode,
   Question,
   Reply,
@@ -29,20 +30,12 @@ import "./ChatPanel.css";
 import { type ModelChoice, Picker, useModelChoice } from "./Picker";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { TerminalPanel } from "./TerminalPanel";
-import { DeclinedCall, relative, type ToolCall, ToolCalls } from "./ToolCalls";
+import { DeclinedCall, type ToolCall, ToolCalls } from "./ToolCalls";
 import { AgentState } from "./ui/AgentState";
 import { Button } from "./ui/Button";
 import { IconButton } from "./ui/IconButton";
 import { Menu } from "./ui/Menu";
 import { Segmented } from "./ui/Segmented";
-
-// The tools whose calls change files, and the input field naming the file.
-const EDIT_TOOLS: Record<string, string> = {
-  Edit: "file_path",
-  Write: "file_path",
-  MultiEdit: "file_path",
-  NotebookEdit: "notebook_path",
-};
 
 // How close to the bottom, in pixels, the message list counts as following the conversation.
 const FOLLOW_SLACK = 40;
@@ -105,7 +98,8 @@ export function ChatPanel({
   onFocus?: () => void;
   /** Called each time the panel loses focus, including when the window does. */
   onBlur?: () => void;
-  onOpenDiff(): void;
+  /** Opens the Diff panel, on `path` when given. */
+  onOpenDiff(path?: string): void;
   /** Called when the user picks another agent before the first message. Settles once it has. */
   onChangeAgent?: (agent: Agent) => Promise<void>;
   /** Starts another agent session in a panel beside this one. No button without it. */
@@ -375,7 +369,7 @@ function ChatView({
   resumed: boolean;
   /** A mode switch is on its way, so nothing may be sent. */
   switchingMode: boolean;
-  onOpenDiff(): void;
+  onOpenDiff(path?: string): void;
   onChangeAgent?: (agent: Agent) => Promise<void>;
   onModelChoice?: (choice: ModelChoice | null) => void;
 }) {
@@ -448,7 +442,8 @@ function ChatView({
     };
   }, [bridge, session, shown, resumed]);
 
-  const items = useMemo(() => thread(messages, worktree), [messages, worktree]);
+  const items = useMemo(() => thread(messages), [messages]);
+  const changes = useHeadDiff(bridge, worktree);
 
   useLayoutEffect(() => {
     const el = list.current;
@@ -595,6 +590,7 @@ function ChatView({
               worktree={worktree}
               turnRunning={turnRunning}
               refused={refused}
+              changes={changes}
               onOpenDiff={onOpenDiff}
               onAnswer={answer}
               onOpenLink={openLink}
@@ -679,7 +675,8 @@ type ThreadItem =
   | { kind: "agent"; text: string }
   | WorkItem
   | { kind: "tools"; calls: ToolCall[]; turn: Turn }
-  | { kind: "files"; paths: string[] }
+  /** Where the worktree's changed files show, once its turn ends. Only the last one shows. */
+  | { kind: "files"; last: boolean }
   | { kind: "review"; comments: BatchComment[] }
   | { kind: "notice"; text: string }
   | { kind: "resumed" }
@@ -706,10 +703,11 @@ const ITEM_KEYS = new WeakMap<ThreadItem, number>();
 
 /**
  * What the message list shows for `messages`: the agent's deltas joined, each turn's work under
- * one header, each run of tool calls with their results, and each turn's edited files in a card at
- * its end. An approval takes the place of its tool call's row, and a question's call has no row.
+ * one header, each run of tool calls with their results, and a place for the changed files at the
+ * end of each turn. An approval takes the place of its tool call's row, and a question's call has
+ * no row.
  */
-function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
+function thread(messages: ChatMessage[]): ThreadItem[] {
   const items: ThreadItem[] = [];
   // Items get their keys in the order they are made, which stays the same as messages come.
   let made = 0;
@@ -720,7 +718,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
   const calls = new Map<string, ToolCall>();
   // The current turn's requests, by id.
   const requests = new Map<string, RequestItem>();
-  let edited: string[] = [];
+  let lastFiles: Extract<ThreadItem, { kind: "files" }> | null = null;
   let turn: Turn = { start: 0, ended: false, head: null, startedAt: null, endedAt: null };
 
   // The header goes where the turn started, before anything the agent said first.
@@ -748,7 +746,6 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
         items.push(keyed({ kind: "user", text: message.text }));
         break;
       case "TurnStarted":
-        edited = [];
         turn = { start: items.length, ended: false, head: null, startedAt: message.timeUnixMs, endedAt: null };
         // Every turn has its header, so a turn that only talks says how long it worked too.
         workStarts();
@@ -768,8 +765,6 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
         const last = items[items.length - 1];
         if (last?.kind === "tools") last.calls.push(call);
         else items.push(keyed({ kind: "tools", calls: [call], turn }));
-        const path = editedPath(message.tool, message.input);
-        if (path && !edited.includes(path)) edited.push(path);
         break;
       }
       case "ToolResult": {
@@ -811,10 +806,8 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
         turn.endedAt = message.timeUnixMs;
         requests.forEach((item) => (item.expired = !item.reply));
         requests.clear();
-        if (edited.length > 0) {
-          items.push(keyed({ kind: "files", paths: edited.map((path) => relative(path, worktree)) }));
-          edited = [];
-        }
+        lastFiles = keyed({ kind: "files", last: false });
+        items.push(lastFiles);
         if (message.outcome === "Interrupted") {
           items.push(keyed({ kind: "notice", text: "You interrupted the turn." }));
         } else if (message.outcome === "Failed") {
@@ -826,15 +819,35 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
         break;
     }
   }
+  if (lastFiles) lastFiles.last = true;
   return items;
 }
 
-// The file an editing tool call changes, as the agent named it.
-function editedPath(tool: string, input: unknown): string | null {
-  const field = EDIT_TOOLS[tool];
-  if (!field || typeof input !== "object" || input === null) return null;
-  const path = (input as Record<string, unknown>)[field];
-  return typeof path === "string" ? path : null;
+/**
+ * The worktree's changed files on the `Head` base, loaded again on each `DiffChanged` for it. null
+ * until loaded, and when loading fails: the Diff panel reports that.
+ */
+function useHeadDiff(bridge: Bridge, worktree: string): FileDiff[] | null {
+  const [loaded, setLoaded] = useState<{ worktree: string; files: FileDiff[] | null } | null>(null);
+  const [changes, setChanges] = useState(0);
+
+  useEffect(
+    () => bridge.onDiffChanged((changed) => changed === worktree && setChanges((n) => n + 1)),
+    [bridge, worktree],
+  );
+
+  useEffect(() => {
+    let current = true;
+    bridge.diff(worktree, "Head").then(
+      (files) => current && setLoaded({ worktree, files }),
+      () => current && setLoaded({ worktree, files: null }),
+    );
+    return () => {
+      current = false;
+    };
+  }, [bridge, worktree, changes]);
+
+  return loaded?.worktree === worktree ? loaded.files : null;
 }
 
 /** Waiting on the user: no reply yet, the turn still runs, and the core has not refused an answer. */
@@ -848,6 +861,7 @@ function Item({
   worktree,
   turnRunning,
   refused,
+  changes,
   onOpenDiff,
   onAnswer,
   onOpenLink,
@@ -859,7 +873,9 @@ function Item({
   turnRunning: boolean;
   /** Requests the core refused an answer to. */
   refused: string[];
-  onOpenDiff(): void;
+  /** The worktree's changed files. null until known. */
+  changes: FileDiff[] | null;
+  onOpenDiff(path?: string): void;
   onAnswer(request: string, reply: Reply): Promise<void>;
   onOpenLink(link: string): void;
 }) {
@@ -888,27 +904,9 @@ function Item({
       return <div className="msg-user">{item.text}</div>;
     case "agent":
       return <AgentMarkdown text={item.text} onOpenLink={onOpenLink} />;
-    case "files": {
-      const label = `${item.paths.length} ${item.paths.length === 1 ? "file" : "files"} changed`;
-      return (
-        <div className="card" role="group" aria-label={label}>
-          <div className="card-head">
-            <b>{label}</b>
-            <span className="spacer" />
-            <Button size="xs" onClick={onOpenDiff}>
-              Review diff
-            </Button>
-          </div>
-          <ul className="file-rows">
-            {item.paths.map((path) => (
-              <li key={path} className="file-row">
-                {path}
-              </li>
-            ))}
-          </ul>
-        </div>
-      );
-    }
+    case "files":
+      if (!item.last || turnRunning || !changes?.length) return null;
+      return <ChangedFiles files={changes} onOpenDiff={onOpenDiff} />;
     case "review": {
       const count = item.comments.length;
       return (
@@ -960,6 +958,44 @@ function Item({
         </div>
       );
   }
+}
+
+/** The worktree's changed files after the last turn, with their counts, each opening the diff. */
+function ChangedFiles({ files, onOpenDiff }: { files: FileDiff[]; onOpenDiff(path?: string): void }) {
+  const label = `${files.length} changed ${files.length === 1 ? "file" : "files"}`;
+  const added = files.reduce((sum, file) => sum + file.added, 0);
+  const removed = files.reduce((sum, file) => sum + file.removed, 0);
+  return (
+    <div className="files-card" role="group" aria-label={label}>
+      <div className="files-head">
+        <span>{label}</span>
+        <Counts added={added} removed={removed} />
+        <span className="spacer" />
+        <Button size="xs" onClick={() => onOpenDiff()}>
+          Review diff
+        </Button>
+      </div>
+      <ul className="files-rows">
+        {files.map((file) => (
+          <li key={file.newPath}>
+            <button type="button" className="files-row" onClick={() => onOpenDiff(file.newPath)}>
+              <span className="files-path">{file.newPath}</span>
+              <Counts added={file.added} removed={file.removed} />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function Counts({ added, removed }: { added: number; removed: number }) {
+  return (
+    <span className="files-counts">
+      <span className="added">+{added}</span>
+      <span className="removed">−{removed}</span>
+    </span>
+  );
 }
 
 /**
