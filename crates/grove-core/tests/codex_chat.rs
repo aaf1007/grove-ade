@@ -1,6 +1,8 @@
 //! Codex agent sessions in chat mode, driven by the fake `codex app-server` in
 //! fixtures/fake-agents.
 
+mod common;
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,6 +11,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use common::{now_unix_ms, times, untimed};
 use grove_core::{
     AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, Core, CoreConfig, CoreEvent,
     InputKind, Mode, ModelInfo, Question, QuestionOption, Reply, RequestId, SessionId, StateSource,
@@ -272,7 +275,7 @@ impl Frames {
         match self.until("the turn end", |m| {
             matches!(m, AgentMessage::TurnEnded { .. })
         }) {
-            AgentMessage::TurnEnded { outcome } => outcome,
+            AgentMessage::TurnEnded { outcome, .. } => outcome,
             _ => unreachable!(),
         }
     }
@@ -341,9 +344,14 @@ fn delta(text: &str) -> AgentMessage {
     AgentMessage::TextDelta { text: text.into() }
 }
 
+fn started() -> AgentMessage {
+    AgentMessage::TurnStarted { time_unix_ms: None }
+}
+
 fn completed() -> AgentMessage {
     AgentMessage::TurnEnded {
         outcome: TurnOutcome::Completed,
+        time_unix_ms: None,
     }
 }
 
@@ -363,10 +371,10 @@ fn a_message_starts_a_turn_on_the_thread_its_deltas_arrive_in_order_and_the_turn
     s.state(session, AgentState::Working);
     assert_eq!(frames.until_turn_end(), TurnOutcome::Completed);
     assert_eq!(
-        frames.messages,
+        untimed(frames.messages),
         [
             AgentMessage::User { text: "hi".into() },
-            AgentMessage::TurnStarted,
+            started(),
             delta("Hel"),
             delta("lo"),
             delta(" there"),
@@ -675,7 +683,7 @@ fn a_first_prompt_shows_as_not_delivered_when_the_app_server_exits_at_once() {
 
     s.wait_exit(session);
     assert_eq!(
-        conversation(&s.core, session),
+        untimed(conversation(&s.core, session)),
         [user("go"), not_delivered("go")]
     );
 }
@@ -693,10 +701,10 @@ fn a_message_the_app_server_exits_before_starting_a_turn_on_shows_as_not_deliver
 
     s.wait_exit(session);
     assert_eq!(
-        conversation(&s.core, session),
+        untimed(conversation(&s.core, session)),
         [
             user("one"),
-            AgentMessage::TurnStarted,
+            started(),
             delta("ok"),
             completed(),
             user("two"),
@@ -723,13 +731,8 @@ fn a_message_waiting_for_the_running_turn_shows_as_not_delivered_when_the_app_se
 
     s.wait_exit(session);
     assert_eq!(
-        conversation(&s.core, session),
-        [
-            user("one"),
-            AgentMessage::TurnStarted,
-            user("two"),
-            not_delivered("two")
-        ]
+        untimed(conversation(&s.core, session)),
+        [user("one"), started(), user("two"), not_delivered("two")]
     );
 }
 
@@ -812,12 +815,13 @@ fn commands_file_changes_and_mcp_calls_show_as_tool_calls_and_results() {
         })
         .collect();
     assert_eq!(
-        tools,
+        untimed(tools),
         [
             AgentMessage::ToolCall {
                 id: "call_1".into(),
                 tool: "commandExecution".into(),
                 input: json!({"command": "npm test", "cwd": "/w"}),
+                time_unix_ms: None,
             },
             AgentMessage::ToolResult {
                 id: "call_1".into(),
@@ -828,6 +832,7 @@ fn commands_file_changes_and_mcp_calls_show_as_tool_calls_and_results() {
                 id: "patch_1".into(),
                 tool: "fileChange".into(),
                 input: json!({"changes": changes}),
+                time_unix_ms: None,
             },
             AgentMessage::ToolResult {
                 id: "patch_1".into(),
@@ -838,6 +843,7 @@ fn commands_file_changes_and_mcp_calls_show_as_tool_calls_and_results() {
                 id: "mcp_1".into(),
                 tool: "grove/open_panel".into(),
                 input: json!({"kind": "diff"}),
+                time_unix_ms: None,
             },
             AgentMessage::ToolResult {
                 id: "mcp_1".into(),
@@ -1032,4 +1038,35 @@ fn set_model_before_the_first_message_applies_to_the_first_turn_and_keeps_to_lat
         said,
         [&delta("gpt-5.5-mini medium"), &delta("gpt-5.5-mini medium")]
     );
+}
+
+#[test]
+fn a_tool_call_and_its_turn_from_the_app_server_carry_the_times_the_core_got_them() {
+    let command = json!({"type": "commandExecution", "id": "call_1", "command": "npm test",
+                         "cwd": "/w", "status": "inProgress", "aggregatedOutput": null,
+                         "exitCode": null});
+    let steps = vec![
+        wait("turn/start"),
+        turn_started(),
+        item("item/started", command),
+        turn_completed("completed", Value::Null),
+    ];
+    let s = setup(json!(steps));
+    let session = s.spawn(None);
+    let mut frames = Frames::subscribe(&s.core, session);
+    let before = now_unix_ms();
+
+    s.core.send_message(session, "go").unwrap();
+
+    frames.until_turn_end();
+    let after = now_unix_ms();
+    let stamped = times(&frames.messages);
+    assert_eq!(stamped.len(), 3, "a turn start, a tool call and a turn end");
+    for time in stamped {
+        let time = time.expect("each has a time");
+        assert!(
+            (before..=after).contains(&time),
+            "{time} is not in {before}..={after}"
+        );
+    }
 }

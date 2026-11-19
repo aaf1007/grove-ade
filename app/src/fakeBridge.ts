@@ -90,7 +90,7 @@ export interface FakeBridge extends Bridge {
    * Adds the messages to a chat-mode session's conversation, as its agent sends them. If a panel
    * subscribed, they go to it as one frame, as the core's batcher sends them.
    */
-  messages(session: SessionId, ...messages: AgentMessage[]): void;
+  messages(session: SessionId, ...messages: FakeMessage[]): void;
   /** Every `openInEditor` call, in order. */
   opened: { editor: Editor; worktree: string; file: string; line: number }[];
   /** Every worktree `revealInFinder` showed, in order. */
@@ -251,6 +251,20 @@ export const FAKE_MODELS: Record<Agent, Model[]> = {
     },
   ],
 };
+
+/** An agent message as a test writes it: a time it leaves out is null, as a record with none. */
+export type FakeMessage = AgentMessage extends infer Message
+  ? Message extends { timeUnixMs: number | null }
+    ? Omit<Message, "timeUnixMs"> & { timeUnixMs?: number | null }
+    : Message
+  : never;
+
+function withTime(message: FakeMessage): AgentMessage {
+  if (!TIMED.has(message.type)) return message as AgentMessage;
+  return { ...message, timeUnixMs: (message as { timeUnixMs?: number | null }).timeUnixMs ?? null } as AgentMessage;
+}
+
+const TIMED = new Set<AgentMessage["type"]>(["TurnStarted", "ToolCall", "TurnEnded"]);
 
 /**
  * An in-memory bridge for tests, with no Tauri and no core. `repos` maps a path the user can
@@ -786,7 +800,7 @@ export function fakeBridge(
       accounts.set(change.agent, change);
       accountListeners.forEach((listener) => listener(change));
     },
-    messages: (session, ...messages) => addMessages(session, messages),
+    messages: (session, ...messages) => addMessages(session, messages.map(withTime)),
     opened,
     revealed,
     openedLinks,

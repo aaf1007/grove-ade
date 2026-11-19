@@ -2,9 +2,9 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { Profiler } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import type { Agent, AgentMessage, AgentStateChanged, Question, Reply } from "./bridge";
+import type { Agent, AgentStateChanged, Question, Reply } from "./bridge";
 import { ChatPanel } from "./ChatPanel";
-import { fakeBridge, type FakeBridge } from "./fakeBridge";
+import { fakeBridge, type FakeBridge, type FakeMessage } from "./fakeBridge";
 
 // TerminalPanel.test.tsx covers the terminal itself. The stub says which session it shows.
 vi.mock("./TerminalPanel", () => ({
@@ -118,6 +118,10 @@ async function shownPanel(bridge: FakeBridge, props: Partial<Parameters<typeof P
 
 function composer() {
   return screen.getByRole("textbox", { name: "Message" });
+}
+
+function strip() {
+  return screen.getByRole("group", { name: "Branch and profile" });
 }
 
 test("a stream of deltas renders at most once per animation frame and ends with the full text", async () => {
@@ -381,7 +385,7 @@ test("a turn's work sits under one header, Working while the turn runs and Worke
   view.rerender(<Panel bridge={bridge} state={working("Done")} />);
   expect(heads()).toEqual(["Worked"]);
 
-  // A turn that only talks has no header.
+  // A turn that only talks has its own header too.
   act(() =>
     bridge.messages(
       "0",
@@ -392,7 +396,7 @@ test("a turn's work sits under one header, Working while the turn runs and Worke
     ),
   );
   nextFrame();
-  expect(heads()).toEqual(["Worked"]);
+  expect(heads()).toEqual(["Worked", "Worked"]);
 });
 
 test("a running call's label shimmers until it has a result or its turn ends", async () => {
@@ -452,31 +456,148 @@ test.each<[string, unknown, string]>([
   expect(screen.getByRole("button", { name: label })).toBeTruthy();
 });
 
-test("while the agent works the thread says for how long, with no dots", async () => {
+test("the work header counts the turn from its start while it runs, then says how long it took", async () => {
   vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
   try {
     const bridge = await started();
     const view = await shownPanel(bridge, { state: working("Working") });
-    expect(screen.getByText("Working for 0s")).toBeTruthy();
-    expect(document.querySelector(".dots")).toBeNull();
+    const head = () => document.querySelector(".work-head")?.textContent;
+    const startedAt = Date.now();
+
+    act(() =>
+      bridge.messages(
+        "0",
+        { type: "TurnStarted", timeUnixMs: startedAt },
+        { type: "ToolCall", id: "1", tool: "Bash", input: { command: "npm test" }, timeUnixMs: startedAt },
+      ),
+    );
+    nextFrame();
+    expect(head()).toBe("Working for 0s");
 
     act(() => vi.advanceTimersByTime(63_000));
-    expect(screen.getByText("Working for 1m 3s")).toBeTruthy();
+    expect(head()).toBe("Working for 1m 3s");
 
-    // Waiting on the user is part of the turn: the count goes on once it works again.
+    // Waiting on the user is part of the turn, so the count goes on.
     view.rerender(<Panel bridge={bridge} state={{ session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" }} />);
-    expect(screen.queryByText(/^Working for/)).toBeNull();
     act(() => vi.advanceTimersByTime(3_600_000));
-    view.rerender(<Panel bridge={bridge} state={working("Working")} />);
-    expect(screen.getByText("Working for 1h 1m")).toBeTruthy();
+    expect(head()).toBe("Working for 1h 1m");
 
+    act(() => bridge.messages("0", { type: "TurnEnded", outcome: "Completed", timeUnixMs: startedAt + 134_000 }));
+    nextFrame();
     view.rerender(<Panel bridge={bridge} state={working("Done")} />);
-    view.rerender(<Panel bridge={bridge} state={working("Working")} />);
-    expect(screen.getByText("Working for 0s")).toBeTruthy();
+    expect(head()).toBe("Worked for 2m 14s");
+    expect(screen.queryByText(/^Working for/)).toBeNull();
   } finally {
     vi.useRealTimers();
   }
 });
+
+test("a turn with no tool call has the work header too, counting from its start and then saying how long it took", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+  try {
+    const bridge = await started();
+    const view = await shownPanel(bridge, { state: working("Working") });
+    const heads = () => [...document.querySelectorAll(".work-head")].map((head) => head.textContent);
+    const startedAt = Date.now();
+
+    act(() => bridge.messages("0", { type: "User", text: "hi" }, { type: "TurnStarted", timeUnixMs: startedAt }));
+    nextFrame();
+    expect(heads()).toEqual(["Working for 0s"]);
+
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(heads()).toEqual(["Working for 5s"]);
+
+    act(() =>
+      bridge.messages(
+        "0",
+        { type: "TextDelta", text: "Hello." },
+        { type: "TurnEnded", outcome: "Completed", timeUnixMs: startedAt + 42_000 },
+      ),
+    );
+    nextFrame();
+    view.rerender(<Panel bridge={bridge} state={working("Done")} />);
+    expect(heads()).toEqual(["Worked for 42s"]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a tool row shows the clock time of its call, and a call with no time shows none", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  const at = new Date(2026, 10, 19, 14, 2, 30).getTime();
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted", timeUnixMs: at },
+      { type: "ToolCall", id: "1", tool: "Bash", input: { command: "npm test" }, timeUnixMs: at },
+      { type: "ToolCall", id: "2", tool: "Grep", input: { pattern: "TODO" }, timeUnixMs: null },
+    ),
+  );
+  nextFrame();
+
+  const timed = screen.getByRole("button", { name: "Ran npm test" });
+  expect(timed.querySelector(".tool-time")?.textContent).toBe(clock(at));
+  const untimed = screen.getByRole("button", { name: "Searched for TODO" });
+  expect(untimed.querySelector(".tool-time")).toBeNull();
+});
+
+test("a tool row's time is its description, so a screen reader hears it after what the call did", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  const at = new Date(2026, 10, 19, 14, 2).getTime();
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted", timeUnixMs: at },
+      { type: "ToolCall", id: "1", tool: "Bash", input: { command: "npm test" }, timeUnixMs: at },
+      { type: "ToolCall", id: "2", tool: "Grep", input: { pattern: "TODO" }, timeUnixMs: at },
+      { type: "ToolResult", id: "2", output: "no such file", isError: true },
+    ),
+  );
+  nextFrame();
+
+  const row = screen.getByRole("button", { name: "Ran npm test" });
+  expect(document.getElementById(row.getAttribute("aria-describedby") ?? "")?.textContent).toBe(clock(at));
+  // A failed row is not a button, so its time is read as its text.
+  expect(document.querySelector(".tool.failed .tool-time")?.getAttribute("aria-hidden")).toBeNull();
+});
+
+test("a folded row shows the time of its first call that has one", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  const at = new Date(2026, 10, 19, 14, 2).getTime();
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted", timeUnixMs: at },
+      { type: "ToolCall", id: "1", tool: "Read", input: { file_path: `${worktree}/a.ts` }, timeUnixMs: null },
+      { type: "ToolCall", id: "2", tool: "Read", input: { file_path: `${worktree}/b.ts` }, timeUnixMs: at },
+    ),
+  );
+  nextFrame();
+
+  const read = screen.getByRole("button", { name: "Read 2 files" });
+  expect(read.querySelector(".tool-time")?.textContent).toBe(clock(at));
+});
+
+test("a fake message whose time is set to undefined has no time, as one that leaves it out", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+
+  act(() => bridge.messages("0", { type: "TurnStarted", timeUnixMs: undefined }));
+  nextFrame();
+
+  expect(document.querySelector(".work-head")?.textContent).toBe("Working");
+});
+
+/** A time as the tool rows show it, in the runtime's locale. */
+function clock(time: number) {
+  return new Date(time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+}
 
 test.each<[string, AgentStateChanged | undefined, string]>([
   ["no state", undefined, "Send"],
@@ -652,15 +773,50 @@ test("a message the agent never got says so, with its text", async () => {
   expect(card.textContent).toContain("add a test");
 });
 
-test("the header shows the agent, its state with the source, and Chat mode", async () => {
+test("the header shows the agent and its state with the source, and the strip shows Chat mode", async () => {
   const bridge = await started();
   await shownPanel(bridge, { state: working("Working") });
 
   expect(document.querySelector(".pane-head b")!.textContent).toBe("Claude Code");
   expect(document.querySelector(".pane-head .ui-agent-state")!.textContent).toBe("Working · Protocol");
-  const mode = screen.getByRole("group", { name: "Mode" });
+  expect(within(document.querySelector<HTMLElement>(".pane-head")!).queryByRole("group", { name: "Mode" })).toBeNull();
+  const mode = within(strip()).getByRole("group", { name: "Mode" });
   expect(within(mode).getByRole("button", { name: "Chat" }).getAttribute("aria-pressed")).toBe("true");
   expect((within(mode).getByRole("button", { name: "Terminal" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test("the strip under the composer shows the worktree's branch and the repo's profile", async () => {
+  const bridge = await started();
+  await bridge.setRepoProfile(worktree, "Rust crate");
+  await shownPanel(bridge);
+
+  expect(strip().textContent).toContain("feat-116");
+  expect(strip().textContent).toContain("Rust crate");
+
+  await act(() => bridge.setRepoProfile(worktree, "Next.js app"));
+  expect(strip().textContent).toContain("Next.js app");
+  await act(() => bridge.setRepoProfile(worktree, null));
+  expect(strip().textContent).not.toMatch(/Rust crate|Next\.js app/);
+});
+
+test("the composer's footer shows the agent's mark, then the model and its effort, then send", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+
+  const row = document.querySelector(".composer-row")!;
+  expect(within(row as HTMLElement).getByTitle("Claude Code")).toBeTruthy();
+  expect(pickerButton().querySelector("b")!.textContent).toBe("Default (recommended)");
+  expect(pickerButton().querySelector(".picker-effort")!.textContent).toBe("high");
+  const buttons = within(row as HTMLElement).getAllByRole("button");
+  expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual(["Agent and model", "Send"]);
+});
+
+test("the composer starts on the placeholder for its agent", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex" });
+
+  expect(composer().getAttribute("placeholder")).toBe("Ask Codex anything. @ files, / commands");
+  expect(within(document.querySelector<HTMLElement>(".composer-row")!).getByTitle("Codex")).toBeTruthy();
 });
 
 // The account line moved to the sidebar's footer (#29).
@@ -669,7 +825,7 @@ test("the composer has no account line", async () => {
   await shownPanel(bridge);
 
   expect(document.querySelector(".composer-foot")).toBeNull();
-  expect(pickerButton().textContent).toContain("Default (recommended) · high effort");
+  expect(pickerButton().textContent).toContain("Default (recommended) high");
 });
 
 test("the pane head names the session as the sidebar does", async () => {
@@ -764,16 +920,16 @@ test("a new panel starts on the agent's default model and effort, and the picker
 
   expect(document.querySelector(".pane-head b")!.textContent).toBe("Codex");
   expect(bridge.modelsSet).toEqual([{ session: "0", model: "gpt-5.5", effort: "medium" }]);
-  expect(pickerButton().textContent).toContain("GPT-5.5 · medium effort");
+  expect(pickerButton().textContent).toContain("GPT-5.5 medium");
 
   // A model that takes the effort keeps it.
   fireEvent.click(option(openPicker(), /^GPT-5.5 mini/));
-  expect(pickerButton().textContent).toContain("GPT-5.5 mini · medium effort");
+  expect(pickerButton().textContent).toContain("GPT-5.5 mini medium");
   const efforts = within(openPicker()).getByRole("group", { name: "Effort" });
   expect(within(efforts).getAllByRole("button").map((b) => b.textContent)).toEqual(["low", "medium"]);
   fireEvent.click(within(efforts).getByRole("button", { name: "low" }));
 
-  expect(pickerButton().textContent).toContain("GPT-5.5 mini · low effort");
+  expect(pickerButton().textContent).toContain("GPT-5.5 mini low");
   expect(bridge.modelsSet.slice(1)).toEqual([
     { session: "0", model: "gpt-5.5-mini", effort: "medium" },
     { session: "0", model: "gpt-5.5-mini", effort: "low" },
@@ -792,7 +948,7 @@ test("a remounted panel shows the session's own choice and sends no default", as
 
   await shownPanel(bridge, { agent: "Codex" });
 
-  expect(pickerButton().textContent).toContain("GPT-5.5 mini · low effort");
+  expect(pickerButton().textContent).toContain("GPT-5.5 mini low");
   expect(bridge.modelsSet).toHaveLength(sent);
 });
 
@@ -802,8 +958,7 @@ test("a model that does not take the current effort gets its own default, or non
 
   fireEvent.click(option(openPicker(), /^Haiku 5.5/));
 
-  expect(pickerButton().textContent).toContain("Haiku 5.5");
-  expect(pickerButton().textContent).not.toContain("effort");
+  expect(pickerButton().textContent).toBe("Haiku 5.5");
   expect(bridge.modelsSet.at(-1)).toEqual({ session: "0", model: "haiku", effort: null });
 });
 
@@ -864,7 +1019,7 @@ const kinds: Question = {
 };
 
 // A panel showing a turn that waits on its last message, a request.
-async function asked(...messages: AgentMessage[]) {
+async function asked(...messages: FakeMessage[]) {
   const bridge = await started();
   await shownPanel(bridge, { state: { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" } });
   act(() => bridge.messages("0", { type: "TurnStarted" }, ...messages));
@@ -873,8 +1028,8 @@ async function asked(...messages: AgentMessage[]) {
 }
 
 // As Claude Code sends it: the tool call, then the request to run it, under the call's id.
-const bashCall: AgentMessage = { type: "ToolCall", id: "toolu_01", tool: "Bash", input: { command: "npm test" } };
-const approval: AgentMessage = {
+const bashCall: FakeMessage = { type: "ToolCall", id: "toolu_01", tool: "Bash", input: { command: "npm test" } };
+const approval: FakeMessage = {
   type: "ApprovalRequested",
   request: "toolu_01",
   tool: "Bash",
@@ -927,7 +1082,7 @@ test.each<[string, Reply, string]>([
 });
 
 test("two approvals from one run each answer by button, one after the other", async () => {
-  const lint: AgentMessage = { type: "ToolCall", id: "toolu_02", tool: "Bash", input: { command: "npm run lint" } };
+  const lint: FakeMessage = { type: "ToolCall", id: "toolu_02", tool: "Bash", input: { command: "npm run lint" } };
   const bridge = await asked(bashCall, lint, approval);
   fireEvent.click(within(approvalLine()).getByRole("button", { name: "Approve" }));
   await settle();
@@ -964,6 +1119,19 @@ test("a declined call shows as declined, not as a failed call, with the message 
   expect(screen.getAllByText(/use vitest instead/).map((el) => el.textContent)).toEqual([
     "Declined: use vitest instead",
   ]);
+});
+
+test("a declined call keeps its call's clock time", async () => {
+  const at = new Date(2026, 10, 19, 9, 5).getTime();
+  const bridge = await asked({ ...bashCall, timeUnixMs: at }, approval);
+  fireEvent.change(composer(), { target: { value: "no" } });
+  fireEvent.keyDown(composer(), { key: "Enter" });
+  await settle();
+
+  act(() => bridge.messages("0", { type: "ToolResult", id: "toolu_01", output: "no", isError: true }));
+  nextFrame();
+
+  expect(document.querySelector(".tool.declined .tool-time")?.textContent).toBe(clock(at));
 });
 
 test("the approval's menu allows the tool for the rest of the session", async () => {
@@ -1003,7 +1171,7 @@ test("while an approval waits, a message from the composer declines it with that
   expect(bridge.sent).toEqual([]);
   expect((composer() as HTMLTextAreaElement).value).toBe("");
   expect(screen.getByText("Declined: use vitest instead")).toBeTruthy();
-  expect(composer().getAttribute("placeholder")).toBe("Ask Claude Code anything");
+  expect(composer().getAttribute("placeholder")).toBe("Ask Claude Code anything. @ files, / commands");
 });
 
 test("a decline the core refuses puts the message back in the composer with its error", async () => {
@@ -1168,7 +1336,7 @@ test("a focus request puts focus in the composer once the panel is shown, and on
 });
 
 function modeButton(name: "Chat" | "Terminal") {
-  const mode = screen.getByRole("group", { name: "Mode" });
+  const mode = within(strip()).getByRole("group", { name: "Mode" });
   return within(mode).getByRole("button", { name }) as HTMLButtonElement;
 }
 

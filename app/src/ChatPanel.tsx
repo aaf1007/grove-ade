@@ -1,7 +1,8 @@
-import { ArrowUp, Columns2, Ellipsis, Shield, Square, X } from "lucide-react";
+import { ArrowUp, Columns2, Ellipsis, GitBranch, Shield, SlidersHorizontal, Square, X } from "lucide-react";
 import {
   type Dispatch,
   type KeyboardEvent,
+  type ReactNode,
   type SetStateAction,
   useCallback,
   useEffect,
@@ -26,7 +27,7 @@ import type {
 import { AgentMarkdown } from "./AgentMarkdown";
 import "./ChatPanel.css";
 import { type ModelChoice, Picker, useModelChoice } from "./Picker";
-import { AGENT_NAMES } from "./Sidebar";
+import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { TerminalPanel } from "./TerminalPanel";
 import { DeclinedCall, relative, type ToolCall, ToolCalls } from "./ToolCalls";
 import { AgentState } from "./ui/AgentState";
@@ -64,9 +65,9 @@ interface ModeSwitch {
 }
 
 /**
- * An agent panel in the chat area: its header with the Chat/Terminal switch, then the session's
- * conversation in chat mode or the agent's own TUI in terminal mode. A switch resumes the same
- * conversation under the same session id.
+ * An agent panel in the chat area: its header, then the session's conversation in chat mode or the
+ * agent's own TUI in terminal mode, then a strip with the branch, the profile and the Chat/Terminal
+ * switch. A switch resumes the same conversation under the same session id.
  */
 export function ChatPanel({
   bridge,
@@ -126,6 +127,7 @@ export function ChatPanel({
   const [draft, setDraft] = useState("");
   const name = AGENT_NAMES[agent];
   const blocked = switchBlocked(state, modeSwitch, name);
+  const { branch, profile } = useWorktreePlace(bridge, worktree);
   const reportMode = useEffectEvent((mode: Mode) => onMode?.(mode));
 
   useEffect(() => {
@@ -162,6 +164,32 @@ export function ChatPanel({
     );
   }
 
+  const strip = (
+    <div className="composer-strip" role="group" aria-label="Branch and profile">
+      {branch && (
+        <span>
+          <GitBranch aria-hidden="true" />
+          {branch}
+        </span>
+      )}
+      {profile && (
+        <span>
+          <SlidersHorizontal aria-hidden="true" />
+          {profile}
+        </span>
+      )}
+      <span className="spacer" />
+      <Segmented
+        label="Mode"
+        options={MODES}
+        value={modeSwitch.mode}
+        disabled={blocked !== null}
+        title={blocked ?? undefined}
+        onChange={switchTo}
+      />
+    </div>
+  );
+
   return (
     <section
       className="chat-panel"
@@ -177,14 +205,6 @@ export function ChatPanel({
         <b>{sessionName ?? name}</b>
         {state && <AgentState state={state} source={state.source} />}
         <span className="spacer" />
-        <Segmented
-          label="Mode"
-          options={MODES}
-          value={modeSwitch.mode}
-          disabled={blocked !== null}
-          title={blocked ?? undefined}
-          onChange={switchTo}
-        />
         {onSplit && (
           <IconButton
             icon={Columns2}
@@ -209,6 +229,7 @@ export function ChatPanel({
       )}
       {modeSwitch.mode === "Chat" && (
         <ChatView
+          strip={strip}
           key={modeSwitch.switches}
           bridge={bridge}
           session={session}
@@ -238,10 +259,65 @@ export function ChatPanel({
             shown={shown}
             focusRequest={focusRequest}
           />
+          <div className="composer-wrap strip-only">{strip}</div>
         </>
       )}
+      {modeSwitch.mode === null && <div className="composer-wrap strip-only">{strip}</div>}
     </section>
   );
+}
+
+/**
+ * The worktree's branch and the name of the profile its repo uses, null when it has none. The
+ * profile follows changes to the repo's settings and to profiles. Neither shows when listing fails:
+ * the details card reports that.
+ */
+function useWorktreePlace(bridge: Bridge, worktree: string) {
+  const [found, setFound] = useState<{ worktree: string; repo: string; branch: string | null } | null>(null);
+  const [profile, setProfile] = useState<string | null>(null);
+  const [settingsChanges, setSettingsChanges] = useState(0);
+  const mine = found?.worktree === worktree ? found : null;
+  const repo = mine?.repo;
+
+  useEffect(() => {
+    let current = true;
+    bridge.listWorktrees().then(
+      (list) => {
+        const worktrees = byRepo(list).find((all) => all.some((w) => w.path === worktree));
+        const own = worktrees?.find((w) => w.path === worktree);
+        if (current && worktrees && own) setFound({ worktree, repo: worktrees[0].path, branch: own.branch });
+      },
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [bridge, worktree]);
+
+  useEffect(() => {
+    if (repo === undefined) return;
+    const changed = () => setSettingsChanges((n) => n + 1);
+    const stopProfiles = bridge.onProfilesChanged(changed);
+    const stopRepo = bridge.onRepoSettingsChanged((changedRepo) => changedRepo === repo && changed());
+    return () => {
+      stopProfiles();
+      stopRepo();
+    };
+  }, [bridge, repo]);
+
+  useEffect(() => {
+    if (repo === undefined) return;
+    let current = true;
+    bridge.repoProfile(repo).then(
+      (name) => current && setProfile(name),
+      () => current && setProfile(null),
+    );
+    return () => {
+      current = false;
+    };
+  }, [bridge, repo, settingsChanges]);
+
+  return { branch: mine?.branch ?? null, profile: repo === undefined ? null : profile };
 }
 
 /** Why the Chat/Terminal switch is off, as its tooltip says. null while it is on. */
@@ -268,6 +344,7 @@ type ChatMessage = AgentMessage | typeof RESUMED;
  * It follows the conversation while `shown`, and gets the whole of it again each time it is shown.
  */
 function ChatView({
+  strip,
   bridge,
   session,
   agent,
@@ -283,6 +360,8 @@ function ChatView({
   onChangeAgent,
   onModelChoice,
 }: {
+  /** Goes right under the composer. */
+  strip: ReactNode;
   bridge: Bridge;
   session: SessionId;
   agent: Agent;
@@ -526,8 +605,6 @@ function ChatView({
               {text}
             </div>
           ))}
-          {/* Mounted for the whole turn, so the count goes on after a request it waited on. */}
-          {turnRunning && <WorkingFor shown={working} />}
         </div>
       </div>
       <div className="composer-wrap">
@@ -542,12 +619,15 @@ function ChatView({
             ref={composer}
             aria-label="Message"
             rows={1}
-            placeholder={declining ? "Send a message to decline and redirect the agent" : `Ask ${name} anything`}
+            placeholder={
+              declining ? "Send a message to decline and redirect the agent" : `Ask ${name} anything. @ files, / commands`
+            }
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
           />
           <div className="composer-row">
+            <span className="spacer" />
             <Picker
               agent={agent}
               agentLocked={agentLocked}
@@ -556,7 +636,6 @@ function ChatView({
               onAgent={changeAgent}
               onChoose={choose}
             />
-            <span className="spacer" />
             {working ? (
               <button className="send stop" aria-label="Interrupt" title="Interrupt the turn" onClick={interrupt}>
                 <Square aria-hidden="true" />
@@ -568,6 +647,7 @@ function ChatView({
             )}
           </div>
         </div>
+        {strip}
       </div>
     </>
   );
@@ -583,8 +663,11 @@ interface Turn {
   /** Where the turn's items start in the message list. */
   start: number;
   ended: boolean;
-  /** Set once the turn has a tool call. */
+  /** Set when the turn starts, or at its first tool call when the conversation has no start for it. */
   head: WorkItem | null;
+  /** When the turn started and ended, in milliseconds since the Unix epoch. null when unknown. */
+  startedAt: number | null;
+  endedAt: number | null;
 }
 
 /** The header of a turn's work. */
@@ -638,7 +721,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
   // The current turn's requests, by id.
   const requests = new Map<string, RequestItem>();
   let edited: string[] = [];
-  let turn: Turn = { start: 0, ended: false, head: null };
+  let turn: Turn = { start: 0, ended: false, head: null, startedAt: null, endedAt: null };
 
   // The header goes where the turn started, before anything the agent said first.
   function workStarts() {
@@ -666,7 +749,9 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
         break;
       case "TurnStarted":
         edited = [];
-        turn = { start: items.length, ended: false, head: null };
+        turn = { start: items.length, ended: false, head: null, startedAt: message.timeUnixMs, endedAt: null };
+        // Every turn has its header, so a turn that only talks says how long it worked too.
+        workStarts();
         break;
       case "TextDelta": {
         const last = items[items.length - 1];
@@ -677,7 +762,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
       case "ToolCall": {
         // Its approval came first and shows it already.
         if (calls.has(message.id)) break;
-        const call = { id: message.id, tool: message.tool, input: message.input };
+        const call = { id: message.id, tool: message.tool, input: message.input, time: message.timeUnixMs };
         calls.set(call.id, call);
         workStarts();
         const last = items[items.length - 1];
@@ -723,6 +808,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
         break;
       case "TurnEnded":
         turn.ended = true;
+        turn.endedAt = message.timeUnixMs;
         requests.forEach((item) => (item.expired = !item.reply));
         requests.clear();
         if (edited.length > 0) {
@@ -779,7 +865,7 @@ function Item({
 }) {
   switch (item.kind) {
     case "work":
-      return <WorkHead running={turnRunning && !item.turn.ended} />;
+      return <WorkHead turn={item.turn} running={turnRunning && !item.turn.ended} />;
     case "tools":
       return <ToolCalls calls={item.calls} worktree={worktree} live={turnRunning && !item.turn.ended} />;
     case "approval":
@@ -876,13 +962,32 @@ function Item({
   }
 }
 
-/** The header of a turn's work: "Working" while the turn runs, "Worked" after. */
-function WorkHead({ running }: { running: boolean }) {
+/**
+ * The header of a turn's work: "Working for 1m 3s" while the turn runs, counted each second from
+ * its start, and "Worked for 2m 14s" after. Just "Working" or "Worked" when a time is unknown.
+ */
+function WorkHead({ turn, running }: { turn: Turn; running: boolean }) {
+  const now = useNow(running && turn.startedAt !== null);
+  const { startedAt, endedAt } = turn;
+  let text = running ? "Working" : "Worked";
+  if (running && startedAt !== null) text += ` for ${duration(now - startedAt)}`;
+  if (!running && startedAt !== null && endedAt !== null) text += ` for ${duration(endedAt - startedAt)}`;
   return (
     <div className="work-head">
-      <span className={running ? "shimmer" : undefined}>{running ? "Working" : "Worked"}</span>
+      <span className={running ? "shimmer" : undefined}>{text}</span>
     </div>
   );
+}
+
+/** The time now, in milliseconds since the Unix epoch, read again each second while `ticking`. */
+function useNow(ticking: boolean): number {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!ticking) return;
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, [ticking]);
+  return now;
 }
 
 /** Where a review comment is, as the agent reads it: `path:line` or `path:first-last`. */
@@ -1093,20 +1198,6 @@ function describeAnswers(item: QuestionItem, reply: Reply): string {
   const headers = item.questions.length > 1 ? item.questions : null;
   const answers = reply.answers.map((a, i) => (headers ? `${headers[i].header}: ` : "") + a.join(", "));
   return `Answered: ${answers.join("; ")}`;
-}
-
-/**
- * How long the turn has gone on since the panel saw it start, counted each second. It counts while
- * hidden too, so it is right the moment it shows again.
- */
-function WorkingFor({ shown }: { shown: boolean }) {
-  const [since] = useState(Date.now);
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    const tick = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(tick);
-  }, []);
-  return shown && <div className="working-for">Working for {duration(now - since)}</div>;
 }
 
 /** A span of time as "45s", "1m 3s" or "1h 2m". */
