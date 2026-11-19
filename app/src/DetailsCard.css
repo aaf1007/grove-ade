@@ -93,10 +93,12 @@ button.details-row:focus-visible,
   white-space: nowrap;
 }
 
+/* A long value at the right edge gives way before the label: it shrinks a thousand times faster,
+   so the label only shrinks once the value is gone, and a chevron never shrinks. */
 .details-end {
   display: flex;
   min-width: 0;
-  flex: none;
+  flex: 0 1000 auto;
   align-items: center;
   margin-left: auto;
   font: var(--text-meta);
@@ -111,6 +113,17 @@ button.details-row:focus-visible,
   text-overflow: ellipsis;
   white-space: nowrap;
   user-select: text;
+}
+
+.details-end > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.details-end:has(> .details-chevron),
+.details-row .ui-icon-button.details-end {
+  flex: none;
 }
 
 .details-row .ui-icon-button.details-end {
@@ -134,10 +147,6 @@ button.details-row:focus-visible,
   font-family: var(--font-mono);
   font-size: var(--text-code-sm-size);
   text-overflow: ellipsis;
-}
-
-.details-end .details-code {
-  max-width: 140px;
 }
 
 .details-muted {

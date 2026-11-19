@@ -219,7 +219,7 @@ test("the changes row hides the old base's counts while the new base's diff load
   expect(within(card()).queryByRole("listitem", { name: "Changes" })).toBeNull();
 });
 
-test("the changes row counts the lines since the base branch, and opens the Diff panel", async () => {
+test("the changes row counts the lines since the base branch, and opens the Diff panel on the merge base", async () => {
   const bridge = await setup();
   const { onOpenDiff } = await renderCard(bridge);
 
@@ -227,7 +227,7 @@ test("the changes row counts the lines since the base branch, and opens the Diff
   expect(changes.textContent).toBe("Changesvs develop+15 −3");
 
   fireEvent.click(changes);
-  expect(onOpenDiff).toHaveBeenCalled();
+  expect(onOpenDiff).toHaveBeenCalledWith("MergeBase");
 });
 
 test("on a worktree with no base branch, the changes row counts uncommitted changes and follows them", async () => {
@@ -239,10 +239,12 @@ test("on a worktree with no base branch, the changes row counts uncommitted chan
     { [main]: diffs },
   );
   await bridge.addRepo(main);
-  await renderCard(bridge as Awaited<ReturnType<typeof setup>>, {
+  const { onOpenDiff } = await renderCard(bridge as Awaited<ReturnType<typeof setup>>, {
     worktree: main,
   });
   expect(within(row("Changes")).getByRole("button").textContent).toBe("Changesvs HEAD+1 −0");
+  fireEvent.click(within(row("Changes")).getByRole("button"));
+  expect(onOpenDiff).toHaveBeenCalledWith("Head");
 
   diffs.Head = [];
   await act(async () => bridge.diffChanged(main));

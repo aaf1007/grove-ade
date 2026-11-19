@@ -9,7 +9,12 @@ import appStyles from "./styles.css?raw";
 
 // The diff view and xterm.js need a real browser. These tests cover only which panels exist and
 // which ones are shown. ChatPanel.test.tsx covers the agent panel itself.
-vi.mock("./DiffView", () => ({ DiffView: () => null }));
+// DiffView.test.tsx covers the Diff panel. The stub only says which base it was last opened on.
+vi.mock("./DiffView", () => ({
+  DiffView: ({ opened }: { opened?: { base: string; request: number } }) => (
+    <p>Diff opened on {opened ? `${opened.base} ${opened.request}` : "nothing"}</p>
+  ),
+}));
 // FilesPanel.test.tsx covers the Files panel. The stub only says which worktree it shows.
 vi.mock("./FilesPanel", () => ({
   FilesPanel: ({ worktree }: { worktree: string }) => <p>Files of {worktree}</p>,
@@ -1715,6 +1720,26 @@ test("the Details card's Changes row opens the Diff panel, and the panel area if
 
   expect(screen.getByRole("region", { name: "Panel area" })).toBeTruthy();
   expect(screen.getByRole("tab", { name: "Diff", selected: true })).toBeTruthy();
+  expect(screen.getByText("Diff opened on MergeBase 1")).toBeTruthy();
+
+  // Each click asks again, so a Diff the user switched to HEAD goes back to the merge base.
+  await act(async () => fireEvent.click(within(detailsCard()).getByRole("button", { name: /Changes/ })));
+  expect(screen.getByText("Diff opened on MergeBase 2")).toBeTruthy();
+});
+
+test("the Details card's Changes row opens the Diff on HEAD for a worktree with no base branch", async () => {
+  const bridge = fakeBridge(
+    { [main]: [{ path: main, branch: "main", isMain: true, baseBranch: null }] },
+    { [main]: { Head: [], MergeBase: [] } },
+  );
+  await bridge.addRepo(main);
+  render(<App bridge={bridge} />);
+  await select("main (main worktree)");
+  await clickButton("Details");
+
+  await act(async () => fireEvent.click(within(detailsCard()).getByRole("button", { name: /Changes/ })));
+
+  expect(screen.getByText("Diff opened on Head 1")).toBeTruthy();
 });
 
 test("the Details card's Add run session row opens the Profile panel", async () => {

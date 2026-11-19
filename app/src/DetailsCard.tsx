@@ -14,7 +14,18 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "react";
 
-import type { Agent, Bridge, Editor, FileDiff, Mode, SessionId, RunSession, StateSource, Worktree } from "./bridge";
+import type {
+  Agent,
+  Bridge,
+  DiffBase,
+  Editor,
+  FileDiff,
+  Mode,
+  SessionId,
+  RunSession,
+  StateSource,
+  Worktree,
+} from "./bridge";
 import type { ModelChoice } from "./Picker";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { ChangeBaseDialog } from "./WorktreeDialogs";
@@ -77,7 +88,8 @@ export function DetailsCard({
   /** null when the worktree has no agent session. */
   session: FocusedSession | null;
   onStartRun(name: string): void;
-  onOpenDiff(): void;
+  /** Opens the Diff on the base the Changes row counts against. */
+  onOpenDiff(base: DiffBase): void;
   onOpenProfile(): void;
   onClose(): void;
 }) {
@@ -308,7 +320,12 @@ export function DetailsCard({
           )}
           {changes && "files" in changes && (
             <li aria-label="Changes">
-              <button type="button" className="details-row" title="Open the Diff panel" onClick={onOpenDiff}>
+              <button
+                type="button"
+                className="details-row"
+                title="Open the Diff panel"
+                onClick={() => onOpenDiff(base ? "MergeBase" : "Head")}
+              >
                 <RowContent
                   icon={FileDiffIcon}
                   label={
