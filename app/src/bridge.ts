@@ -237,18 +237,20 @@ export type Reply =
 /**
  * One message of a chat-mode conversation, as `Message` in `app/src-tauri/src/main.rs` sends it.
  * A tool result pairs with its call by `id`, and an answer with its request by `request`. A
- * request still pending when its turn ends ends with it.
+ * request still pending when its turn ends ends with it. `timeUnixMs` is when the core got the
+ * message, or when the agent's record says it happened, in milliseconds since the Unix epoch.
+ * null when a record does not say, as for a restored Codex tool call.
  */
 export type AgentMessage =
   | { type: "User"; text: string }
-  | { type: "TurnStarted" }
+  | { type: "TurnStarted"; timeUnixMs: number | null }
   | { type: "TextDelta"; text: string }
-  | { type: "ToolCall"; id: string; tool: string; input: unknown }
+  | { type: "ToolCall"; id: string; tool: string; input: unknown; timeUnixMs: number | null }
   | { type: "ToolResult"; id: string; output: string; isError: boolean }
   | { type: "ApprovalRequested"; request: string; tool: string; input: unknown }
   | { type: "QuestionAsked"; request: string; questions: Question[] }
   | { type: "Answered"; request: string; reply: Reply }
-  | ({ type: "TurnEnded" } & TurnOutcome)
+  | ({ type: "TurnEnded"; timeUnixMs: number | null } & TurnOutcome)
   | { type: "ReviewBatch"; comments: BatchComment[] }
   /** A message the user sent never reached the agent: its process ended first. `text` is what the agent would have got. */
   | { type: "NotDelivered"; text: string };

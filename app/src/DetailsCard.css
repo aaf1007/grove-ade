@@ -6,88 +6,147 @@
   height: 0;
 }
 
+.chat-area {
+  --details-card-width: 320px;
+}
+
+/* While the card is open and the panel area is closed, the agent panels make room for it, so it
+   covers none of them. */
+.regions.no-panels .chat-area:has(> .details-holder) > :is(.chat-panels, .empty-chat) {
+  margin-right: calc(var(--details-card-width) + 2 * var(--space-12));
+}
+
 .details-card {
   position: absolute;
   top: var(--space-8);
-  right: var(--space-8);
-  width: min(calc(var(--sidebar-width) * 1.375), calc(100% - 2 * var(--space-8)));
-  border-radius: var(--radius-lg);
+  right: var(--space-12);
+  width: min(var(--details-card-width), calc(100% - 2 * var(--space-12)));
+  padding: var(--space-8) 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2xl);
+  background: var(--panel);
   box-shadow: var(--shadow-menu);
 }
 
-/* The rows menu hangs over the card's edge when few rows are shown, so the card must not clip it.
-   The body scrolls instead. */
-.details-card .ui-card {
-  overflow: visible;
-  background: var(--panel);
-}
-
-.details-card .ui-card-body {
-  display: flex;
+/* The chat area clips what overflows it, so the rows scroll inside the window's height. */
+.details-rows {
   max-height: calc(100vh - var(--topbar) - var(--space-48) * 2);
-  flex-direction: column;
-  gap: var(--space-8);
   overflow-y: auto;
 }
 
-.details-row {
-  display: grid;
-  grid-template-columns: calc(var(--space-48) + var(--space-16)) minmax(0, 1fr);
-  align-items: baseline;
-  gap: var(--space-8);
-}
-
-.details-label {
-  color: var(--muted);
-  font: var(--text-label);
-}
-
-.details-value {
-  min-width: 0;
-  font: var(--text-meta);
-}
-
-.details-line {
-  display: flex;
-  min-width: 0;
-  min-height: var(--control-xs);
-  align-items: center;
-  gap: var(--space-6);
-}
-
-.details-wrap {
-  flex-wrap: wrap;
-  row-gap: 0;
-}
-
-.details-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+.details-rows {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.details-list .details-line .ui-button {
-  margin-left: auto;
+/* A row is a line of 38px: its icon, its label, and a value or chevron at the right edge. A row
+   that does something is a button, or a menu's trigger, and fills on hover. */
+.details-row,
+.details-card .ui-menu-trigger {
+  display: flex;
+  width: 100%;
+  height: 38px;
+  align-items: center;
+  gap: var(--space-12);
+  padding: 0 var(--space-16);
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: var(--text-control);
+  font-weight: 400;
+  text-align: left;
 }
 
-.details-code {
+button.details-row,
+.details-card .ui-menu-trigger {
+  cursor: pointer;
+}
+
+button.details-row:hover,
+.details-card .ui-menu-trigger:hover,
+.details-card .ui-menu-trigger[aria-expanded="true"] {
+  background: var(--hover);
+}
+
+button.details-row:focus-visible,
+.details-card .ui-menu-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.details-row > svg,
+.details-card .ui-menu-trigger > svg {
+  width: var(--icon);
+  height: var(--icon);
+  flex: none;
+  color: var(--muted);
+  stroke-width: 1.75;
+}
+
+.details-label {
+  display: flex;
   min-width: 0;
+  align-items: baseline;
+  gap: var(--space-6);
   overflow: hidden;
-  font: var(--text-code-sm);
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* A ghost button's text lines up with the values above and below it. */
-.details-value > .ui-button-ghost {
-  margin-left: calc(-1 * var(--space-8));
+/* A long value at the right edge gives way before the label: it shrinks a thousand times faster,
+   so the label only shrinks once the value is gone, and a chevron never shrinks. */
+.details-end {
+  display: flex;
+  min-width: 0;
+  flex: 0 1000 auto;
+  align-items: center;
+  margin-left: auto;
+  font: var(--text-meta);
+  white-space: nowrap;
 }
 
 .details-path {
+  min-width: 0;
   flex: 1;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.details-end > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.details-end:has(> .details-chevron),
+.details-row .ui-icon-button.details-end {
+  flex: none;
+}
+
+.details-row .ui-icon-button.details-end {
+  margin-right: calc(-1 * var(--space-4));
+}
+
+.details-chevron {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.details-divider {
+  height: 1px;
+  margin: var(--space-6) 0;
+  background: var(--line);
+}
+
+.details-code {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--text-code-sm-size);
+  text-overflow: ellipsis;
 }
 
 .details-muted {
@@ -95,22 +154,15 @@
 }
 
 .details-faint {
-  margin: 0;
   color: var(--faint);
 }
 
-.details-state {
-  color: var(--faint);
-  font: var(--text-label);
-}
-
-.details-state.running {
+.details-running {
   color: var(--done);
 }
 
 .details-add,
 .details-del {
-  font: var(--text-code-meta);
   font-variant-numeric: tabular-nums;
 }
 
@@ -123,7 +175,7 @@
 }
 
 .details-error {
-  margin: 0;
+  margin: var(--space-6) var(--space-16) 0;
   color: var(--failed);
   font: var(--text-meta);
 }

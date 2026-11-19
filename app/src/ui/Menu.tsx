@@ -1,6 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { Check } from "lucide-react";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { IconButton } from "./IconButton";
 import "./Menu.css";
@@ -18,9 +18,9 @@ export interface MenuItem {
 }
 
 /**
- * An icon button that opens a list of actions under it. Opening focuses the first item, Up and
- * Down move through the items, Escape, Tab or a click outside closes it, and an item's shortcut
- * picks it. Focus goes back to the button when the menu closes from the keyboard or a pick.
+ * An icon button that opens a list of actions under it. With `trigger`, a full-width button holding
+ * it opens the list instead. Opening focuses the first item, Up and Down move through the items,
+ * Escape, Tab or a click outside closes it, and an item's shortcut picks it. Focus goes back to the button when the menu closes from the keyboard or a pick.
  */
 export function Menu({
   label,
@@ -28,6 +28,7 @@ export function Menu({
   heading,
   items,
   align = "start",
+  trigger,
 }: {
   /** Names the button and the menu. */
   label: string;
@@ -37,15 +38,17 @@ export function Menu({
   items: MenuItem[];
   /** Which edge of the button the menu lines up with. */
   align?: "start" | "end";
+  /** What a full-width trigger shows, in place of the icon button. */
+  trigger?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const holder = useRef<HTMLSpanElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
 
   // The item with focus goes away, so focus goes back to the button, where a dialog finds it.
   function close() {
-    trigger.current?.focus();
+    button.current?.focus();
     setOpen(false);
   }
 
@@ -69,7 +72,7 @@ export function Menu({
     const step = { ArrowDown: 1, ArrowUp: -1 }[event.key];
     if (step !== undefined) {
       const buttons = [...(list.current?.querySelectorAll("button") ?? [])];
-      const at = buttons.findIndex((button) => button === document.activeElement);
+      const at = buttons.findIndex((item) => item === document.activeElement);
       if (at === -1) return;
       event.preventDefault();
       buttons[(at + step + buttons.length) % buttons.length].focus();
@@ -98,16 +101,30 @@ export function Menu({
   }, [open]);
 
   return (
-    <span ref={holder} className="ui-menu">
-      <IconButton
-        ref={trigger}
-        icon={icon}
-        label={label}
-        size="xs"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-      />
+    <span ref={holder} className={trigger === undefined ? "ui-menu" : "ui-menu ui-menu-wide"}>
+      {trigger === undefined ? (
+        <IconButton
+          ref={button}
+          icon={icon}
+          label={label}
+          size="xs"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        />
+      ) : (
+        <button
+          ref={button}
+          type="button"
+          className="ui-menu-trigger"
+          aria-label={label}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          {trigger}
+        </button>
+      )}
       {open && (
         <div ref={list} className={`ui-menu-list ui-menu-list-${align}`} role="menu" aria-label={label}>
           {heading && <div className="ui-menu-heading">{heading}</div>}

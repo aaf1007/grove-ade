@@ -12,7 +12,7 @@ use std::mem;
 use std::path::Path;
 use std::process::{ChildStdout, Command};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -32,7 +32,11 @@ pub enum AgentMessage {
     /// What the user sent.
     User { text: String },
     /// The agent started working on a message.
-    TurnStarted,
+    TurnStarted {
+        /// When the core got it, or when the agent's record says it started. None when a record
+        /// does not say.
+        time_unix_ms: Option<u64>,
+    },
     /// The next piece of the agent's reply text.
     TextDelta { text: String },
     /// The agent called a tool. `id` is the agent's id for the call, which an approval request
@@ -42,6 +46,9 @@ pub enum AgentMessage {
         tool: String,
         /// The tool's input, as the agent gave it.
         input: Value,
+        /// When the core got it, or when the agent's record says it was made. None when a record
+        /// does not say, as Codex's never does.
+        time_unix_ms: Option<u64>,
     },
     /// What a tool call returned, by the call's `id`.
     ToolResult {
@@ -64,7 +71,12 @@ pub enum AgentMessage {
     /// The user answered a request.
     Answered { request: RequestId, reply: Reply },
     /// The turn ended. Its requests that were still pending ended with it.
-    TurnEnded { outcome: TurnOutcome },
+    TurnEnded {
+        outcome: TurnOutcome,
+        /// When the core got it, or when the agent's record says it ended. None when a record
+        /// does not say.
+        time_unix_ms: Option<u64>,
+    },
     /// A review batch the user sent. The agent got it as one message of plain text.
     ReviewBatch { comments: Vec<BatchComment> },
     /// A message the user sent never reached the agent: its process ended before the agent
@@ -413,7 +425,12 @@ enum FromAgent {
     Models {
         models: Vec<ModelInfo>,
     },
-    TurnStart,
+    /// `time_unix_ms` is set only in a `history`, from the agent's record. Live, the core
+    /// stamps the time it got the message.
+    TurnStart {
+        #[serde(default)]
+        time_unix_ms: Option<u64>,
+    },
     TextDelta {
         text: String,
     },
@@ -421,6 +438,8 @@ enum FromAgent {
         id: String,
         tool: String,
         input: Value,
+        #[serde(default)]
+        time_unix_ms: Option<u64>,
     },
     ToolResult {
         id: String,
@@ -445,6 +464,8 @@ enum FromAgent {
         #[serde(default)]
         interrupted: bool,
         error: Option<TurnError>,
+        #[serde(default)]
+        time_unix_ms: Option<u64>,
     },
     /// The conversation so far, from the agent's own record: `user` messages and the turns'
     /// messages. Sent first when a conversation resumes.
@@ -733,7 +754,7 @@ fn read_messages(
 fn settle(s: &mut ChatState, message: &FromAgent) {
     let waiting = match (&s.app_server, message) {
         (Some(server), _) => server.unstarted(),
-        (None, FromAgent::TurnStart) => s.unstarted.len().saturating_sub(1),
+        (None, FromAgent::TurnStart { .. }) => s.unstarted.len().saturating_sub(1),
         (None, FromAgent::TurnEnd { .. }) => 0,
         (None, _) => return,
     };
@@ -778,11 +799,24 @@ fn apply(
             return;
         }
         FromAgent::User { text } => (AgentMessage::User { text }, None),
-        FromAgent::TurnStart => (AgentMessage::TurnStarted, Some(AgentState::Working)),
+        FromAgent::TurnStart { .. } => (
+            AgentMessage::TurnStarted {
+                time_unix_ms: now_unix_ms(),
+            },
+            Some(AgentState::Working),
+        ),
         FromAgent::TextDelta { text } => (AgentMessage::TextDelta { text }, None),
-        FromAgent::ToolCall { id, tool, input } => {
-            (AgentMessage::ToolCall { id, tool, input }, None)
-        }
+        FromAgent::ToolCall {
+            id, tool, input, ..
+        } => (
+            AgentMessage::ToolCall {
+                id,
+                tool,
+                input,
+                time_unix_ms: now_unix_ms(),
+            },
+            None,
+        ),
         FromAgent::ToolResult {
             id,
             output,
@@ -835,16 +869,28 @@ fn apply(
             };
             (message, Some(s.waiting()))
         }
-        FromAgent::TurnEnd { interrupted, error } => {
+        FromAgent::TurnEnd {
+            interrupted, error, ..
+        } => {
             s.pending.clear();
             let (outcome, state) = turn_end(interrupted, error);
-            (AgentMessage::TurnEnded { outcome }, Some(state))
+            let message = AgentMessage::TurnEnded {
+                outcome,
+                time_unix_ms: now_unix_ms(),
+            };
+            (message, Some(state))
         }
     };
     chat.push_locked(s, message);
     if let Some(state) = state {
         agents.on_protocol(session, state, events);
     }
+}
+
+/// The time now, in milliseconds since the Unix epoch. None only on a clock set before it.
+fn now_unix_ms() -> Option<u64> {
+    let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    u64::try_from(since_epoch.as_millis()).ok()
 }
 
 /// How a turn ended, and the state that leaves the session in.
@@ -862,9 +908,19 @@ fn turn_end(interrupted: bool, error: Option<TurnError>) -> (TurnOutcome, AgentS
 fn recorded(message: FromAgent) -> Option<AgentMessage> {
     Some(match message {
         FromAgent::User { text } => AgentMessage::User { text },
-        FromAgent::TurnStart => AgentMessage::TurnStarted,
+        FromAgent::TurnStart { time_unix_ms } => AgentMessage::TurnStarted { time_unix_ms },
         FromAgent::TextDelta { text } => AgentMessage::TextDelta { text },
-        FromAgent::ToolCall { id, tool, input } => AgentMessage::ToolCall { id, tool, input },
+        FromAgent::ToolCall {
+            id,
+            tool,
+            input,
+            time_unix_ms,
+        } => AgentMessage::ToolCall {
+            id,
+            tool,
+            input,
+            time_unix_ms,
+        },
         FromAgent::ToolResult {
             id,
             output,
@@ -874,8 +930,13 @@ fn recorded(message: FromAgent) -> Option<AgentMessage> {
             output,
             is_error,
         },
-        FromAgent::TurnEnd { interrupted, error } => AgentMessage::TurnEnded {
+        FromAgent::TurnEnd {
+            interrupted,
+            error,
+            time_unix_ms,
+        } => AgentMessage::TurnEnded {
             outcome: turn_end(interrupted, error).0,
+            time_unix_ms,
         },
         _ => return None,
     })

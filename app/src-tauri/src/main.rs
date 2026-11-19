@@ -464,7 +464,11 @@ enum Message {
     User {
         text: String,
     },
-    TurnStarted,
+    /// Each time is when the core got the message, or what the agent's record says. None when a
+    /// record does not say.
+    TurnStarted {
+        time_unix_ms: Option<u64>,
+    },
     TextDelta {
         text: String,
     },
@@ -472,6 +476,7 @@ enum Message {
         id: String,
         tool: String,
         input: Value,
+        time_unix_ms: Option<u64>,
     },
     ToolResult {
         id: String,
@@ -492,6 +497,7 @@ enum Message {
         reply: Reply,
     },
     TurnEnded {
+        time_unix_ms: Option<u64>,
         #[serde(flatten)]
         outcome: Outcome,
     },
@@ -592,9 +598,19 @@ impl From<AgentMessage> for Message {
     fn from(message: AgentMessage) -> Self {
         match message {
             AgentMessage::User { text } => Message::User { text },
-            AgentMessage::TurnStarted => Message::TurnStarted,
+            AgentMessage::TurnStarted { time_unix_ms } => Message::TurnStarted { time_unix_ms },
             AgentMessage::TextDelta { text } => Message::TextDelta { text },
-            AgentMessage::ToolCall { id, tool, input } => Message::ToolCall { id, tool, input },
+            AgentMessage::ToolCall {
+                id,
+                tool,
+                input,
+                time_unix_ms,
+            } => Message::ToolCall {
+                id,
+                tool,
+                input,
+                time_unix_ms,
+            },
             AgentMessage::ToolResult {
                 id,
                 output,
@@ -621,7 +637,11 @@ impl From<AgentMessage> for Message {
                 request: request.0,
                 reply: reply.into(),
             },
-            AgentMessage::TurnEnded { outcome } => Message::TurnEnded {
+            AgentMessage::TurnEnded {
+                outcome,
+                time_unix_ms,
+            } => Message::TurnEnded {
+                time_unix_ms,
                 outcome: outcome.into(),
             },
             AgentMessage::ReviewBatch { comments } => Message::ReviewBatch {
@@ -2786,8 +2806,28 @@ mod tests {
             r#"[{"type":"User","text":"add a test"}]"#
         );
         assert_eq!(
-            message(AgentMessage::TurnStarted),
-            r#"[{"type":"TurnStarted"}]"#
+            message(AgentMessage::TurnStarted {
+                time_unix_ms: Some(1_763_560_920_000)
+            }),
+            r#"[{"type":"TurnStarted","timeUnixMs":1763560920000}]"#
+        );
+        assert_eq!(
+            message(AgentMessage::ToolCall {
+                id: "toolu_03".into(),
+                tool: "Read".into(),
+                input: serde_json::json!({"file_path": "a.rs"}),
+                time_unix_ms: Some(1_763_560_921_500),
+            }),
+            r#"[{"type":"ToolCall","id":"toolu_03","tool":"Read","input":{"file_path":"a.rs"},"timeUnixMs":1763560921500}]"#
+        );
+        assert_eq!(
+            message(AgentMessage::ToolCall {
+                id: "call_1".into(),
+                tool: "commandExecution".into(),
+                input: serde_json::json!({}),
+                time_unix_ms: None,
+            }),
+            r#"[{"type":"ToolCall","id":"call_1","tool":"commandExecution","input":{},"timeUnixMs":null}]"#
         );
         assert_eq!(
             message(AgentMessage::TextDelta {
@@ -2841,18 +2881,20 @@ mod tests {
         );
         assert_eq!(
             message(AgentMessage::TurnEnded {
-                outcome: TurnOutcome::Interrupted
+                outcome: TurnOutcome::Interrupted,
+                time_unix_ms: Some(1_763_560_983_000),
             }),
-            r#"[{"type":"TurnEnded","outcome":"Interrupted"}]"#
+            r#"[{"type":"TurnEnded","timeUnixMs":1763560983000,"outcome":"Interrupted"}]"#
         );
         assert_eq!(
             message(AgentMessage::TurnEnded {
                 outcome: TurnOutcome::Failed {
                     kind: "overloaded".into(),
                     message: "API Error: 529 overloaded".into(),
-                }
+                },
+                time_unix_ms: None,
             }),
-            r#"[{"type":"TurnEnded","outcome":"Failed","kind":"overloaded","message":"API Error: 529 overloaded"}]"#
+            r#"[{"type":"TurnEnded","timeUnixMs":null,"outcome":"Failed","kind":"overloaded","message":"API Error: 529 overloaded"}]"#
         );
         assert_eq!(
             message(AgentMessage::ReviewBatch {
@@ -2943,6 +2985,7 @@ mod tests {
             id: "toolu_01".into(),
             tool: "Edit".into(),
             input: serde_json::json!({"file_path": "src/a.ts"}),
+            time_unix_ms: Some(1_763_560_921_500),
         };
         let result = AgentMessage::ToolResult {
             id: "toolu_01".into(),
@@ -2952,7 +2995,7 @@ mod tests {
 
         assert_eq!(
             json(vec![Message::from(call), Message::from(result)]),
-            r#"[{"type":"ToolCall","id":"toolu_01","tool":"Edit","input":{"file_path":"src/a.ts"}},{"type":"ToolResult","id":"toolu_01","output":"ok","isError":false}]"#
+            r#"[{"type":"ToolCall","id":"toolu_01","tool":"Edit","input":{"file_path":"src/a.ts"},"timeUnixMs":1763560921500},{"type":"ToolResult","id":"toolu_01","output":"ok","isError":false}]"#
         );
     }
 

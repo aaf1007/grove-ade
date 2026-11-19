@@ -84,3 +84,18 @@
   color: var(--faint);
   font: var(--text-code-meta);
 }
+
+/* A full-width trigger, such as a row of a card. Its owner styles the button. */
+.ui-menu-wide {
+  display: block;
+}
+
+.ui-menu-trigger {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
