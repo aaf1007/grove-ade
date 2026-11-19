@@ -1836,3 +1836,18 @@ test("clicking the second of two nested agent sessions focuses its panel", async
   expect(document.activeElement).toBe(screen.getByLabelText("Panel 1"));
   expect(bridge.focused).toEqual(["1"]);
 });
+
+// Add repo with a folder picker (#17).
+
+test("with no repos, the empty chat area's Add repo opens the picker and adds the folder", async () => {
+  const bridge = fakeBridge({ [main]: [{ path: main, branch: "main", isMain: true }] });
+  render(<App bridge={bridge} />);
+  const chatArea = screen.getByRole("main");
+  expect(within(chatArea).getByText("No repo added yet")).toBeTruthy();
+  bridge.willPickFolder(main);
+
+  await act(async () => fireEvent.click(within(chatArea).getByRole("button", { name: "Add repo" })));
+
+  expect(await screen.findByRole("button", { name: "main (main worktree)" })).toBeTruthy();
+  expect(within(chatArea).queryByRole("button", { name: "Add repo" })).toBeNull();
+});

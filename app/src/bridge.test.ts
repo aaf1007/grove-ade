@@ -16,6 +16,14 @@ vi.mock("@tauri-apps/api/core", () => ({
     return tauri.sent;
   },
 }));
+// Stands in for the dialog plugin: `picked` is what the folder picker returns.
+const dialog = vi.hoisted(() => ({ picked: null as string | null, options: [] as unknown[] }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: async (options: unknown) => {
+    dialog.options.push(options);
+    return dialog.picked;
+  },
+}));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async (event: string, handler: (event: { payload: unknown }) => void) => {
     if (event !== "warning") throw `unexpected event ${event}`;
@@ -68,4 +76,17 @@ test("a warning listener still gets the earlier warnings when listening fails", 
   await vi.waitFor(() => expect(got).toEqual([atStart]));
   stop();
   tauri.listenFails = false;
+});
+
+test("pickFolder opens the system picker for one folder, and gives its path or null when cancelled", async () => {
+  dialog.picked = "/code/grove";
+  expect(await tauriBridge.pickFolder()).toBe("/code/grove");
+
+  dialog.picked = null;
+  expect(await tauriBridge.pickFolder()).toBeNull();
+
+  expect(dialog.options).toEqual([
+    { directory: true, multiple: false, title: "Add repo" },
+    { directory: true, multiple: false, title: "Add repo" },
+  ]);
 });

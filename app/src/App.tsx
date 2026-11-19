@@ -22,7 +22,15 @@ import { PanelTabs, tabId } from "./PanelTabs";
 import type { ModelChoice } from "./Picker";
 import { ProfilePanel } from "./ProfilePanel";
 import { QuitGuard } from "./QuitGuard";
-import { AGENT_NAMES, type AgentSession, Sidebar, byRepo, folderName, sessionNames } from "./Sidebar";
+import {
+  AGENT_NAMES,
+  type AgentSession,
+  Sidebar,
+  type SidebarHandle,
+  byRepo,
+  folderName,
+  sessionNames,
+} from "./Sidebar";
 import { Splitter } from "./Splitter";
 import { TerminalPanel } from "./TerminalPanel";
 import { useAppearance } from "./theme";
@@ -51,6 +59,7 @@ export function App({ bridge }: { bridge: Bridge }) {
   const [selected, setSelected] = useState<string | null>(null);
   // Every tracked worktree, as the sidebar last listed them.
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
+  const sidebarRef = useRef<SidebarHandle>(null);
   const {
     workspaces,
     errors: workspaceErrors,
@@ -606,6 +615,7 @@ export function App({ bridge }: { bridge: Bridge }) {
               accounts={accounts}
               appearance={appearance}
               onAppearance={setAppearance}
+              ref={sidebarRef}
             />
           </div>
           {layout.sidebarOpen && (
@@ -685,13 +695,23 @@ export function App({ bridge }: { bridge: Bridge }) {
                     ),
                 )}
             </div>
-            {(!selected || workspace?.chat.every((panel) => !panel.shown)) && (
+            {worktrees.length === 0 && (
+              <div className="empty-chat">
+                <h2>No repo added yet</h2>
+                <p>
+                  <Button size="sm" onClick={() => sidebarRef.current?.addRepo()}>
+                    Add repo
+                  </Button>
+                </p>
+              </div>
+            )}
+            {worktrees.length > 0 && (!selected || workspace?.chat.every((panel) => !panel.shown)) && (
               <div className="empty-chat">
                 <h2>{selected ? "No agent session in this worktree" : "No worktree selected"}</h2>
                 <p>
                   {selected
-                    ? "Start Claude Code from the worktree in the sidebar."
-                    : "Add a repo and pick a worktree in the sidebar."}
+                    ? "Start Claude Code from the worktree's menu in the sidebar."
+                    : "Pick a worktree in the sidebar."}
                 </p>
               </div>
             )}

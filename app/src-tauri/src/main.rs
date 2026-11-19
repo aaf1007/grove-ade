@@ -2066,6 +2066,7 @@ fn main() -> anyhow::Result<()> {
         .manage(Accounts(Mutex::default()))
         .manage(WindowFocused(AtomicBool::new(false)))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_menu(menu(app.handle())?)?;

@@ -1,5 +1,5 @@
 import { Bell, ChevronDown, ChevronRight, Ellipsis, Plus, Search, Settings2, SlidersHorizontal } from "lucide-react";
-import { useEffect, useEffectEvent, useId, useRef, useState, type FormEvent } from "react";
+import { type Ref, useEffect, useEffectEvent, useId, useImperativeHandle, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
 import type {
@@ -15,7 +15,6 @@ import type {
 } from "./bridge";
 import { useSetting } from "./settings";
 import { stateWord } from "./ui/AgentState";
-import { Button } from "./ui/Button";
 import { IconButton } from "./ui/IconButton";
 import { Menu } from "./ui/Menu";
 import { Segmented } from "./ui/Segmented";
@@ -47,6 +46,12 @@ export function sessionNames(agents: AgentSession[]): Record<SessionId, string> 
       return [session, count === 1 ? AGENT_NAMES[agent] : `${AGENT_NAMES[agent]} ${count}`];
     }),
   );
+}
+
+/** What the window can ask of the sidebar. */
+export interface SidebarHandle {
+  /** Opens the folder picker and adds the folder picked, as the sidebar's Add repo does. */
+  addRepo(): void;
 }
 
 /** What a worktree's menu does. */
@@ -86,6 +91,7 @@ export function Sidebar({
   accounts,
   appearance,
   onAppearance,
+  ref,
 }: {
   bridge: Bridge;
   selected: string | null;
@@ -121,8 +127,9 @@ export function Sidebar({
   accounts: Partial<Record<Agent, Account | null>>;
   appearance: Appearance;
   onAppearance(update: (appearance: Appearance) => Appearance): void;
+  /** Lets the chat area's Add repo use the sidebar's own. */
+  ref?: Ref<SidebarHandle>;
 }) {
-  const [path, setPath] = useState("");
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
   const [query, setQuery] = useState("");
   // The repos folded shut, by main worktree path. It survives a restart.
@@ -183,16 +190,20 @@ export function Sidebar({
     });
   }
 
-  async function addRepo(event: FormEvent) {
-    event.preventDefault();
+  // Adds the folder the user picks. Cancelling the picker does nothing.
+  async function addRepo() {
     try {
-      await bridge.addRepo(path);
+      const picked = await bridge.pickFolder();
+      if (picked === null) return;
+      await bridge.addRepo(picked);
       setError(null);
     } catch (e) {
       setError(String(e));
     }
-    setWorktrees(await bridge.listWorktrees());
+    refresh();
   }
+
+  useImperativeHandle(ref, () => ({ addRepo: () => void addRepo() }));
 
   function toggleRepo(path: string) {
     setFoldedRepos((folded) => toggled(folded, path));
@@ -273,18 +284,11 @@ export function Sidebar({
           Profiles
         </button>
       </nav>
+      <div className="tree-head">
+        <span>Repos</span>
+        <IconButton icon={Plus} size="xs" label="Add repo" onClick={() => void addRepo()} />
+      </div>
       <div className="sidebar-tree">
-        <form onSubmit={addRepo}>
-          <input
-            aria-label="Repo path"
-            placeholder="/path/to/repo"
-            value={path}
-            onChange={(event) => setPath(event.target.value)}
-          />
-          <Button type="submit" size="sm">
-            Add repo
-          </Button>
-        </form>
         {error && <p role="alert">{error}</p>}
         {shownRepos.map(({ head, worktrees: repo }) => {
           const name = folderName(head.path);
