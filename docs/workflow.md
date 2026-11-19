@@ -1,6 +1,6 @@
 # Workflow: validate, plan, build, review, improve
 
-Tools: Matt Pocock's skills for planning, pstack for execution and review, and an orchestrator with role-based subagents on Claude Opus 5.5.
+Tools: Matt Pocock's skills for planning, pstack for execution and review, and an orchestrator with role-based subagents. The Roles table gives the model for each role.
 
 Skill names below may differ slightly between versions. Check your `/` menu and map them.
 
@@ -35,18 +35,20 @@ Skipped on Oct 25.
 ## Phase 3: Build
 
 ### Roles
-| Role | Model | Job |
+| Role | Model | Notes |
 |---|---|---|
-| Orchestrator | Opus 5.5 | Holds roadmap and issues, writes nothing but plans and delegations |
-| Planner | Opus 5.5 | Plan, edge cases, test list |
-| Implementer | Opus 5.5 (Sonnet 5.5 to save usage) | Writes code test first in its own worktree |
-| Explorer / test runner | Haiku 5.5 or Sonnet 5.5 | Reads code, runs gates, summarizes logs |
-| Reviewers | CodeRabbit, Cursor's bots, the `reviewer` agent (Fable 5.2, fresh context), and me | Bots review the PR; the reviewer reports the CI checks, and reviews when CodeRabbit did not; I review the PR before merge |
-
-If usage limits are not a concern, Opus 5.5 everywhere is fine. Treat cheaper routing as an experiment: if an implementer fails the gates twice, escalate it to Opus 5.5.
+| Orchestrator | The model the owner starts the session on | This doc names no model |
+| Implementer | Opus 5.5, high | The default. A linked session with fresh context in its own worktree |
+| Implementer, hard issue | Fable 5.2 high, or Opus 5.5 xhigh | Core API, concurrency, PTY. Also any issue that failed the gates twice |
+| Implementer, small issue | Sonnet 5.5, medium | Docs, renames, one-file fixes. The orchestrator names the tier in the brief |
+| Reviewer | Sonnet 5.5, high | A different model from the implementer. CodeRabbit, Cursor's bots and I also review the PR. See the reviewer bullet in the Build loop |
+| DevOps | Sonnet 5.5, high | Moves to Opus 5.5 when the cause is still unclear after one round |
+| QA | Sonnet 5.5, medium | See the QA step in the Build loop |
+| Lookups: search, log summaries, name checks | Haiku 5.5 | |
 
 ### Orchestrator rules
 - Never edits code or docs directly.
+- Before relaying an implementer's report, checks the PR, its diff and its checks.
 - At most 3 implementers in parallel, each in its own worktree. I am the bottleneck for review.
 - Stops and asks me before: any ADR conflict, new dependency, Core API change, or doc change.
 - Runs `blast-radius` before any Core API change.
@@ -63,6 +65,7 @@ If usage limits are not a concern, Opus 5.5 everywhere is fine. Treat cheaper ro
    - It posts from my GitHub login: a summary that names the commit reviewed, plus one thread per finding when it reviewed. When CodeRabbit reviewed, it posts only the check results.
    - After the implementer's fixes to its threads, the orchestrator runs it once more as a recheck. The recheck replies on its own threads, resolves the fixed ones, and opens no new thread. Then it stops.
    - CodeRabbit reviews the PR and every push. Cursor's Bugbot, Security Agent, and Approval Agent run on a weekly quota.
+   - Full or light: the first commit of a PR that CodeRabbit did not review gets the full review above. A later fix round gets a light review: one agent reads only the diff since the last reviewed commit, checks it against the open threads and the issue, and posts threads for what it finds. It starts no plugin agents.
 6. Right after opening the PR, the implementer session turns on the app's Auto-fix for it (`mcp__ccd_pr__set_monitor` with `auto_fix` and `address_comments`; I approve). Auto-fix wakes it on review comments and merge conflicts, and it handles them itself:
    - Review comments (the reviewer, CodeRabbit, Cursor, me): implement each finding by default. Check it against the code, fix it test first, and run the gates.
    - Skip a finding only if it is clearly wrong or out of scope, with the reason on the thread. Style-only nitpicks get a reply, not code.
@@ -72,8 +75,15 @@ If usage limits are not a concern, Opus 5.5 everywhere is fine. Treat cheaper ro
    - Merge conflict: sync with `main`. Never rebase or force-push.
    - Never use CodeRabbit's own autofix.
    - Report to the orchestrator after each event. After a fix round for the reviewer, ask the orchestrator for its recheck.
-7. I review the PR. From M4 on, I do this inside grove.
-8. Only I merge. No agent or orchestrator merges or turns on auto-merge, even when CI is green, the bots are clean, the PR is approved, or I said "merge in order".
+7. QA, after the PR is open and CI is green, when the issue changes something visible in the app. Core-only, CI and docs issues skip it, and the report says so.
+   - The orchestrator gives the `qa` agent the branch, the worktree path, the "How to test it" steps from the implementer's report, and the acceptance tests the issue names.
+   - Headless first: every step the fake agents can script runs on `verify`'s headless surface, with no screenshots and no real agents. The app surface is only for what a user sees: layout, focus, keys, panels, notices.
+   - One app run at a time, because only one grove can run on the machine. Each QA run starts with a fresh context.
+   - Screenshots only at each pass or fail point, zoomed to the region being checked.
+   - A fail goes back to that issue's implementer session with the repro steps. The implementer fixes it test first, then QA re-runs only the failed tests. After two rounds it goes to the owner.
+8. DevOps: implementers fix CI failures their own diff caused. The `devops` agent diagnoses and fixes a failure on `main`, one that hits several PRs, or one that looks like the runner, a cache, apt, or a flaky test. It fixes in its own worktree, one issue and one PR per fix, by this loop.
+9. I review the PR. From M4 on, I do this inside grove.
+10. Only I merge. No agent or orchestrator merges or turns on auto-merge, even when CI is green, the bots are clean, the PR is approved, or I said "merge in order".
 
 ### Reviewer checklist
 - Does it do what the issue and plan say, nothing more?
