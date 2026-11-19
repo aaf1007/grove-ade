@@ -158,8 +158,10 @@ export function Sidebar({
       .catch((e: unknown) => setError(String(e)));
   }
 
-  function created(worktree: Worktree, startAgent: boolean) {
+  // `repo` opens, so the new worktree's selected row shows.
+  function created(repo: string, worktree: Worktree, startAgent: boolean) {
     setDialog(null);
+    setFoldedRepos((folded) => folded.filter((path) => path !== repo));
     refresh();
     onSelect(worktree.path);
     if (startAgent) onStartAgentAfterSetup(worktree.path);
@@ -368,7 +370,7 @@ export function Sidebar({
         <NewWorktreeDialog
           bridge={bridge}
           repo={dialog.repo}
-          onCreated={created}
+          onCreated={(worktree, startAgent) => created(dialog.repo.path, worktree, startAgent)}
           onCancel={() => setDialog(null)}
         />
       )}
