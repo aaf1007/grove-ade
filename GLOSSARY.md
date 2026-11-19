@@ -9,6 +9,7 @@ Use these terms exactly. If a new concept appears, add it here in the same PR.
 | Profile | A reusable setup for a kind of project, saved as TOML in `~/.grovecode/profiles/`: default agent, model, effort and permission mode, layout, setup, cleanup and run sessions, launch args, start prompts, review flow and notifications. A repo picks one; grove suggests one from marker files such as `Cargo.toml`. Agents can change it through `grove-mcp`. |
 | Worktree | A git worktree grove tracks, either created by grove or adopted from the repo. A folder plus a branch, with a display name and an optional issue link. _Avoid_: ticket. |
 | Main worktree | The repo's original checkout. Grove treats it as a worktree but never removes it. |
+| Nested worktree | A worktree whose first subagent came from an agent session in another worktree of the same repo. The sidebar shows it under that worktree, one level deep, and it stays there after both sessions end. _Avoid_: linked worktree, which is git's word for any worktree but the main one. |
 | Forget | Stop tracking a worktree without touching it on disk. |
 | Delete | Remove a worktree from disk and stop tracking it. |
 | Base branch | The branch a worktree is compared against for a whole-branch diff. Set when the worktree is added; can be changed. |

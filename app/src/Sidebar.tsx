@@ -172,7 +172,7 @@ export function Sidebar({
       .catch((e: unknown) => setError(String(e)));
   }
 
-  // A subagent that starts in another worktree links that worktree, and no event says so. The
+  // A subagent that starts in another worktree nests that worktree, and no event says so. The
   // first state of a session the sidebar has not seen lists the worktrees again.
   const seenSessions = useRef<Set<SessionId> | null>(null);
   const refreshOnNewSession = useEffectEvent((sessions: SessionId[]) => {
@@ -259,15 +259,15 @@ export function Sidebar({
   }, []);
 
   const names = sessionNames(agents);
-  // A worktree's row, then under it its agent sessions and the worktrees linked from it. A linked
-  // worktree's own row has neither, so nesting stays one level deep.
-  function row(worktree: Worktree, linked: Worktree[] | null) {
+  // A worktree's row, then under it its agent sessions and the worktrees nested under it. A nested
+  // worktree has only its sessions under it, so worktrees nest one level deep.
+  function row(worktree: Worktree, nestedRows: Worktree[], isNested: boolean) {
     const own = agents.filter((agent) => agent.worktree === worktree.path);
     const setup = setups[worktree.path] ?? worktree.setup;
-    const children = linked === null ? 0 : own.length + linked.length;
+    const children = own.length + nestedRows.length;
     const childrenOpen = !foldedSessions.includes(worktree.path);
     return (
-      <li key={worktree.path} title={worktree.path} className={linked === null ? "linked-worktree" : undefined}>
+      <li key={worktree.path} title={worktree.path} className={isNested ? "nested-worktree" : undefined}>
         <WorktreeRow
           worktree={worktree}
           selected={worktree.path === selected}
@@ -283,7 +283,7 @@ export function Sidebar({
           }}
         />
         {setup && <SetupStatus setup={setup} />}
-        {linked !== null && children > 0 && childrenOpen && (
+        {children > 0 && childrenOpen && (
           <ul className="agent-sessions">
             {own.map((agent) => (
               <li key={agent.session}>
@@ -297,7 +297,7 @@ export function Sidebar({
                 </button>
               </li>
             ))}
-            {linked.map((child) => row(child, null))}
+            {nestedRows.map((child) => row(child, [], true))}
           </ul>
         )}
       </li>
@@ -305,7 +305,7 @@ export function Sidebar({
   }
   const shownRepos = repos.flatMap((repo) => {
     const shown = repo.filter((worktree) => matches(worktree, query));
-    return shown.length > 0 ? [{ head: repo[0], worktrees: shown, nested: nestedUnder(repo) }] : [];
+    return shown.length > 0 ? [{ head: repo[0], worktrees: shown, nested: nestingParents(repo) }] : [];
   });
   return (
     <aside className="sidebar" aria-label="Worktrees">
@@ -382,11 +382,11 @@ export function Sidebar({
               {open && (
                 <ul>
                   {repo
-                    // A linked worktree shows under its parent, unless Search hides the parent.
+                    // A nested worktree shows under its parent, unless Search hides the parent.
                     .filter((worktree) => !repo.some((parent) => parent.path === nested.get(worktree.path)))
                     .map((worktree) => {
-                      const linked = repo.filter((child) => nested.get(child.path) === worktree.path);
-                      return row(worktree, linked);
+                      const nestedRows = repo.filter((child) => nested.get(child.path) === worktree.path);
+                      return row(worktree, nestedRows, false);
                     })}
                 </ul>
               )}
@@ -654,16 +654,15 @@ function WorktreeMenu({
   );
 }
 
-// The core lists worktrees repo by repo, main worktree first, so each main worktree starts a repo.
 /**
- * The worktree each linked worktree of one repo nests under, by path: the top of its chain of
- * links. A link to a worktree outside the repo, or a loop of links, nests nothing. The main
- * worktree never nests.
+ * The worktree each nested worktree of one repo shows under, by path: the top of its chain. A
+ * worktree of another repo, or a loop, nests nothing. The core writes neither, but an older state
+ * file may hold one. The main worktree never nests.
  */
-export function nestedUnder(repo: Worktree[]): Map<string, string> {
+export function nestingParents(repo: Worktree[]): Map<string, string> {
   const byPath = new Map(repo.map((worktree) => [worktree.path, worktree]));
   const parentOf = (worktree: Worktree) =>
-    worktree.isMain || worktree.linkedFrom === null ? undefined : byPath.get(worktree.linkedFrom);
+    worktree.isMain || worktree.nestedUnder === null ? undefined : byPath.get(worktree.nestedUnder);
   const nested = new Map<string, string>();
   for (const worktree of repo) {
     const seen = new Set([worktree.path]);
@@ -683,6 +682,7 @@ export function nestedUnder(repo: Worktree[]): Map<string, string> {
   return nested;
 }
 
+// The core lists worktrees repo by repo, main worktree first, so each main worktree starts a repo.
 export function byRepo(worktrees: Worktree[]): Worktree[][] {
   const repos: Worktree[][] = [];
   for (const worktree of worktrees) {

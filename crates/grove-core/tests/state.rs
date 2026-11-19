@@ -146,7 +146,7 @@ fn every_change_to_repos_and_worktrees_survives_a_restart() {
         display_name: "main".into(),
         issue_link: None,
         base_branch: Some("main".into()),
-        linked_from: None,
+        nested_under: None,
     };
     assert_eq!(
         block_on(core.list_worktrees()),
@@ -159,7 +159,7 @@ fn every_change_to_repos_and_worktrees_survives_a_restart() {
                 display_name: "Login fix".into(),
                 issue_link: Some(issue.into()),
                 base_branch: Some("develop".into()),
-                linked_from: None,
+                nested_under: None,
             },
             main(&second),
             WorktreeInfo {
@@ -169,7 +169,7 @@ fn every_change_to_repos_and_worktrees_survives_a_restart() {
                 display_name: "detached".into(),
                 issue_link: None,
                 base_branch: Some("main".into()),
-                linked_from: None,
+                nested_under: None,
             },
         ]
     );
@@ -237,14 +237,14 @@ fn a_state_file_from_before_repo_settings_loads_with_empty_settings() {
 }
 
 #[test]
-fn a_state_file_from_before_worktree_links_loads_with_no_worktree_linked() {
+fn a_state_file_from_before_nested_worktrees_loads_with_none_nested() {
     let _serial = serial();
     let dir = short_temp_dir();
     let repo = new_repo(dir.path(), "repo");
     let linked = dir.path().join("linked");
     let cfg = CoreConfig::new(dir.path().join("home"));
     fs::create_dir(&cfg.home).unwrap();
-    // As a version 7 grove wrote it, with no linked_from.
+    // As a version 7 grove wrote it, with no nested_under.
     let v7 = format!(
         r#"{{"version": 7, "repos": [{{"main_worktree": {{"path": "{}", "branch": "main",
         "display_name": "main", "issue_link": null, "base_branch": "main"}},
@@ -261,7 +261,7 @@ fn a_state_file_from_before_worktree_links_loads_with_no_worktree_linked() {
     assert_eq!(
         listed
             .iter()
-            .map(|w| (&w.path, &w.linked_from))
+            .map(|w| (&w.path, &w.nested_under))
             .collect::<Vec<_>>(),
         [(&repo, &None), (&linked, &None)]
     );

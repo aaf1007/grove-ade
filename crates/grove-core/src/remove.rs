@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::sync::broadcast::{self, error::RecvError};
 
 use crate::watch::{self, Watch};
-use crate::worktree::{find_start, git, has_ref, run, stderr};
+use crate::worktree::{find_start, git, has_ref, run, stderr, untrack};
 use crate::{Core, CoreError, CoreEvent, Result, SessionId, WorktreeInfo};
 
 // How long removing a worktree waits for its killed sessions to exit.
@@ -169,7 +169,7 @@ impl Core {
             };
             // Before it leaves the list, so a worktree added at the same path keeps its own.
             comments.drop_worktree(&folder);
-            lock(&tracked).retain(|w| w.path != folder);
+            untrack(&mut lock(&tracked), |path| path == folder);
             lock(&workspaces).remove(&folder);
             let outcome = match branch {
                 None => BranchOutcome::Untouched,
@@ -290,7 +290,7 @@ impl Core {
             self.drop_panels_in(path);
             self.comments.drop_worktree(path);
         }
-        self.tracked().retain(|w| !paths.contains(&w.path));
+        untrack(&mut self.tracked(), |path| paths.iter().any(|p| p == path));
         // Settings are keyed by main worktree, so this drops those of a forgotten repo.
         self.settings().retain(|repo, _| !paths.contains(repo));
         self.workspaces()

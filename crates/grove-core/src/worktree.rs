@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::PoisonError;
 
+use crate::remove::repo_of;
 use crate::watch::{self, Watch};
 use crate::{Core, CoreError, CoreEvent, Result, SessionId};
 
@@ -23,9 +24,10 @@ pub struct WorktreeInfo {
     pub issue_link: Option<String>,
     /// What a whole-branch diff compares against. None when the repo has no default branch.
     pub base_branch: Option<String>,
-    /// The worktree of the agent session that first started a subagent here, when that was
-    /// another worktree. It stays after both sessions end.
-    pub linked_from: Option<PathBuf>,
+    /// The worktree of the same repo whose agent session first started a subagent here. It stays
+    /// after both sessions end, and goes when that worktree leaves grove. None for a main
+    /// worktree.
+    pub nested_under: Option<PathBuf>,
 }
 
 /// A worktree to add with `Core::create_worktree`.
@@ -203,22 +205,41 @@ impl Core {
         f(needed, &mut watches)
     }
 
-    // Links `worktree` to `from` unless it has a link. True when it set one.
-    pub(crate) fn link_worktree(&self, worktree: &Path, from: &Path) -> bool {
+    // Nests `worktree` under `parent`. It does nothing for a main worktree, one that nests under
+    // another already, a `parent` in another repo, or a `parent` that nests under `worktree`
+    // through any chain, which would close a loop. True when it nested it.
+    pub(crate) fn nest_worktree(&self, worktree: &Path, parent: &Path) -> bool {
         let mut tracked = self.tracked();
+        let same_repo =
+            repo_of(&tracked, worktree).is_some_and(|repo| repo_of(&tracked, parent) == Some(repo));
+        let mut up = Some(parent.to_path_buf());
+        let mut seen = HashSet::new();
+        while let Some(path) = up {
+            if path == worktree {
+                return false;
+            }
+            if !seen.insert(path.clone()) {
+                break;
+            }
+            up = tracked
+                .iter()
+                .find(|w| w.path == path)
+                .and_then(|w| w.nested_under.clone());
+        }
         match tracked.iter_mut().find(|w| w.path == worktree) {
-            Some(found) if found.linked_from.is_none() => {
-                found.linked_from = Some(from.to_path_buf());
+            Some(found) if same_repo && !found.is_main && found.nested_under.is_none() => {
+                found.nested_under = Some(parent.to_path_buf());
                 true
             }
             _ => false,
         }
     }
 
-    pub(crate) fn unlink_worktree(&self, worktree: &Path) {
+    pub(crate) fn unnest_worktree(&self, worktree: &Path) {
         if let Some(found) = self.tracked().iter_mut().find(|w| w.path == worktree) {
-            found.linked_from = None;
+            found.nested_under = None;
         }
+        self.saves.request();
     }
 
     fn update(&self, worktree: &Path, change: impl FnOnce(&mut WorktreeInfo)) -> Result<()> {
@@ -229,6 +250,17 @@ impl Core {
             .ok_or_else(|| CoreError::UnknownWorktree(worktree.to_path_buf()))?;
         change(found);
         Ok(())
+    }
+}
+
+/// Stops tracking each worktree `gone` picks. A worktree nested under one of them nests under
+/// nothing, so a worktree added later at the same path is not its parent.
+pub(crate) fn untrack(tracked: &mut Vec<WorktreeInfo>, gone: impl Fn(&Path) -> bool) {
+    tracked.retain(|w| !gone(&w.path));
+    for worktree in tracked {
+        if worktree.nested_under.as_deref().is_some_and(&gone) {
+            worktree.nested_under = None;
+        }
     }
 }
 
@@ -269,7 +301,7 @@ fn parse(porcelain: &[u8]) -> Vec<WorktreeInfo> {
                 is_main: worktrees.is_empty(),
                 issue_link: None,
                 base_branch: None,
-                linked_from: None,
+                nested_under: None,
             });
         } else if let Some(name) = field.strip_prefix(b"branch ")
             && let Some(worktree) = worktrees.last_mut()
@@ -336,7 +368,7 @@ fn add(repo: &Path, folder: PathBuf, new: NewWorktree) -> Result<WorktreeInfo> {
         is_main: false,
         issue_link: new.issue_link,
         base_branch: base,
-        linked_from: None,
+        nested_under: None,
     })
 }
 

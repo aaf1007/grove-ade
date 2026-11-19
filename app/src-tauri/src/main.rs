@@ -69,7 +69,7 @@ struct Worktree {
     display_name: String,
     issue_link: Option<String>,
     base_branch: Option<String>,
-    linked_from: Option<PathBuf>,
+    nested_under: Option<PathBuf>,
     setup: Option<SetupState>,
 }
 
@@ -83,7 +83,7 @@ impl Worktree {
             display_name: info.display_name,
             issue_link: info.issue_link,
             base_branch: info.base_branch,
-            linked_from: info.linked_from,
+            nested_under: info.nested_under,
             setup: setup.map(Into::into),
         }
     }
@@ -2349,7 +2349,7 @@ mod tests {
                 display_name: "w".into(),
                 issue_link: None,
                 base_branch: None,
-                linked_from: None,
+                nested_under: None,
             },
             Some(grove_core::SetupState::Running),
         );
@@ -2364,7 +2364,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&worktree).unwrap(),
-            r#"{"path":"/w","branch":null,"isMain":false,"displayName":"w","issueLink":null,"baseBranch":null,"linkedFrom":null,"setup":{"state":"Running"}}"#
+            r#"{"path":"/w","branch":null,"isMain":false,"displayName":"w","issueLink":null,"baseBranch":null,"nestedUnder":null,"setup":{"state":"Running"}}"#
         );
         assert_eq!(
             serde_json::to_string(&change).unwrap(),
@@ -2400,7 +2400,7 @@ mod tests {
                 display_name: "Worktree UI".into(),
                 issue_link: None,
                 base_branch: Some("main".into()),
-                linked_from: Some("/code/grove".into()),
+                nested_under: Some("/code/grove".into()),
             },
             None,
         );
@@ -2422,7 +2422,7 @@ mod tests {
 
         assert_eq!(
             serde_json::to_string(&worktree).unwrap(),
-            r#"{"path":"/code/grove-wt/feat-52","branch":"feat-52","isMain":false,"displayName":"Worktree UI","issueLink":null,"baseBranch":"main","linkedFrom":"/code/grove","setup":null}"#
+            r#"{"path":"/code/grove-wt/feat-52","branch":"feat-52","isMain":false,"displayName":"Worktree UI","issueLink":null,"baseBranch":"main","nestedUnder":"/code/grove","setup":null}"#
         );
         let check = DeleteCheck::from(grove_core::DeleteCheck {
             uncommitted: true,
