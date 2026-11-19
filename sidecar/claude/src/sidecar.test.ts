@@ -248,6 +248,22 @@ describe("history", () => {
     });
   });
 
+  it("leaves out a turn's end time when its last message has none, rather than use an earlier one", async () => {
+    const at = (message: SessionMessage, timestamp: string) => ({ ...message, timestamp }) as SessionMessage;
+    const read = async () => [
+      at(recorded("user", "fix the parser"), "2026-11-19T14:02:00.000Z"),
+      recorded("assistant", [{ type: "text", text: "Done." }]),
+      at(recorded("user", "and the tests"), "2026-11-19T14:05:00.000Z"),
+      at(recorded("assistant", [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "ls" } }]), "2026-11-19T14:05:01.000Z"),
+      recorded("user", [{ type: "tool_result", tool_use_id: "toolu_1", content: [{ type: "text", text: "src" }] }]),
+    ];
+    const s = start({ resume: true }, ann, async () => models, read);
+    await settle();
+
+    const ends = (s.out[0] as { messages: { type: string }[] }).messages.filter((m) => m.type === "turn_end");
+    expect(ends).toEqual([{ type: "turn_end" }, { type: "turn_end" }]);
+  });
+
   it("skips a recorded message with no body", async () => {
     const read = async () => [{ ...recorded("assistant", []), message: null }, recorded("user", "hi")];
     const s = start({ resume: true }, ann, async () => models, read);

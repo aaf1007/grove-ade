@@ -408,7 +408,7 @@ function parseLine(raw: string): Line | undefined {
 function history(recorded: SessionMessage[]): Record<string, unknown>[] {
   const messages: Record<string, unknown>[] = [];
   let open = false;
-  // The time of the open turn's latest message.
+  // The time of the open turn's latest message, undefined when that message has none.
   let last: number | undefined;
   const ended = () => ({ type: "turn_end", ...timed(last) });
   for (const entry of recorded) {
@@ -426,7 +426,7 @@ function history(recorded: SessionMessage[]): Record<string, unknown>[] {
       }
       const text = blocks.flatMap((b) => (b.type === "text" && b.text !== undefined ? [b.text] : [])).join("\n");
       if (!text) {
-        last = time ?? last;
+        last = time;
         continue;
       }
       if (open) messages.push(ended());
@@ -440,7 +440,7 @@ function history(recorded: SessionMessage[]): Record<string, unknown>[] {
           messages.push({ type: "tool_call", id: block.id, tool: block.name, input: block.input, ...timed(time) });
         }
       }
-      last = time ?? last;
+      last = time;
     }
   }
   if (open) messages.push(ended());

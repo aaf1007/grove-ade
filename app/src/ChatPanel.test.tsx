@@ -534,10 +534,66 @@ test("a tool row shows the clock time of its call, and a call with no time shows
   nextFrame();
 
   const timed = screen.getByRole("button", { name: "Ran npm test" });
-  expect(timed.querySelector(".tool-time")?.textContent).toBe("14:02");
+  expect(timed.querySelector(".tool-time")?.textContent).toBe(clock(at));
   const untimed = screen.getByRole("button", { name: "Searched for TODO" });
   expect(untimed.querySelector(".tool-time")).toBeNull();
 });
+
+test("a tool row's time is its description, so a screen reader hears it after what the call did", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  const at = new Date(2026, 10, 19, 14, 2).getTime();
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted", timeUnixMs: at },
+      { type: "ToolCall", id: "1", tool: "Bash", input: { command: "npm test" }, timeUnixMs: at },
+      { type: "ToolCall", id: "2", tool: "Grep", input: { pattern: "TODO" }, timeUnixMs: at },
+      { type: "ToolResult", id: "2", output: "no such file", isError: true },
+    ),
+  );
+  nextFrame();
+
+  const row = screen.getByRole("button", { name: "Ran npm test" });
+  expect(document.getElementById(row.getAttribute("aria-describedby") ?? "")?.textContent).toBe(clock(at));
+  // A failed row is not a button, so its time is read as its text.
+  expect(document.querySelector(".tool.failed .tool-time")?.getAttribute("aria-hidden")).toBeNull();
+});
+
+test("a folded row shows the time of its first call that has one", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  const at = new Date(2026, 10, 19, 14, 2).getTime();
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted", timeUnixMs: at },
+      { type: "ToolCall", id: "1", tool: "Read", input: { file_path: `${worktree}/a.ts` }, timeUnixMs: null },
+      { type: "ToolCall", id: "2", tool: "Read", input: { file_path: `${worktree}/b.ts` }, timeUnixMs: at },
+    ),
+  );
+  nextFrame();
+
+  const read = screen.getByRole("button", { name: "Read 2 files" });
+  expect(read.querySelector(".tool-time")?.textContent).toBe(clock(at));
+});
+
+test("a fake message whose time is set to undefined has no time, as one that leaves it out", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+
+  act(() => bridge.messages("0", { type: "TurnStarted", timeUnixMs: undefined }));
+  nextFrame();
+
+  expect(document.querySelector(".work-head")?.textContent).toBe("Working");
+});
+
+/** A time as the tool rows show it, in the runtime's locale. */
+function clock(time: number) {
+  return new Date(time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+}
 
 test.each<[string, AgentStateChanged | undefined, string]>([
   ["no state", undefined, "Send"],
@@ -1037,7 +1093,7 @@ test("a declined call keeps its call's clock time", async () => {
   act(() => bridge.messages("0", { type: "ToolResult", id: "toolu_01", output: "no", isError: true }));
   nextFrame();
 
-  expect(document.querySelector(".tool.declined .tool-time")?.textContent).toBe("09:05");
+  expect(document.querySelector(".tool.declined .tool-time")?.textContent).toBe(clock(at));
 });
 
 test("the approval's menu allows the tool for the rest of the session", async () => {

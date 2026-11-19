@@ -12,7 +12,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
 
 /** One tool call of the agent, with its result once it has one. */
 export interface ToolCall {
@@ -60,6 +60,7 @@ export function DeclinedCall({ call, worktree }: { call: ToolCall; worktree: str
 
 function ToolRow({ call, worktree, live }: { call: ToolCall; worktree: string; live: boolean }) {
   const [open, setOpen] = useState(false);
+  const timeId = useId();
   const { label, icon: Icon } = describe(call, worktree);
   if (call.result?.isError) {
     return (
@@ -75,10 +76,15 @@ function ToolRow({ call, worktree, live }: { call: ToolCall; worktree: string; l
   }
   return (
     <>
-      <button className="tool" aria-expanded={open} onClick={() => setOpen(!open)}>
+      <button
+        className="tool"
+        aria-expanded={open}
+        aria-describedby={known(call.time) ? timeId : undefined}
+        onClick={() => setOpen(!open)}
+      >
         <Icon aria-hidden="true" />
         <Label text={label} running={live && !call.result} />
-        <Clock time={call.time} />
+        <Clock time={call.time} id={timeId} />
         <ChevronRight aria-hidden="true" className="chevron" />
       </button>
       {open && <pre className="tool-output">{call.result ? call.result.output : "Running"}</pre>}
@@ -89,7 +95,9 @@ function ToolRow({ call, worktree, live }: { call: ToolCall; worktree: string; l
 /** Calls of one kind in a row: "Read 4 files", which opens to list each, one line per target. */
 function FoldedRow({ calls, worktree, live }: { calls: ToolCall[]; worktree: string; live: boolean }) {
   const [open, setOpen] = useState(false);
+  const timeId = useId();
   const kind = KINDS[calls[0].tool];
+  const time = calls.find((call) => known(call.time))?.time;
   const all = calls.flatMap((call) => targets(call)!.map((target) => relative(target, worktree)));
   // A file read or edited twice is one file. A command run twice ran twice.
   const listed = kind.unique ? [...new Set(all)] : all;
@@ -97,10 +105,15 @@ function FoldedRow({ calls, worktree, live }: { calls: ToolCall[]; worktree: str
     listed.length === 1 ? describe(calls[0], worktree).label : `${kind.verb} ${listed.length} ${kind.noun}`;
   return (
     <>
-      <button className="tool" aria-expanded={open} onClick={() => setOpen(!open)}>
+      <button
+        className="tool"
+        aria-expanded={open}
+        aria-describedby={known(time) ? timeId : undefined}
+        onClick={() => setOpen(!open)}
+      >
         <kind.icon aria-hidden="true" />
         <Label text={label} running={live && calls.some((call) => !call.result)} />
-        <Clock time={calls[0].time} />
+        <Clock time={time} id={timeId} />
         <ChevronRight aria-hidden="true" className="chevron" />
       </button>
       {open && (
@@ -115,17 +128,28 @@ function FoldedRow({ calls, worktree, live }: { calls: ToolCall[]; worktree: str
 }
 
 /**
- * When a call happened, as a short clock time such as 14:02. Left out of the row's accessible
- * name, which says what the call did. Nothing when the time is unknown.
+ * When a call happened, as a short clock time such as 14:02. Nothing when the time is unknown.
+ * Given an `id`, it sits in a button that names it as its description, so it stays out of the
+ * button's name, which says what the call did.
  */
-function Clock({ time }: { time: number | null | undefined }) {
-  if (time === null || time === undefined) return null;
+function Clock({ time, id }: { time: number | null | undefined; id?: string }) {
+  if (!known(time)) return null;
   const at = new Date(time);
   return (
-    <time className="tool-time" dateTime={at.toISOString()} title={at.toLocaleString()} aria-hidden="true">
+    <time
+      className="tool-time"
+      id={id}
+      dateTime={at.toISOString()}
+      title={at.toLocaleString()}
+      aria-hidden={id ? "true" : undefined}
+    >
       {at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}
     </time>
   );
+}
+
+function known(time: number | null | undefined): time is number {
+  return time !== null && time !== undefined;
 }
 
 function Label({ text, running }: { text: string; running: boolean }) {

@@ -260,7 +260,8 @@ export type FakeMessage = AgentMessage extends infer Message
   : never;
 
 function withTime(message: FakeMessage): AgentMessage {
-  return ("timeUnixMs" in message || !TIMED.has(message.type) ? message : { ...message, timeUnixMs: null }) as AgentMessage;
+  if (!TIMED.has(message.type)) return message as AgentMessage;
+  return { ...message, timeUnixMs: (message as { timeUnixMs?: number | null }).timeUnixMs ?? null } as AgentMessage;
 }
 
 const TIMED = new Set<AgentMessage["type"]>(["TurnStarted", "ToolCall", "TurnEnded"]);
