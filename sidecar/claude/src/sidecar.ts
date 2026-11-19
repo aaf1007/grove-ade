@@ -401,13 +401,20 @@ function parseLine(raw: string): Line | undefined {
 
 /**
  * PROTOCOL.md's `history` messages for a conversation's record: each message the user typed
- * starts a turn, which ends before the next one. Subagents' messages are left out, as live.
+ * starts a turn, which ends before the next one. Subagents' messages are left out, as live. A turn
+ * starts at its user message's time, a tool call has its message's time, and a turn ends at the
+ * time of its last message. A message with no time in the record gives none.
  */
 function history(recorded: SessionMessage[]): Record<string, unknown>[] {
   const messages: Record<string, unknown>[] = [];
   let open = false;
-  for (const { type, message, parent_tool_use_id } of recorded) {
+  // The time of the open turn's latest message.
+  let last: number | undefined;
+  const ended = () => ({ type: "turn_end", ...timed(last) });
+  for (const entry of recorded) {
+    const { type, message, parent_tool_use_id } = entry;
     if (parent_tool_use_id !== null) continue;
+    const time = timeOf(entry);
     // The SDK types the body as unknown, and a record can hold one with none.
     const content = (message as { content?: unknown } | null)?.content;
     const blocks: Block[] = typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [];
@@ -418,19 +425,41 @@ function history(recorded: SessionMessage[]): Record<string, unknown>[] {
         }
       }
       const text = blocks.flatMap((b) => (b.type === "text" && b.text !== undefined ? [b.text] : [])).join("\n");
-      if (!text) continue;
-      if (open) messages.push({ type: "turn_end" });
-      messages.push({ type: "user", text }, { type: "turn_start" });
+      if (!text) {
+        last = time ?? last;
+        continue;
+      }
+      if (open) messages.push(ended());
+      messages.push({ type: "user", text }, { type: "turn_start", ...timed(time) });
       open = true;
+      last = time;
     } else if (type === "assistant") {
       for (const block of blocks) {
         if (block.type === "text") messages.push({ type: "text_delta", text: block.text });
-        if (block.type === "tool_use") messages.push({ type: "tool_call", id: block.id, tool: block.name, input: block.input });
+        if (block.type === "tool_use") {
+          messages.push({ type: "tool_call", id: block.id, tool: block.name, input: block.input, ...timed(time) });
+        }
       }
+      last = time ?? last;
     }
   }
-  if (open) messages.push({ type: "turn_end" });
+  if (open) messages.push(ended());
   return messages;
+}
+
+/**
+ * When Claude wrote a recorded message, in milliseconds since the Unix epoch. The SDK gives each
+ * one the record's `timestamp`, which its type does not list. undefined when it has none.
+ */
+function timeOf(entry: SessionMessage): number | undefined {
+  const { timestamp } = entry as { timestamp?: unknown };
+  const time = typeof timestamp === "string" ? Date.parse(timestamp) : NaN;
+  return Number.isNaN(time) ? undefined : time;
+}
+
+/** A history message's `time_unix_ms` field, left out when there is no time. */
+function timed(time: number | undefined): { time_unix_ms?: number } {
+  return time === undefined ? {} : { time_unix_ms: time };
 }
 
 /** A content block of a recorded message, with the fields `history` reads. */

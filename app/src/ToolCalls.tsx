@@ -20,6 +20,8 @@ export interface ToolCall {
   tool: string;
   input: unknown;
   result?: { output: string; isError: boolean };
+  /** When the agent made it, in milliseconds since the Unix epoch. null or undefined when unknown. */
+  time?: number | null;
 }
 
 /**
@@ -64,6 +66,7 @@ function ToolRow({ call, worktree, live }: { call: ToolCall; worktree: string; l
         <div className="tool failed">
           <X aria-hidden="true" />
           <span className="tool-label">{label}</span>
+          <Clock time={call.time} />
         </div>
         <pre className="tool-output failed">{call.result.output}</pre>
       </>
@@ -74,6 +77,7 @@ function ToolRow({ call, worktree, live }: { call: ToolCall; worktree: string; l
       <button className="tool" aria-expanded={open} onClick={() => setOpen(!open)}>
         <Icon aria-hidden="true" />
         <Label text={label} running={live && !call.result} />
+        <Clock time={call.time} />
         <ChevronRight aria-hidden="true" className="chevron" />
       </button>
       {open && <pre className="tool-output">{call.result ? call.result.output : "Running"}</pre>}
@@ -95,6 +99,7 @@ function FoldedRow({ calls, worktree, live }: { calls: ToolCall[]; worktree: str
       <button className="tool" aria-expanded={open} onClick={() => setOpen(!open)}>
         <kind.icon aria-hidden="true" />
         <Label text={label} running={live && calls.some((call) => !call.result)} />
+        <Clock time={calls[0].time} />
         <ChevronRight aria-hidden="true" className="chevron" />
       </button>
       {open && (
@@ -105,6 +110,20 @@ function FoldedRow({ calls, worktree, live }: { calls: ToolCall[]; worktree: str
         </ul>
       )}
     </>
+  );
+}
+
+/**
+ * When a call happened, as a short clock time such as 14:02. Left out of the row's accessible
+ * name, which says what the call did. Nothing when the time is unknown.
+ */
+function Clock({ time }: { time: number | null | undefined }) {
+  if (time === null || time === undefined) return null;
+  const at = new Date(time);
+  return (
+    <time className="tool-time" dateTime={at.toISOString()} title={at.toLocaleString()} aria-hidden="true">
+      {at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}
+    </time>
   );
 }
 

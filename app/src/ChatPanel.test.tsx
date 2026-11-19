@@ -2,9 +2,9 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { Profiler } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import type { Account, Agent, AgentMessage, AgentStateChanged, Question, Reply } from "./bridge";
+import type { Account, Agent, AgentStateChanged, Question, Reply } from "./bridge";
 import { ChatPanel } from "./ChatPanel";
-import { fakeBridge, type FakeBridge } from "./fakeBridge";
+import { fakeBridge, type FakeBridge, type FakeMessage } from "./fakeBridge";
 
 // TerminalPanel.test.tsx covers the terminal itself. The stub says which session it shows.
 vi.mock("./TerminalPanel", () => ({
@@ -455,30 +455,61 @@ test.each<[string, unknown, string]>([
   expect(screen.getByRole("button", { name: label })).toBeTruthy();
 });
 
-test("while the agent works the thread says for how long, with no dots", async () => {
+test("the work header counts the turn from its start while it runs, then says how long it took", async () => {
   vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
   try {
     const bridge = await started();
     const view = await shownPanel(bridge, { state: working("Working") });
-    expect(screen.getByText("Working for 0s")).toBeTruthy();
-    expect(document.querySelector(".dots")).toBeNull();
+    const head = () => document.querySelector(".work-head")?.textContent;
+    const startedAt = Date.now();
+
+    act(() =>
+      bridge.messages(
+        "0",
+        { type: "TurnStarted", timeUnixMs: startedAt },
+        { type: "ToolCall", id: "1", tool: "Bash", input: { command: "npm test" }, timeUnixMs: startedAt },
+      ),
+    );
+    nextFrame();
+    expect(head()).toBe("Working for 0s");
 
     act(() => vi.advanceTimersByTime(63_000));
-    expect(screen.getByText("Working for 1m 3s")).toBeTruthy();
+    expect(head()).toBe("Working for 1m 3s");
 
-    // Waiting on the user is part of the turn: the count goes on once it works again.
+    // Waiting on the user is part of the turn, so the count goes on.
     view.rerender(<Panel bridge={bridge} state={{ session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" }} />);
-    expect(screen.queryByText(/^Working for/)).toBeNull();
     act(() => vi.advanceTimersByTime(3_600_000));
-    view.rerender(<Panel bridge={bridge} state={working("Working")} />);
-    expect(screen.getByText("Working for 1h 1m")).toBeTruthy();
+    expect(head()).toBe("Working for 1h 1m");
 
+    act(() => bridge.messages("0", { type: "TurnEnded", outcome: "Completed", timeUnixMs: startedAt + 134_000 }));
+    nextFrame();
     view.rerender(<Panel bridge={bridge} state={working("Done")} />);
-    view.rerender(<Panel bridge={bridge} state={working("Working")} />);
-    expect(screen.getByText("Working for 0s")).toBeTruthy();
+    expect(head()).toBe("Worked for 2m 14s");
+    expect(screen.queryByText(/^Working for/)).toBeNull();
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("a tool row shows the clock time of its call, and a call with no time shows none", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  const at = new Date(2026, 10, 19, 14, 2, 30).getTime();
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted", timeUnixMs: at },
+      { type: "ToolCall", id: "1", tool: "Bash", input: { command: "npm test" }, timeUnixMs: at },
+      { type: "ToolCall", id: "2", tool: "Grep", input: { pattern: "TODO" }, timeUnixMs: null },
+    ),
+  );
+  nextFrame();
+
+  const timed = screen.getByRole("button", { name: "Ran npm test" });
+  expect(timed.querySelector(".tool-time")?.textContent).toBe("14:02");
+  const untimed = screen.getByRole("button", { name: "Searched for TODO" });
+  expect(untimed.querySelector(".tool-time")).toBeNull();
 });
 
 test.each<[string, AgentStateChanged | undefined, string]>([
@@ -883,7 +914,7 @@ const kinds: Question = {
 };
 
 // A panel showing a turn that waits on its last message, a request.
-async function asked(...messages: AgentMessage[]) {
+async function asked(...messages: FakeMessage[]) {
   const bridge = await started();
   await shownPanel(bridge, { state: { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" } });
   act(() => bridge.messages("0", { type: "TurnStarted" }, ...messages));
@@ -892,8 +923,8 @@ async function asked(...messages: AgentMessage[]) {
 }
 
 // As Claude Code sends it: the tool call, then the request to run it, under the call's id.
-const bashCall: AgentMessage = { type: "ToolCall", id: "toolu_01", tool: "Bash", input: { command: "npm test" } };
-const approval: AgentMessage = {
+const bashCall: FakeMessage = { type: "ToolCall", id: "toolu_01", tool: "Bash", input: { command: "npm test" } };
+const approval: FakeMessage = {
   type: "ApprovalRequested",
   request: "toolu_01",
   tool: "Bash",

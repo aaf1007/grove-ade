@@ -279,6 +279,7 @@ impl AppServer {
                 kind: method.to_owned(),
                 message,
             }),
+            time_unix_ms: None,
         };
         // A resume that failed read no history, and the conversation shows why.
         if method == "thread/resume" {
@@ -302,7 +303,7 @@ impl AppServer {
             "turn/started" => {
                 self.turn_starting = false;
                 self.turn = params["turn"]["id"].as_str().map(str::to_owned);
-                vec![FromAgent::TurnStart]
+                vec![FromAgent::TurnStart { time_unix_ms: None }]
             }
             "item/agentMessage/delta" => params["delta"]
                 .as_str()
@@ -327,6 +328,7 @@ impl AppServer {
                 vec![FromAgent::TurnEnd {
                     interrupted: turn["status"] == "interrupted",
                     error,
+                    time_unix_ms: None,
                 }]
             }
             _ => Vec::new(),
@@ -456,10 +458,12 @@ fn server_request(
 }
 
 /// The messages of a resumed thread's turns, as chat mode shows them live: the user's message,
-/// the turn's start, its items in order, and its end. A turn still running has no end.
+/// the turn's start, its items in order, and its end. A turn still running has no end. A turn's
+/// start and end take the times its record has. Its items have none, so tool calls have no time.
 fn history(turns: &Value) -> Vec<FromAgent> {
     let mut messages = Vec::new();
     for turn in turns.as_array().into_iter().flatten() {
+        let started_at = unix_ms(&turn["startedAt"]);
         let mut started = false;
         for item in turn["items"].as_array().into_iter().flatten() {
             if item["type"] == "userMessage" && !started {
@@ -469,7 +473,9 @@ fn history(turns: &Value) -> Vec<FromAgent> {
                 continue;
             }
             if !started {
-                messages.push(FromAgent::TurnStart);
+                messages.push(FromAgent::TurnStart {
+                    time_unix_ms: started_at,
+                });
                 started = true;
             }
             match item["type"].as_str() {
@@ -482,7 +488,9 @@ fn history(turns: &Value) -> Vec<FromAgent> {
             }
         }
         if !started {
-            messages.push(FromAgent::TurnStart);
+            messages.push(FromAgent::TurnStart {
+                time_unix_ms: started_at,
+            });
         }
         let error = || TurnError {
             kind: error_kind(&turn["error"]["codexErrorInfo"]),
@@ -497,9 +505,18 @@ fn history(turns: &Value) -> Vec<FromAgent> {
             Some("failed") => (false, Some(error())),
             _ => continue,
         };
-        messages.push(FromAgent::TurnEnd { interrupted, error });
+        messages.push(FromAgent::TurnEnd {
+            interrupted,
+            error,
+            time_unix_ms: unix_ms(&turn["completedAt"]),
+        });
     }
     messages
+}
+
+/// A time in seconds since the Unix epoch, as Codex records it, in milliseconds.
+fn unix_ms(seconds: &Value) -> Option<u64> {
+    seconds.as_u64()?.checked_mul(1000)
 }
 
 /// The text of a user message's input, one line per text input. Other inputs, such as images,
@@ -532,6 +549,7 @@ fn tool_call(item: &Value) -> Option<FromAgent> {
         id: item["id"].as_str()?.to_owned(),
         tool,
         input,
+        time_unix_ms: None,
     })
 }
 
@@ -649,6 +667,47 @@ fn line_of(message: Value) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_resumed_threads_turns_take_their_recorded_times_and_its_tool_calls_have_none() {
+        let turns = json!([{
+            "id": "t1", "status": "completed", "error": null,
+            "startedAt": 1_763_560_920, "completedAt": 1_763_560_983,
+            "items": [
+                {"type": "userMessage", "id": "u", "content": [{"type": "text", "text": "go"}]},
+                {"type": "commandExecution", "id": "call_1", "command": "ls", "cwd": "/w",
+                 "status": "completed", "aggregatedOutput": "a.rs\n", "exitCode": 0},
+            ],
+        }, {
+            "id": "t2", "status": "completed", "error": null, "items": [],
+        }]);
+
+        let restored: Vec<crate::AgentMessage> = history(&turns)
+            .into_iter()
+            .filter_map(super::super::recorded)
+            .collect();
+
+        let times: Vec<Option<u64>> = restored
+            .iter()
+            .filter_map(|message| match message {
+                crate::AgentMessage::TurnStarted { time_unix_ms }
+                | crate::AgentMessage::ToolCall { time_unix_ms, .. }
+                | crate::AgentMessage::TurnEnded { time_unix_ms, .. } => Some(*time_unix_ms),
+                _ => None,
+            })
+            .collect();
+        // Turn one's start, its tool call and its end, then turn two's, whose record has no times.
+        assert_eq!(
+            times,
+            [
+                Some(1_763_560_920_000),
+                None,
+                Some(1_763_560_983_000),
+                None,
+                None
+            ]
+        );
+    }
+
     use super::*;
 
     fn sent(line: &[u8]) -> Value {

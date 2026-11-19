@@ -788,14 +788,6 @@ svg {
   text-align: center;
 }
 
-.working-for {
-  display: flex;
-  height: var(--control-xs);
-  align-items: center;
-  color: var(--muted);
-  font: var(--text-body);
-}
-
 .card {
   overflow: hidden;
   border: 1px solid var(--line);

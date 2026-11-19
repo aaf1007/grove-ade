@@ -222,6 +222,32 @@ describe("history", () => {
     });
   });
 
+  it("gives each turn start, tool call and turn end the time its record has, and leaves it out when it has none", async () => {
+    const at = (message: SessionMessage, timestamp: string) => ({ ...message, timestamp }) as SessionMessage;
+    const read = async () => [
+      at(recorded("user", "fix the parser"), "2026-11-19T14:02:00.000Z"),
+      at(recorded("assistant", [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "ls" } }]), "2026-11-19T14:02:01.500Z"),
+      at(recorded("assistant", [{ type: "text", text: "Done." }]), "2026-11-19T14:03:03.000Z"),
+      recorded("user", "thanks"),
+    ];
+    const s = start({ resume: true }, ann, async () => models, read);
+    await settle();
+
+    expect(s.out[0]).toEqual({
+      type: "history",
+      messages: [
+        { type: "user", text: "fix the parser" },
+        { type: "turn_start", time_unix_ms: Date.UTC(2026, 10, 19, 14, 2, 0) },
+        { type: "tool_call", id: "toolu_1", tool: "Bash", input: { command: "ls" }, time_unix_ms: Date.UTC(2026, 10, 19, 14, 2, 1, 500) },
+        { type: "text_delta", text: "Done." },
+        { type: "turn_end", time_unix_ms: Date.UTC(2026, 10, 19, 14, 3, 3) },
+        { type: "user", text: "thanks" },
+        { type: "turn_start" },
+        { type: "turn_end" },
+      ],
+    });
+  });
+
   it("skips a recorded message with no body", async () => {
     const read = async () => [{ ...recorded("assistant", []), message: null }, recorded("user", "hi")];
     const s = start({ resume: true }, ann, async () => models, read);

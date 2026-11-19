@@ -533,8 +533,6 @@ function ChatView({
               {text}
             </div>
           ))}
-          {/* Mounted for the whole turn, so the count goes on after a request it waited on. */}
-          {turnRunning && <WorkingFor shown={working} />}
         </div>
       </div>
       <div className="composer-wrap">
@@ -597,6 +595,9 @@ interface Turn {
   ended: boolean;
   /** Set once the turn has a tool call. */
   head: WorkItem | null;
+  /** When the turn started and ended, in milliseconds since the Unix epoch. null when unknown. */
+  startedAt: number | null;
+  endedAt: number | null;
 }
 
 /** The header of a turn's work. */
@@ -650,7 +651,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
   // The current turn's requests, by id.
   const requests = new Map<string, RequestItem>();
   let edited: string[] = [];
-  let turn: Turn = { start: 0, ended: false, head: null };
+  let turn: Turn = { start: 0, ended: false, head: null, startedAt: null, endedAt: null };
 
   // The header goes where the turn started, before anything the agent said first.
   function workStarts() {
@@ -678,7 +679,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
         break;
       case "TurnStarted":
         edited = [];
-        turn = { start: items.length, ended: false, head: null };
+        turn = { start: items.length, ended: false, head: null, startedAt: message.timeUnixMs, endedAt: null };
         break;
       case "TextDelta": {
         const last = items[items.length - 1];
@@ -689,7 +690,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
       case "ToolCall": {
         // Its approval came first and shows it already.
         if (calls.has(message.id)) break;
-        const call = { id: message.id, tool: message.tool, input: message.input };
+        const call = { id: message.id, tool: message.tool, input: message.input, time: message.timeUnixMs };
         calls.set(call.id, call);
         workStarts();
         const last = items[items.length - 1];
@@ -735,6 +736,7 @@ function thread(messages: ChatMessage[], worktree: string): ThreadItem[] {
         break;
       case "TurnEnded":
         turn.ended = true;
+        turn.endedAt = message.timeUnixMs;
         requests.forEach((item) => (item.expired = !item.reply));
         requests.clear();
         if (edited.length > 0) {
@@ -791,7 +793,7 @@ function Item({
 }) {
   switch (item.kind) {
     case "work":
-      return <WorkHead running={turnRunning && !item.turn.ended} />;
+      return <WorkHead turn={item.turn} running={turnRunning && !item.turn.ended} />;
     case "tools":
       return <ToolCalls calls={item.calls} worktree={worktree} live={turnRunning && !item.turn.ended} />;
     case "approval":
@@ -888,13 +890,32 @@ function Item({
   }
 }
 
-/** The header of a turn's work: "Working" while the turn runs, "Worked" after. */
-function WorkHead({ running }: { running: boolean }) {
+/**
+ * The header of a turn's work: "Working for 1m 3s" while the turn runs, counted each second from
+ * its start, and "Worked for 2m 14s" after. Just "Working" or "Worked" when a time is unknown.
+ */
+function WorkHead({ turn, running }: { turn: Turn; running: boolean }) {
+  const now = useNow(running && turn.startedAt !== null);
+  const { startedAt, endedAt } = turn;
+  let text = running ? "Working" : "Worked";
+  if (running && startedAt !== null) text += ` for ${duration(now - startedAt)}`;
+  if (!running && startedAt !== null && endedAt !== null) text += ` for ${duration(endedAt - startedAt)}`;
   return (
     <div className="work-head">
-      <span className={running ? "shimmer" : undefined}>{running ? "Working" : "Worked"}</span>
+      <span className={running ? "shimmer" : undefined}>{text}</span>
     </div>
   );
+}
+
+/** The time now, in milliseconds since the Unix epoch, read again each second while `ticking`. */
+function useNow(ticking: boolean): number {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!ticking) return;
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, [ticking]);
+  return now;
 }
 
 /** Where a review comment is, as the agent reads it: `path:line` or `path:first-last`. */
@@ -1114,20 +1135,6 @@ function describeAccount(account: Account | null): string {
     ? `${account.plan} plan`
     : account.apiKeySource && `API key from ${account.apiKeySource}`;
   return how ? `${who} · ${how}` : who;
-}
-
-/**
- * How long the turn has gone on since the panel saw it start, counted each second. It counts while
- * hidden too, so it is right the moment it shows again.
- */
-function WorkingFor({ shown }: { shown: boolean }) {
-  const [since] = useState(Date.now);
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    const tick = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(tick);
-  }, []);
-  return shown && <div className="working-for">Working for {duration(now - since)}</div>;
 }
 
 /** A span of time as "45s", "1m 3s" or "1h 2m". */
