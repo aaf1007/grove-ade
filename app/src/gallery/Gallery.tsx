@@ -297,6 +297,7 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
             onStartAgent={() => {}}
             onStartAgentAfterSetup={() => {}}
             onShowAgent={() => {}}
+            onFocusAgent={() => {}}
             onDeleting={() => {}}
             onRemoved={() => {}}
             waiting={1}

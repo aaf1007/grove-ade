@@ -597,6 +597,7 @@ export function App({ bridge }: { bridge: Bridge }) {
                 startAgent(worktree, "Claude", firstEmptyPanel, true)
               }
               onShowAgent={showAgent}
+              onFocusAgent={focusSession}
               onWorktrees={setWorktrees}
               waiting={attentionQueue.length}
               onJump={jump}

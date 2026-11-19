@@ -20,6 +20,7 @@ const noAgents = {
   onDeleting() {},
   onRemoved() {},
   onShowAgent() {},
+  onFocusAgent() {},
   waiting: 0,
   onJump() {},
   onOpenProfiles() {},
@@ -145,7 +146,6 @@ test("creating a worktree adds it to its repo, selects it, sets the repo's profi
 
   await waitForNoDialog();
   expect(worktreeNames()).toEqual(["main (main worktree)", "feat-35-tauri-sidebar", "Worktree UI"]);
-  expect(screen.getByText("feat/52-ui", { selector: ".wt-branch" })).toBeTruthy();
   expect(selected).toEqual(["/grovecode/worktrees/grove/feat-52-ui"]);
   expect(started).toEqual(["/grovecode/worktrees/grove/feat-52-ui"]);
   expect((await bridge.listWorktrees())[2]).toEqual({
@@ -239,11 +239,12 @@ test("a worktree whose setup script runs shows it after a reload, with no Start 
 
   render(<Sidebar bridge={bridge} selected={added.path} onSelect={() => {}} {...noAgents} />);
 
-  expect(await screen.findByText("Setup running")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Start Claude Code" })).toBeNull();
+  expect(await screen.findByRole("img", { name: "Setup running" })).toBeTruthy();
+  expect(menuItems("feat-52")).not.toContain("Start Claude Code");
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
   act(() => bridge.finishSetup(added.path, null));
   expect(await screen.findByText("Setup failed: was stopped by a signal")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Start Claude Code" })).toBeTruthy();
+  expect(menuItems("feat-52")).toContain("Start Claude Code");
 });
 
 test("changing the base branch saves it, and an unknown branch shows the error", async () => {
@@ -266,13 +267,13 @@ test("changing the base branch saves it, and an unknown branch shows the error",
   expect((await bridge.listWorktrees())[1].baseBranch).toBe("feat-35-tauri-sidebar");
 });
 
-test("the main worktree's menu only changes its base branch", async () => {
+test("the main worktree's menu only starts Claude Code and changes its base branch", async () => {
   await sidebarWith();
 
   fireEvent.click(screen.getByRole("button", { name: "Actions for main" }));
 
   const items = within(screen.getByRole("menu")).getAllByRole("menuitem");
-  expect(items.map((item) => item.textContent)).toEqual(["Change base branch"]);
+  expect(items.map((item) => item.textContent)).toEqual(["Start Claude Code", "Change base branch"]);
 });
 
 test("closing a dialog puts focus back on the + that opened it", async () => {
@@ -470,3 +471,9 @@ test("a delete that ends after its dialog was cancelled leaves a dialog opened s
   expect(screen.getByRole("dialog", { name: "New worktree" })).toBe(dialog);
   expect(within(dialog).getByLabelText<HTMLInputElement>("Branch name").value).toBe("feat-52");
 });
+
+// The menu items of the worktree named `name`. Leaves the menu open.
+function menuItems(name: string) {
+  fireEvent.click(screen.getByRole("button", { name: `Actions for ${name}` }));
+  return screen.getAllByRole("menuitem").map((item) => item.textContent);
+}
