@@ -3,6 +3,7 @@ import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 
 import { fakeBridge } from "./fakeBridge";
 import sidebarStyles from "./styles.css?raw";
+import agentStateStyles from "./ui/AgentState.css?raw";
 import { Sidebar } from "./Sidebar";
 import { menuItems } from "./testing";
 
@@ -683,4 +684,13 @@ test("the selected worktree's row is marked, and a Working dot pulses", async ()
   expect(row.closest(".wt-row")!.querySelector(".status-dot")!.classList.contains("status-working")).toBe(true);
   expect(sidebarStyles).toMatch(/\.status-working\s*\{[^}]*animation/);
   expect(sidebarStyles).toMatch(/prefers-reduced-motion[\s\S]*\.status-working[^}]*animation: none/);
+});
+
+test("the status dot pulses with the Working icon's one keyframe and timing", () => {
+  const animation = (css: string, selector: string) =>
+    css.match(new RegExp(`${selector}\\s*\\{[^}]*?animation: ([^;]+);`))?.[1];
+
+  expect(animation(sidebarStyles, "\\.status-working")).toBe("ui-agent-state-pulse var(--working-pulse)");
+  expect(animation(agentStateStyles, "\\.ui-agent-state-working svg")).toBe("ui-agent-state-pulse var(--working-pulse)");
+  expect(sidebarStyles).not.toMatch(/@keyframes status-pulse/);
 });
