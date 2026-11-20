@@ -594,6 +594,8 @@ export function App({ bridge }: { bridge: Bridge }) {
   }
   const shownCount = workspace?.chat.filter((panel) => panel.shown).length ?? 0;
   const shownAgents = agents.filter((a) => places[a.session]?.shown).map((a) => a.session);
+  // The agent session of the one agent panel shown. Its panel draws no header: the title bar holds it.
+  const soleShownAgent = shownCount === 1 ? agents.find((a) => places[a.session]?.shown) : undefined;
   const names = sessionNames(agents);
   const placeholder = PLACEHOLDER_TABS.find((tab) => tab === workspace?.selected);
   // The run session each worktree's terminal panel shows, by name. undefined shows the shell.
@@ -642,6 +644,7 @@ export function App({ bridge }: { bridge: Bridge }) {
               onToggleTerminal={() => selected && toggleTerminal(selected)}
               detailsOpen={selected ? detailsOpen : null}
               onToggleDetails={toggleDetails}
+              onSplit={soleShownAgent && (() => split(soleShownAgent))}
             />
             <Warnings bridge={bridge} />
           </div>
@@ -741,7 +744,9 @@ export function App({ bridge }: { bridge: Bridge }) {
                     if (path) setDiffReveal({ worktree: started.worktree, path });
                   }}
                   onChangeAgent={(agent) => changeAgent(started, agent)}
-                  onSplit={shownCount < MAX_SHOWN_AGENT_PANELS ? () => split(started) : undefined}
+                  onSplit={
+                    shownCount > 1 && shownCount < MAX_SHOWN_AGENT_PANELS ? () => split(started) : undefined
+                  }
                   onHide={
                     shownCount > 1
                       ? () => changeWorkspace(started.worktree, (w) => hideSession(w, started.session))

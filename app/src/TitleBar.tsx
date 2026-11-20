@@ -1,4 +1,4 @@
-import { NotebookText, PanelLeft } from "lucide-react";
+import { Columns2, NotebookText, PanelLeft } from "lucide-react";
 import type { Ref } from "react";
 
 import { DETAILS_CARD_ID } from "./DetailsCard";
@@ -24,6 +24,7 @@ export function TitleBar({
   onToggleTerminal,
   detailsOpen,
   onToggleDetails,
+  onSplit,
 }: {
   /** The selected worktree's repo name. null while none is selected. */
   repo: string | null;
@@ -41,6 +42,8 @@ export function TitleBar({
   /** Whether the details card is open. null while no worktree is selected. */
   detailsOpen: boolean | null;
   onToggleDetails(): void;
+  /** Starts another agent session beside the one agent panel shown. No button without it. */
+  onSplit?: () => void;
 }) {
   return (
     <header className="titlebar" data-tauri-drag-region="deep">
@@ -68,6 +71,14 @@ export function TitleBar({
         <div className="crumbs">No worktree selected</div>
       )}
       <div className="switches">
+        {onSplit && (
+          <IconButton
+            icon={Columns2}
+            label="Split"
+            title="Start another agent session beside this one"
+            onClick={onSplit}
+          />
+        )}
         <IconButton
           icon={NotebookText}
           label="Details"

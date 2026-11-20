@@ -94,11 +94,13 @@ async function startClaudeCode() {
   await click(screen.getByRole("menuitem", { name: "Start Claude Code" }));
 }
 
-// Starts Claude Code in feat-36, then splits its panel, which starts Codex beside it.
+// Starts Claude Code in feat-36, then splits its panel from the title bar, which starts Codex
+// beside it.
 async function twoPanels(bridge: FakeBridge) {
   await select("feat-36");
   await startClaudeCode();
-  await click(within(panel("0")).getByRole("button", { name: "Split" }));
+  await screen.findByRole("region", { name: "Panel 0" });
+  await click(within(screen.getByRole("banner")).getByRole("button", { name: "Split" }));
   await screen.findByRole("region", { name: "Panel 1" });
   expect(bridge.spawnedAgents.map((s) => s.agent)).toEqual(["Claude", "Codex"]);
 }
@@ -122,6 +124,20 @@ function openMenu() {
   return click(screen.getByRole("button", { name: "Open a panel" }));
 }
 
+test("with one agent panel, Split sits in the title bar before Details, and the panel has none", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  await startClaudeCode();
+  await screen.findByRole("region", { name: "Panel 0" });
+
+  const switches = within(screen.getByRole("banner"))
+    .getAllByRole("button")
+    .map((button) => button.getAttribute("aria-label"));
+  expect(switches.indexOf("Split")).toBe(switches.indexOf("Details") - 1);
+  expect(within(panel("0")).queryByRole("button", { name: "Split" })).toBeNull();
+});
+
 test("splitting a panel starts the other agent beside it and saves both in the workspace", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
@@ -130,6 +146,9 @@ test("splitting a panel starts the other agent beside it and saves both in the w
 
   expect(shownPanels()).toEqual(["Panel 0", "Panel 1"]);
   expect(agentName(panel("1"))).toBe("Codex");
+  // With two panels, each splits from its own header.
+  expect(within(screen.getByRole("banner")).queryByRole("button", { name: "Split" })).toBeNull();
+  expect(within(panel("0")).getByRole("button", { name: "Split" })).toBeTruthy();
   expect((await bridge.workspace(feature)).chat).toEqual([
     { agent: "Claude", session: "0", shown: true },
     { agent: "Codex", session: "1", shown: true },
