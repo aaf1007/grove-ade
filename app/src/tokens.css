@@ -262,6 +262,9 @@
   --control-md: 32px;
   --icon: 16px;
   --topbar: 52px;
+  /* The room the macOS window controls take at the left of the top row, a small gap included.
+     They float over it at trafficLightPosition in tauri.conf.json. */
+  --window-controls: 78px;
   --tabbar: 40px;
   --sidebar-width: 256px;
   --chat-lane: 780px;

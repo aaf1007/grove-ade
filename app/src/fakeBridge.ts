@@ -195,6 +195,8 @@ export interface FakeBridge extends Bridge {
   clickNotification(clicked: NotificationClicked): void;
   /** How many times `quit` was called. */
   quitCount(): number;
+  /** Puts the window in or out of full screen. It starts out of it. */
+  setFullscreen(fullscreen: boolean): void;
   /** Ends the worktree's setup script with exit `code`. null means a signal ended it. */
   finishSetup(worktree: string, code: number | null): void;
   // Terminal mode (#127).
@@ -362,6 +364,8 @@ export function fakeBridge(
   const deleted: FakeBridge["deleted"] = [];
   const repoProfiles = new Map<string, string | null>();
   const quitListeners = new Set<() => void>();
+  const fullscreenListeners = new Set<(fullscreen: boolean) => void>();
+  let fullscreen = false;
   const notificationListeners = new Set<(clicked: NotificationClicked) => void>();
   let quits = 0;
   const setupListeners = new Set<(change: SetupChanged) => void>();
@@ -1156,6 +1160,15 @@ export function fakeBridge(
     },
     deleted,
     requestQuit: () => quitListeners.forEach((listener) => listener()),
+    onFullscreenChanged(listener) {
+      fullscreenListeners.add(listener);
+      listener(fullscreen);
+      return () => fullscreenListeners.delete(listener);
+    },
+    setFullscreen(on) {
+      fullscreen = on;
+      fullscreenListeners.forEach((listener) => listener(on));
+    },
     onNotificationClicked(listener) {
       notificationListeners.add(listener);
       return () => notificationListeners.delete(listener);

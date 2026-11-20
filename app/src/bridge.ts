@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 
 /** A worktree grove tracks, as the core reports it. */
@@ -570,6 +571,11 @@ export interface Bridge {
   /** Quits grove, which ends every session. */
   quit(): Promise<void>;
   /**
+   * Calls `listener` with whether the window is full screen, at once and on each change. macOS
+   * hides the window controls in full screen. Returns the unsubscribe.
+   */
+  onFullscreenChanged(listener: (fullscreen: boolean) => void): () => void;
+  /**
    * As `spawnAgent`, once the worktree's setup script succeeds, or at once when none runs. Fails,
    * starting nothing, when setup failed.
    */
@@ -721,6 +727,18 @@ export const tauriBridge: Bridge = {
     return () => void unlisten.then((stop) => stop());
   },
   quit: () => invoke("quit"),
+  // Entering and leaving full screen resize the window.
+  onFullscreenChanged(listener) {
+    const window = getCurrentWindow();
+    let listening = true;
+    const check = () => void window.isFullscreen().then((fullscreen) => listening && listener(fullscreen));
+    check();
+    const unlisten = window.onResized(check);
+    return () => {
+      listening = false;
+      void unlisten.then((stop) => stop());
+    };
+  },
   spawnAgentAfterSetup: (worktree, agent, panel) =>
     invoke("spawn_agent_after_setup", { worktree, agent, panel }),
   onSetup(listener) {

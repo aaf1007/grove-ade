@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, ChevronRight, Ellipsis, Plus, Search, Settings2, SlidersHorizontal } from "lucide-react";
+import { Bell, ChevronDown, ChevronRight, Ellipsis, PanelLeft, Plus, Search, Settings2, SlidersHorizontal } from "lucide-react";
 import { type Ref, useEffect, useEffectEvent, useId, useImperativeHandle, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
@@ -52,6 +52,8 @@ export function sessionNames(agents: AgentSession[]): Record<SessionId, string> 
 export interface SidebarHandle {
   /** Opens the folder picker and adds the folder picked, as the sidebar's Add repo does. */
   addRepo(): void;
+  /** Puts focus on the sidebar switch in the top row. */
+  focusSidebarSwitch(): void;
 }
 
 /** What a worktree's menu does. */
@@ -88,6 +90,7 @@ export function Sidebar({
   onJump,
   onOpenProfiles,
   onShowSidebar,
+  onHideSidebar,
   accounts,
   appearance,
   onAppearance,
@@ -123,6 +126,8 @@ export function Sidebar({
   onOpenProfiles(): void;
   /** Shows the sidebar when it is collapsed. Cmd-K calls it before it puts focus in Search. */
   onShowSidebar?(): void;
+  /** Collapses the sidebar. The title bar's switch shows it again. */
+  onHideSidebar(): void;
   /** Each agent's login: null when nobody is logged in, missing until a session reports it. */
   accounts: Partial<Record<Agent, Account | null>>;
   appearance: Appearance;
@@ -224,7 +229,11 @@ export function Sidebar({
     refresh();
   }
 
-  useImperativeHandle(ref, () => ({ addRepo: () => void addRepo() }));
+  const sidebarSwitch = useRef<HTMLButtonElement>(null);
+  useImperativeHandle(ref, () => ({
+    addRepo: () => void addRepo(),
+    focusSidebarSwitch: () => sidebarSwitch.current?.focus(),
+  }));
 
   function toggleRepo(path: string) {
     setFoldedRepos((folded) => toggled(folded, path));
@@ -311,6 +320,17 @@ export function Sidebar({
   });
   return (
     <aside className="sidebar" aria-label="Worktrees">
+      {/* The window's top row: room for the window controls, then the sidebar switch. Its empty
+          part drags the window, as a title bar does. */}
+      <div className="sidebar-top" data-tauri-drag-region="deep">
+        <IconButton
+          ref={sidebarSwitch}
+          icon={PanelLeft}
+          label="Sidebar"
+          aria-pressed="true"
+          onClick={onHideSidebar}
+        />
+      </div>
       <nav className="sidebar-nav" aria-label="Sidebar">
         <button
           className="nav-row"

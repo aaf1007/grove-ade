@@ -1,4 +1,5 @@
 import { type CSSProperties, useEffect, useEffectEvent, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 import type {
   Account,
@@ -87,6 +88,16 @@ export function App({ bridge }: { bridge: Bridge }) {
   // null until the sidebar has the core's first list.
   const [worktrees, setWorktrees] = useState<Worktree[] | null>(null);
   const sidebarRef = useRef<SidebarHandle>(null);
+  const titleBarSidebarSwitch = useRef<HTMLButtonElement>(null);
+  // A sidebar switch goes away when clicked, so focus moves to the one that takes its place.
+  function hideSidebarFromSwitch() {
+    flushSync(toggleSidebar);
+    titleBarSidebarSwitch.current?.focus();
+  }
+  function showSidebarFromSwitch() {
+    flushSync(toggleSidebar);
+    sidebarRef.current?.focusSidebarSwitch();
+  }
   const {
     workspaces,
     errors: workspaceErrors,
@@ -153,6 +164,10 @@ export function App({ bridge }: { bridge: Bridge }) {
     session: "",
     request: 0,
   });
+
+  // macOS hides the window controls in full screen, so the top rows stop keeping room for them.
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => bridge.onFullscreenChanged(setFullscreen), [bridge]);
 
   useEffect(
     () =>
@@ -588,7 +603,7 @@ export function App({ bridge }: { bridge: Bridge }) {
 
   return (
     <>
-      <div className="app">
+      <div className={fullscreen ? "app fullscreen" : "app"}>
         <QuitGuard
           bridge={bridge}
           agentStates={agentStates}
@@ -603,7 +618,8 @@ export function App({ bridge }: { bridge: Bridge }) {
               sidebarOpen={layout.sidebarOpen}
               panelsOpen={layout.panelsOpen}
               terminalOpen={workspace?.terminal ?? null}
-              onToggleSidebar={toggleSidebar}
+              onShowSidebar={showSidebarFromSwitch}
+              sidebarSwitch={titleBarSidebarSwitch}
               onTogglePanels={togglePanels}
               onToggleTerminal={() => selected && toggleTerminal(selected)}
               detailsOpen={selected ? detailsOpen : null}
@@ -641,6 +657,7 @@ export function App({ bridge }: { bridge: Bridge }) {
               onJump={jump}
               onOpenProfiles={() => selected && open(selected, "Profile")}
               onShowSidebar={() => layout.sidebarOpen || toggleSidebar()}
+              onHideSidebar={hideSidebarFromSwitch}
               accounts={accounts}
               appearance={appearance}
               onAppearance={setAppearance}
