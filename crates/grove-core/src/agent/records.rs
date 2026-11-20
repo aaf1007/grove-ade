@@ -1,7 +1,7 @@
 //! Agent session records. An agent session is listed from its start until the user deletes it,
 //! its process ended or not, and the state file keeps it. An ended one can be resumed.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::PathBuf;
@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use tokio::sync::broadcast;
 
-use super::{Agent, AgentState, Agents, Mode, Switch, lock};
+use super::{Agent, AgentState, Agents, Mode, Switch, Tracked, lock};
 use crate::remove::{EXIT_WAIT, wait_for_exits};
 use crate::{Core, CoreError, CoreEvent, Result, SessionId};
 
@@ -78,42 +78,27 @@ impl Agents {
         self.home.join("sessions").join(session.to_string())
     }
 
-    // Drops the record of `session` and of every subagent session below it, and returns them
-    // with the worktree of `session`. Under one lock, so none of them starts a subagent after.
-    // Refused, and nothing is dropped, while one of them switches mode or resumes.
-    fn drop_with_subagents(&self, session: SessionId) -> Result<(Vec<SessionId>, PathBuf)> {
+    // `session` and every subagent session below it, with the worktree of `session`. Refused
+    // while one of them switches mode or resumes.
+    fn with_subagents(&self, session: SessionId) -> Result<(Vec<SessionId>, PathBuf)> {
+        with_subagents(&lock(&self.live), session)
+    }
+
+    // Drops the records `with_subagents` finds, and returns them. Found and dropped under one
+    // lock, so none of them starts a subagent after.
+    fn drop_with_subagents(&self, session: SessionId) -> Result<Vec<SessionId>> {
         let mut live = lock(&self.live);
-        let worktree = live
-            .get(&session)
-            .map(|tracked| tracked.worktree.clone())
-            .ok_or(CoreError::NotAnAgentSession(session))?;
-        let dropped = with_subagents(session, |parent| {
-            let below = live.iter().filter(move |(_, t)| t.parent == Some(parent));
-            below.map(|(&id, _)| id).collect()
-        });
-        let switching = |id: &&SessionId| live.get(*id).is_some_and(|tracked| tracked.switching);
-        if let Some(&switching) = dropped.iter().find(switching) {
-            return Err(CoreError::SwitchingMode(switching));
-        }
+        let (dropped, _) = with_subagents(&live, session)?;
         for id in &dropped {
             live.remove(id);
         }
         drop(live);
         lock(&self.last_focused).retain(|_, focused| !dropped.contains(focused));
-        Ok((dropped, worktree))
-    }
-
-    // The sessions `drop_with_subagents` would drop for `session`, with no change.
-    fn with_subagents(&self, session: SessionId) -> Vec<SessionId> {
-        let live = lock(&self.live);
-        with_subagents(session, |parent| {
-            let below = live.iter().filter(move |(_, t)| t.parent == Some(parent));
-            below.map(|(&id, _)| id).collect()
-        })
+        Ok(dropped)
     }
 
     /// Drops the records of the agent sessions in `worktrees`, which are being removed, and
-    /// returns them.
+    /// returns them. The removal saves the state.
     pub(crate) fn drop_records_in(&self, worktrees: &[PathBuf]) -> Vec<SessionId> {
         let mut live = lock(&self.live);
         let dropped: Vec<SessionId> = live
@@ -126,7 +111,6 @@ impl Agents {
         }
         drop(live);
         lock(&self.last_focused).retain(|worktree, _| !worktrees.contains(worktree));
-        self.saves.request();
         dropped
     }
 
@@ -145,23 +129,31 @@ impl Agents {
     }
 }
 
-// `session`, then every session below it by `subagents_of`, each once, so a chain of parents
-// that loops still ends.
+// `session`, then every session below it, each once, so a chain of parents that loops still
+// ends. With them, the worktree of `session`.
 fn with_subagents(
+    live: &HashMap<SessionId, Tracked>,
     session: SessionId,
-    subagents_of: impl Fn(SessionId) -> Vec<SessionId>,
-) -> Vec<SessionId> {
+) -> Result<(Vec<SessionId>, PathBuf)> {
+    let worktree = live
+        .get(&session)
+        .map(|tracked| tracked.worktree.clone())
+        .ok_or(CoreError::NotAnAgentSession(session))?;
     let mut found = vec![session];
     let mut at = 0;
     while let Some(&parent) = found.get(at) {
-        for subagent in subagents_of(parent) {
-            if !found.contains(&subagent) {
+        for (&subagent, tracked) in live {
+            if tracked.parent == Some(parent) && !found.contains(&subagent) {
                 found.push(subagent);
             }
         }
         at += 1;
     }
-    found
+    let switching = |id: &&SessionId| live.get(*id).is_some_and(|tracked| tracked.switching);
+    match found.iter().find(switching) {
+        Some(&switching) => Err(CoreError::SwitchingMode(switching)),
+        None => Ok((found, worktree)),
+    }
 }
 
 impl Core {
@@ -201,13 +193,8 @@ impl Core {
     pub async fn delete_agent_session(&self, session: SessionId) -> Result<()> {
         // Subscribed before any is killed, so no exit is missed.
         let exits = self.events.subscribe();
-        let worktree = self
-            .agents
-            .worktree_of(session)
-            .ok_or(CoreError::NotAnAgentSession(session))?;
-        let killed: HashSet<SessionId> = self
-            .agents
-            .with_subagents(session)
+        let (to_delete, worktree) = self.agents.with_subagents(session)?;
+        let killed: HashSet<SessionId> = to_delete
             .into_iter()
             // It fails only for one with no process, which has nothing to wait for.
             .filter(|&session| self.kill(session).is_ok())
@@ -221,7 +208,7 @@ impl Core {
         if !matches!(exited, Ok(true)) {
             return Err(CoreError::SessionsStillRunning(worktree));
         }
-        let (deleted, _) = self.agents.drop_with_subagents(session)?;
+        let deleted = self.agents.drop_with_subagents(session)?;
         // One that started while the others ended, such as a subagent asked for just before.
         for &session in &deleted {
             let _ = self.kill(session);
@@ -291,7 +278,7 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    use super::super::{AgentStart, Tracked};
+    use super::super::AgentStart;
     use super::*;
     use crate::CoreConfig;
 

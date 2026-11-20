@@ -1,6 +1,6 @@
 //! What comes back when grove starts again. Agent sessions resume their conversation in the mode
 //! they were in, shells start fresh in the same worktree, and run sessions come back stopped.
-//! Each keeps its session id.
+//! An agent session that had ended comes back ended. Each keeps its session id.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
