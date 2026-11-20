@@ -26,7 +26,7 @@ const noAgents = {
   onJump() {},
   onOpenProfiles() {},
   accounts: {},
-  appearance: { theme: "system" as const, palette: "default" as const },
+  appearance: { theme: "system" as const, palette: "default" as const, appIcon: "auto" as const },
   onAppearance() {},
 };
 

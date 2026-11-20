@@ -1,6 +1,8 @@
 //! The grove app: a thin bridge from the UI to the core (ADR 0002). The core runs in this
 //! process (ADR 0009). Commands only call the Core API; there is no business logic here.
 
+mod dock;
+
 use std::collections::HashMap;
 use std::error::Error;
 use std::future::{Future, poll_fn};
@@ -2305,7 +2307,9 @@ fn main() -> anyhow::Result<()> {
             resolve_comment,
             send_review_batch,
             last_focused_agent,
-            bracketed_paste
+            bracketed_paste,
+            // App icon (#55).
+            dock::set_dock_icon
         ])
         // Cmd-Q shows the window, since it may be hidden, and asks the UI.
         .on_menu_event(|app, event| {

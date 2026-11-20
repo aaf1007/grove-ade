@@ -8,6 +8,7 @@ import type {
   Bridge,
   DeleteCheck,
   DiffBase,
+  DockIcon,
   Editor,
   FileDiff,
   FileVersions,
@@ -98,6 +99,8 @@ export interface FakeBridge extends Bridge {
   revealed: string[];
   /** Every link `openLinkInDefaultBrowser` opened, in order. */
   openedLinks: string[];
+  /** Every icon `setDockIcon` showed, in order. */
+  dockIcons: DockIcon[];
   /** Makes the next `pickFolder` give `path`, or null as a cancel does. Until called, it cancels. */
   willPickFolder(path: string | null): void;
   /** How many times `pickFolder` was opened. */
@@ -310,6 +313,7 @@ export function fakeBridge(
   const opened: FakeBridge["opened"] = [];
   const revealed: string[] = [];
   const openedLinks: string[] = [];
+  const dockIcons: DockIcon[] = [];
   let nextFolder: string | null = null;
   let foldersPicked = 0;
   const spawned: FakeBridge["spawned"] = [];
@@ -851,6 +855,10 @@ export function fakeBridge(
     opened,
     revealed,
     openedLinks,
+    dockIcons,
+    async setDockIcon(icon) {
+      dockIcons.push(icon);
+    },
     spawned,
     spawnedAgents,
     sent,

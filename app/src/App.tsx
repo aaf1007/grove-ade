@@ -6,6 +6,7 @@ import type {
   AgentStateChanged,
   AttentionEntry,
   Bridge,
+  DockIcon,
   Mode,
   NotificationClicked,
   PanelKind,
@@ -55,7 +56,30 @@ import { Button } from "./ui/Button";
 export function App({ bridge }: { bridge: Bridge }) {
   const { layout, sidebar, panels, toggleSidebar, togglePanels, resizeSidebar, resizePanels } =
     useLayout();
-  const { appearance, setAppearance } = useAppearance();
+  const { appearance, setAppearance, dockIcon } = useAppearance();
+  // One request at a time, so a slow older one cannot land after a newer one. While a request is
+  // out, only the latest icon asked for waits, and it goes next.
+  const dockIconRequest = useRef<{ inFlight: boolean; waiting: DockIcon | null }>({
+    inFlight: false,
+    waiting: null,
+  });
+  useEffect(() => {
+    const request = dockIconRequest.current;
+    const apply = (icon: DockIcon) => {
+      request.inFlight = true;
+      bridge
+        .setDockIcon(icon)
+        .catch((e) => console.warn("could not set the Dock icon:", e))
+        .finally(() => {
+          request.inFlight = false;
+          const next = request.waiting;
+          request.waiting = null;
+          if (next) apply(next);
+        });
+    };
+    if (request.inFlight) request.waiting = dockIcon;
+    else apply(dockIcon);
+  }, [bridge, dockIcon]);
   const [selected, setSelected] = useState<string | null>(null);
   // A file the chat asked the Diff panel to show, until the panel took it.
   const [diffReveal, setDiffReveal] = useState<{ worktree: string; path: string } | null>(null);

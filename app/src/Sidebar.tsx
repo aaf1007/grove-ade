@@ -18,7 +18,7 @@ import { stateWord } from "./ui/AgentState";
 import { IconButton } from "./ui/IconButton";
 import { Menu } from "./ui/Menu";
 import { Segmented } from "./ui/Segmented";
-import { type Appearance, PALETTES, THEMES } from "./theme";
+import { APP_ICONS, type Appearance, PALETTES, THEMES } from "./theme";
 import { ChangeBaseDialog, DeleteDialog, ForgetDialog, NewWorktreeDialog } from "./WorktreeDialogs";
 
 /** An agent session the user started, and the worktree it runs in. */
@@ -483,7 +483,7 @@ function describeAccount(account: Account | null): string {
   return how ? `${who} · ${how}` : who;
 }
 
-/** The settings button and the menu over it, with the palette and theme switches. */
+/** The settings button and the menu over it, with the palette, theme and app icon switches. */
 function AppearanceMenu({
   appearance,
   onAppearance,
@@ -533,6 +533,13 @@ function AppearanceMenu({
             options={THEMES}
             value={appearance.theme}
             onChange={(theme) => onAppearance((a) => ({ ...a, theme }))}
+          />
+          <h4>App icon</h4>
+          <Segmented
+            label="App icon"
+            options={APP_ICONS}
+            value={appearance.appIcon}
+            onChange={(appIcon) => onAppearance((a) => ({ ...a, appIcon }))}
           />
         </div>
       )}
