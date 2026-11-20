@@ -1,29 +1,32 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 
 import type { AgentState, AgentStateChanged, FileDiff, SessionId } from "./bridge";
 import { DiffView } from "./DiffView";
 import { type FakeBridge, fakeBridge, type FakeChange, type FakeDiffs } from "./fakeBridge";
 import type { MonacoDiffProps } from "./MonacoDiff";
 
-// Monaco needs a real browser. The stub shows exactly what the diff view hands it: both texts,
-// each box under its line, and how often the editor was created. `commentLines` clicks the
+// Monaco needs a real browser. The stub shows exactly what the diff view hands it: both texts (no
+// original for a file with no old side),
+// each box under its line, and which file each editor was created for. `commentLines` clicks the
 // modified side's line numbers.
 const editors = vi.hoisted(() => ({
-  created: 0,
+  created: [] as string[],
   commentLines: undefined as ((start: number, end: number) => void) | undefined,
 }));
 vi.mock("./MonacoDiff", async () => {
-  const { useEffect } = await import("react");
+  const { useEffect, useState } = await import("react");
   return {
-    MonacoDiff: ({ original, modified, onCommentLines, zones }: MonacoDiffProps) => {
+    MonacoDiff: ({ original, modified, path, onCommentLines, zones }: MonacoDiffProps) => {
+      // The file the editor was created for. A later path is a new file in the same editor.
+      const [first] = useState(path);
       useEffect(() => {
-        editors.created++;
-      }, []);
+        editors.created.push(first);
+      }, [first]);
       editors.commentLines = onCommentLines;
       return (
         <div>
-          <pre aria-label="Original">{original}</pre>
+          {original !== null && <pre aria-label="Original">{original}</pre>}
           <pre aria-label="Modified">{modified}</pre>
           {zones.map((zone) => (
             <div key={zone.key} role="region" aria-label={`Under line ${zone.afterLine}`}>
@@ -38,7 +41,7 @@ vi.mock("./MonacoDiff", async () => {
 
 afterEach(() => {
   cleanup();
-  editors.created = 0;
+  editors.created = [];
   editors.commentLines = undefined;
 });
 
@@ -68,57 +71,45 @@ function change(
   };
 }
 
+/** Each file section's header: its path and its added and removed counts. */
 function listed() {
   return within(screen.getByRole("list", { name: "Changed files" }))
-    .getAllByRole("listitem")
-    .map((item) => item.textContent);
+    .queryAllByRole("heading")
+    .map((heading) => heading.textContent);
 }
 
-test("lists each changed file with its added and removed line counts", async () => {
+/** The section of the file at `path`. */
+function section(path: string) {
+  return screen.getByRole("listitem", { name: path });
+}
+
+test("each changed file gets a section with its path and its added and removed line counts", async () => {
   const diffs: FakeDiffs = {
     [worktree]: {
       Head: [
         change({ newPath: "src/lib.rs", added: 3, removed: 1 }, "a\n", "b\n"),
         change({ newPath: "README.md", status: "Added", added: 12 }, null, "# grove\n"),
+        change({ newPath: "src/main.rs", added: 2, removed: 5 }, "c\n", "d\n"),
       ],
     },
   };
 
   await renderDiff(fakeBridge(repos, diffs));
 
-  expect(await screen.findAllByRole("listitem")).toHaveLength(2);
-  expect(listed()).toEqual(["src/lib.rs +3 -1", "README.md +12 -0"]);
+  await waitFor(() => expect(listed()).toEqual(["src/lib.rs +3 -1", "README.md +12 -0", "src/main.rs +2 -5"]));
+  expect((await within(section("src/lib.rs")).findByLabelText("Modified")).textContent).toBe("b\n");
+  expect(within(section("src/main.rs")).getByLabelText("Modified").textContent).toBe("d\n");
 });
 
-function editorShows() {
+/** What the editor in the section of `path` shows. */
+function editorShows(path: string) {
   return {
-    original: screen.getByLabelText("Original").textContent,
-    modified: screen.getByLabelText("Modified").textContent,
+    original: within(section(path)).getByLabelText("Original").textContent,
+    modified: within(section(path)).getByLabelText("Modified").textContent,
   };
 }
 
-test("the first file opens in the editor, and clicking another opens that one", async () => {
-  const diffs: FakeDiffs = {
-    [worktree]: {
-      Head: [
-        change({ newPath: "a.rs", added: 1, removed: 1 }, "old a\n", "new a\n"),
-        change({ newPath: "b.rs", status: "Added", added: 1 }, null, "new b\n"),
-      ],
-    },
-  };
-
-  await renderDiff(fakeBridge(repos, diffs));
-
-  await screen.findByText("new a");
-  expect(editorShows()).toEqual({ original: "old a\n", modified: "new a\n" });
-
-  fireEvent.click(screen.getByRole("button", { name: /b\.rs/ }));
-
-  await screen.findByText("new b");
-  expect(editorShows()).toEqual({ original: "", modified: "new b\n" });
-});
-
-test("switching the diff base changes the file list and the editor", async () => {
+test("switching the diff base switches the whole list, each section with its counts and its diff", async () => {
   const diffs: FakeDiffs = {
     [worktree]: {
       Head: [change({ newPath: "a.rs", added: 1, removed: 1 }, "staged a\n", "saved a\n")],
@@ -139,15 +130,17 @@ test("switching the diff base changes the file list and the editor", async () =>
   await screen.findByText("base a");
   expect(within(bases).getByRole("button", { name: "Merge base" }).getAttribute("aria-pressed")).toBe("true");
   expect(listed()).toEqual(["a.rs +2 -1", "committed.rs +4 -0"]);
-  expect(editorShows()).toEqual({ original: "base a\n", modified: "saved a\n" });
+  expect(editorShows("a.rs")).toEqual({ original: "base a\n", modified: "saved a\n" });
+  expect(within(section("committed.rs")).getByLabelText("Modified").textContent).toBe("fn main() {}\n");
 
   fireEvent.click(within(bases).getByRole("button", { name: "HEAD" }));
 
   await screen.findByText("staged a");
   expect(listed()).toEqual(["a.rs +1 -1"]);
+  expect(editorShows("a.rs")).toEqual({ original: "staged a\n", modified: "saved a\n" });
 });
 
-test("a file asked for from outside opens on the HEAD base, and the view says it did", async () => {
+test("a file asked for from outside opens on the HEAD base, expanded and scrolled to, and the view says it did", async () => {
   const diffs: FakeDiffs = {
     [worktree]: {
       Head: [
@@ -160,9 +153,19 @@ test("a file asked for from outside opens on the HEAD base, and the view says it
   const bridge = fakeBridge(repos, diffs);
   await bridge.addRepo(worktree);
   const onRevealed = vi.fn();
+  // jsdom lays nothing out, so it has no scrollIntoView.
+  const scrolledTo: Element[] = [];
+  Element.prototype.scrollIntoView = function (this: Element) {
+    scrolledTo.push(this);
+  };
+  onTestFinished(() => {
+    delete (Element.prototype as Partial<Element>).scrollIntoView;
+  });
   const props = { bridge, worktree, agentStates: {}, onSent: () => {}, onRevealed };
   const view = render(<DiffView {...props} reveal={null} />);
-  const bases = await screen.findByRole("group", { name: "Diff base" });
+  await screen.findByText("new b");
+  fireEvent.click(within(section("b.rs")).getByRole("button", { name: /b\.rs/ }));
+  const bases = screen.getByRole("group", { name: "Diff base" });
   fireEvent.click(within(bases).getByRole("button", { name: "Merge base" }));
   await screen.findByText("new c");
 
@@ -170,6 +173,8 @@ test("a file asked for from outside opens on the HEAD base, and the view says it
 
   await screen.findByText("new b");
   expect(within(bases).getByRole("button", { name: "HEAD" }).getAttribute("aria-pressed")).toBe("true");
+  expect(within(section("b.rs")).getByRole("button", { name: /b\.rs/ }).getAttribute("aria-expanded")).toBe("true");
+  expect(scrolledTo).toEqual([section("b.rs")]);
   expect(onRevealed).toHaveBeenCalledOnce();
 });
 
@@ -249,9 +254,7 @@ test("a file git calls binary is never read, so a large one cannot fill memory",
   await renderDiff(bridge);
   await screen.findByText("a");
 
-  fireEvent.click(screen.getByRole("button", { name: /video\.mp4/ }));
-
-  expect(await screen.findByText("Binary file, not shown.")).toBeTruthy();
+  expect(within(section("video.mp4")).getByText("Binary file, not shown.")).toBeTruthy();
   expect(read.mock.calls.map(([, , file]) => file.newPath)).toEqual(["a.rs"]);
 });
 
@@ -293,9 +296,27 @@ test("DiffChanged for this worktree refreshes the file list and the editor", asy
 
   await screen.findByText(/two/);
   expect(listed()).toEqual(["a.rs +2 -0", "b.rs +1 -0"]);
-  expect(editorShows().modified).toBe("one\ntwo\n");
+  expect(editorShows("a.rs").modified).toBe("one\ntwo\n");
   // The same editor takes the new versions, so its scroll and cursor survive the refresh.
-  expect(editors.created).toBe(1);
+  expect(editors.created).toEqual(["a.rs", "b.rs"]);
+});
+
+test("a file with no old side gets only added lines, with no removed one", async () => {
+  const diffs: FakeDiffs = {
+    [worktree]: {
+      Head: [
+        change({ newPath: "new.rs", status: "Untracked", added: 2 }, null, "fn a() {}\nfn b() {}\n"),
+        change({ newPath: "empty.rs", added: 1 }, "", "x\n"),
+      ],
+    },
+  };
+
+  await renderDiff(fakeBridge(repos, diffs));
+
+  await waitFor(() => expect(within(section("new.rs")).getByLabelText("Modified").textContent).toBe("fn a() {}\nfn b() {}\n"));
+  expect(within(section("new.rs")).queryByLabelText("Original")).toBeNull();
+  // An empty old side is still a side, so its diff shows as one.
+  expect(editorShows("empty.rs")).toEqual({ original: "", modified: "x\n" });
 });
 
 test("carriage returns reach the editor as a visible ␍, so a CRLF change shows", async () => {
@@ -308,7 +329,7 @@ test("carriage returns reach the editor as a visible ␍, so a CRLF change shows
   await renderDiff(fakeBridge(repos, diffs));
 
   await screen.findByLabelText("Modified");
-  expect(editorShows()).toEqual({ original: "one\ntwo\n", modified: "one␍\ntwo␍\n" });
+  expect(editorShows("a.txt")).toEqual({ original: "one\ntwo\n", modified: "one␍\ntwo␍\n" });
 });
 
 // Review comments (#54).
@@ -452,6 +473,28 @@ test("a comment whose text is gone stays where it was, flagged as possibly addre
   edit(bridge, diffs, "fn a() {}\nfn renamed() {}\nfn c() {}\n");
 
   expect(await within(comment("Comment on line 2")).findByText("Possibly addressed")).toBeTruthy();
+});
+
+test("collapsing a file's section hides its diff, and expanding it shows its comments and the one being typed", async () => {
+  const { bridge } = await commentable();
+  await bridge.addComment(worktree, { path: "src/lib.rs", startLine: 1, endLine: 1, body: "first" });
+  await renderDiff(bridge);
+  await screen.findByRole("group", { name: "Comment on line 1" });
+  act(() => editors.commentLines!(3, 3));
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "half typed" } });
+  const header = within(section("src/lib.rs")).getByRole("button", { name: "src/lib.rs +3 -0" });
+
+  fireEvent.click(header);
+
+  expect(header.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByRole("group", { name: "Comment on line 1" })).toBeNull();
+  expect(screen.queryByRole("textbox")).toBeNull();
+
+  fireEvent.click(header);
+
+  expect(header.getAttribute("aria-expanded")).toBe("true");
+  expect(within(under(1)).getByText("first")).toBeTruthy();
+  expect((within(under(3)).getByRole("textbox") as HTMLTextAreaElement).value).toBe("half typed");
 });
 
 test("resolving a comment hides it", async () => {
