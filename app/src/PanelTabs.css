@@ -1,12 +1,21 @@
+/* The panel area's top edge, as tall as the title bar beside it, so their switches line up. */
 .ui-panel-tabs {
   display: flex;
   flex: none;
   align-items: center;
   gap: var(--space-4);
-  height: var(--tabbar);
-  padding: 0 var(--space-10);
+  height: var(--topbar);
+  padding: 0 var(--space-12) 0 var(--space-10);
   border-bottom: 1px solid var(--line);
   background: var(--panel);
+}
+
+.ui-panel-tablist {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-4);
+  overflow: hidden;
 }
 
 /* A tab and its close mark share one fill. The selected tab's fill is stronger than hover's. */
@@ -65,7 +74,13 @@
   background: transparent;
 }
 
-/* The menu that opens a panel sits at the right end of the bar. */
+/* The menu that opens a panel, then the terminal and panel area switches, end the row. */
 .ui-panel-tabs > .ui-menu {
   margin-left: auto;
+}
+
+.panel-switches {
+  display: flex;
+  flex: none;
+  gap: var(--space-4);
 }

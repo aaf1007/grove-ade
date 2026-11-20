@@ -65,11 +65,11 @@ svg {
   --window-controls: 0px;
 }
 
-/* The title bar and the core's warnings, over the chat area and the panel area. It outranks
-   `.regions > *`, which puts every other region in row 2. */
+/* The title bar and the core's warnings, over the chat lane. It outranks `.regions > *`, which
+   puts every other region in row 2. */
 .regions > .window-top {
   grid-row: 1;
-  grid-column: 3 / -1;
+  grid-column: 3;
   min-width: 0;
 }
 
@@ -221,11 +221,15 @@ svg {
   grid-column: 3;
 }
 
-.split-after {
+/* The panel area runs the window's full height beside the chat lane, its tab row level with the
+   title bar. */
+.regions > .split-after {
+  grid-row: 1 / -1;
   grid-column: 4;
 }
 
-.panel-area {
+.regions > .panel-area {
+  grid-row: 1 / -1;
   grid-column: 5;
 }
 

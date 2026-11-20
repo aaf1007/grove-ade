@@ -72,9 +72,21 @@ async function renderCard(
     onOpenDiff: vi.fn(),
     onOpenProfile: vi.fn(),
     onClose: vi.fn(),
+    onRoom: vi.fn(),
   };
+  // With no chat lane to measure, the card always has room. App.test.tsx covers hiding it.
   const card = (more: typeof props) => (
-    <DetailsCard bridge={bridge} worktree={feature} runs={[]} session={claude} {...handlers} {...props} {...more} />
+    <DetailsCard
+      bridge={bridge}
+      worktree={feature}
+      runs={[]}
+      session={claude}
+      lane={null}
+      hidden={false}
+      {...handlers}
+      {...props}
+      {...more}
+    />
   );
   let view!: ReturnType<typeof render>;
   await act(async () => {

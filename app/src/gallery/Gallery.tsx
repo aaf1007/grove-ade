@@ -235,10 +235,29 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
                   : { ...w, panels: w.panels.includes(panel) ? w.panels : [...w.panels, panel], selected: panel },
               )
             }
+            onToggleTerminal={() => setWorkspace((w) => ({ ...w, terminal: !w.terminal }))}
+            onTogglePanels={() => {}}
           />
         </div>
         <div className="gallery-frame">
-          <PanelTabs workspace={{ ...WORKSPACE, panels: [], selected: null }} onSelect={() => {}} onClose={() => {}} onOpen={() => {}} />
+          <PanelTabs
+            workspace={{ ...WORKSPACE, panels: [], selected: null }}
+            onSelect={() => {}}
+            onClose={() => {}}
+            onOpen={() => {}}
+            onToggleTerminal={() => {}}
+            onTogglePanels={() => {}}
+          />
+        </div>
+        <div className="gallery-frame">
+          <PanelTabs
+            workspace={null}
+            onSelect={() => {}}
+            onClose={() => {}}
+            onOpen={() => {}}
+            onToggleTerminal={() => {}}
+            onTogglePanels={() => {}}
+          />
         </div>
       </Section>
 
