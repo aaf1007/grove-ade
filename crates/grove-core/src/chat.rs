@@ -563,7 +563,9 @@ impl Core {
     pub fn send_message(&self, session: SessionId, text: &str) -> Result<()> {
         let chat = self.agents.chat(session)?;
         let input = self.input(session)?;
-        chat.send(session, &input, text)
+        chat.send(session, &input, text)?;
+        self.agents.title_from(session, text, &self.events);
+        Ok(())
     }
 
     /// Answers a pending approval request or question. The session goes back to `Working`, or
@@ -792,6 +794,11 @@ fn apply(
         FromAgent::History { messages } => {
             for message in messages {
                 if let Some(message) = recorded(message) {
+                    // A session with no title yet takes it from its record, as one saved
+                    // before grove kept titles.
+                    if let AgentMessage::User { text } = &message {
+                        agents.title_from(session, text, events);
+                    }
                     chat.push_locked(s, message);
                 }
             }

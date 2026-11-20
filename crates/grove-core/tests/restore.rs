@@ -1,6 +1,8 @@
 //! Restore after a restart, against the fake agents in fixtures/fake-agents. A second core started
 //! on the same home folder brings back agent sessions in their mode with the integration of their
 //! first launch, shells as fresh shells, run sessions stopped, review comments and workspaces.
+//! Agent session records are here too: each lasts until the user deletes it, so an ended one
+//! comes back ended.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -11,13 +13,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Barrier, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use grove_core::{
-    Agent, AgentMessage, AgentPanel, AgentSpec, AgentState, CommentId, Core, CoreConfig, CoreError,
-    CoreEvent, Mode, ModelChoice, NewReviewComment, NewWorktree, PanelKind, ProfileSettings,
-    RemoveOpts, RepoSettings, ReviewComment, RunSession, RunSpec, SessionId, SessionInfo,
-    SessionKind, TurnOutcome, Warning, Workspace,
+    Agent, AgentMessage, AgentPanel, AgentSessionInfo, AgentSpec, AgentState, CommentId, Core,
+    CoreConfig, CoreError, CoreEvent, Mode, ModelChoice, NewReviewComment, NewWorktree, PanelKind,
+    ProfileSettings, RemoveOpts, RepoSettings, ReviewComment, RunSession, RunSpec, SessionId,
+    SessionInfo, SessionKind, TurnOutcome, Warning, Workspace,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -384,6 +386,18 @@ impl Setup {
         self.core().sessions(&self.worktree).unwrap()
     }
 
+    // The record of agent session `session`, as the list of all agent sessions has it.
+    fn record(&self, session: SessionId) -> Option<AgentSessionInfo> {
+        let mut listed = self.core().agent_sessions().into_iter();
+        listed.find(|info| info.session == session)
+    }
+
+    // Ends the session's process and waits until the core has marked it ended.
+    fn end(&mut self, session: SessionId) {
+        self.core().kill(session).unwrap();
+        self.wait_state(session, AgentState::Exited);
+    }
+
     fn wait_state(&mut self, session: SessionId, state: AgentState) {
         let deadline = Instant::now() + TIMEOUT;
         loop {
@@ -401,6 +415,27 @@ impl Setup {
                 Err(e) => panic!("{e}"),
             }
         }
+    }
+
+    // Waits for the event that says the list of agent sessions changed.
+    fn wait_list_changed(&mut self) {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            match self.events.try_recv() {
+                Ok(CoreEvent::AgentSessionsChanged) => return,
+                Ok(_) => {}
+                Err(TryRecvError::Empty) => {
+                    assert!(Instant::now() < deadline, "the list never changed");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
+    }
+
+    // Drops the events so far, so a wait sees only what comes next.
+    fn drain_events(&mut self) {
+        while self.events.try_recv().is_ok() {}
     }
 
     // The thread the latest `codex app-server` was asked to resume.
@@ -1152,11 +1187,11 @@ fn each_workspace_comes_back_with_its_panels_on_the_restored_sessions() {
     block_on(s.core().set_workspace(&s.worktree, workspace, None)).unwrap();
 
     s.restart();
-    // The panel of the session that had ended is gone, so this one, which may take its id,
-    // never shows in it.
+    // The session that had ended keeps its id and its saved panel, which stays hidden, so
+    // this one never shows in it.
     let shell = s.core().spawn_shell(&s.worktree, 80, 24).unwrap();
 
-    assert!(![claude, codex].contains(&shell));
+    assert!(![claude, codex, ended].contains(&shell));
     assert_eq!(
         s.core().workspace(&s.worktree).unwrap(),
         Workspace {
@@ -1172,8 +1207,131 @@ fn each_workspace_comes_back_with_its_panels_on_the_restored_sessions() {
     );
 }
 
-// What grove would restore if it stopped now, from the state file.
-fn saved_session_ids(home: &Path) -> Vec<u64> {
+#[test]
+fn a_restart_starts_a_process_only_for_the_sessions_that_had_not_ended() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let running = s.spawn(Agent::Claude, Mode::Chat);
+    let ended = s.spawn(Agent::Claude, Mode::Chat);
+    wait_launches(&s.claude_chat, 2);
+    s.end(ended);
+
+    s.restart();
+
+    assert!(s.record(ended).unwrap().ended);
+    assert!(!s.record(running).unwrap().ended);
+    assert_eq!(
+        s.sessions(),
+        [agent_info(running, Agent::Claude, Mode::Chat)]
+    );
+    // The restore starts each process before `Core::start` returns, so one for the ended
+    // session would be running by now.
+    let killed = s.core().kill(ended);
+    assert!(
+        matches!(killed, Err(CoreError::SessionNotRunning(session)) if session == ended),
+        "{killed:?}"
+    );
+    assert_eq!(wait_launches(&s.claude_chat, 3).len(), 3);
+}
+
+#[test]
+fn a_new_session_after_a_restart_never_gets_the_id_of_an_ended_one() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let running = s.spawn(Agent::Claude, Mode::Chat);
+    // The newest session, so its id is the one a restart would hand out next.
+    let ended = s.spawn(Agent::Claude, Mode::Chat);
+    s.end(ended);
+
+    s.restart();
+    let new = s.spawn(Agent::Claude, Mode::Chat);
+
+    assert!(new > ended, "{new} after {ended}");
+    let listed: Vec<SessionId> = s
+        .core()
+        .agent_sessions()
+        .into_iter()
+        .map(|info| info.session)
+        .collect();
+    assert_eq!(listed, [running, ended, new]);
+}
+
+#[test]
+fn a_session_that_ended_on_an_error_comes_back_exited_and_out_of_the_attention_queue() {
+    let _serial = serial();
+    let mut s = setup(Scenarios {
+        claude_chat: json!([{"wait_message": "user_message"}, {"exit": 1}]),
+        ..Scenarios::default()
+    });
+    let failed = s.spawn(Agent::Claude, Mode::Chat);
+    s.core().send_message(failed, "boom").unwrap();
+    s.wait_state(failed, AgentState::Failed);
+    let waiting: Vec<SessionId> = s
+        .core()
+        .attention_queue()
+        .iter()
+        .map(|e| e.session)
+        .collect();
+    assert_eq!(waiting, [failed]);
+
+    s.restart();
+
+    let record = s.record(failed).unwrap();
+    assert!(record.ended);
+    assert_eq!(record.state, Some(AgentState::Exited));
+    assert_eq!(s.core().attention_queue(), []);
+}
+
+#[test]
+fn a_first_message_titles_the_session_and_says_the_list_changed() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let claude = s.spawn(Agent::Claude, Mode::Chat);
+    assert_eq!(s.record(claude).unwrap().title, "New session");
+    s.drain_events();
+
+    s.core()
+        .send_message(claude, "\n  fix the login bug  \nand add a test")
+        .unwrap();
+
+    s.wait_list_changed();
+    assert_eq!(s.record(claude).unwrap().title, "fix the login bug");
+    // Only the first message titles it.
+    s.core().send_message(claude, "also the logout").unwrap();
+    assert_eq!(s.record(claude).unwrap().title, "fix the login bug");
+}
+
+#[test]
+fn an_ended_session_comes_back_listed_and_ended_with_its_title_and_created_time() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let started = SystemTime::now() - Duration::from_millis(1);
+    let claude = s.spawn(Agent::Claude, Mode::Chat);
+    s.core().send_message(claude, "fix the login bug").unwrap();
+    let before = s.record(claude).unwrap();
+    assert!(before.created >= started && before.created <= SystemTime::now());
+    assert!(!before.ended);
+    s.end(claude);
+
+    s.restart();
+
+    let after = s.record(claude).unwrap();
+    assert_eq!(
+        after,
+        AgentSessionInfo {
+            ended: true,
+            state: Some(AgentState::Exited),
+            since: after.since,
+            ..before
+        }
+    );
+    assert_eq!(after.title, "fix the login bug");
+    assert_eq!(after.worktree, s.worktree);
+}
+
+// What grove would restore if it stopped now, from the state file: each session's id, and
+// whether it is saved as ended.
+fn saved_sessions(home: &Path) -> Vec<(u64, bool)> {
     let state: Value =
         serde_json::from_slice(&fs::read(home.join("state.json")).unwrap_or_default())
             .unwrap_or(Value::Null);
@@ -1181,11 +1339,11 @@ fn saved_session_ids(home: &Path) -> Vec<u64> {
         .as_array()
         .into_iter()
         .flatten()
-        .map(|s| s["id"].as_u64().unwrap())
+        .map(|s| (s["id"].as_u64().unwrap(), s["ended"] == json!(true)))
         .collect()
 }
 
-// So a crash keeps the sessions that ran.
+// So a crash keeps the sessions that ran, and starts no process for one that had ended.
 #[test]
 fn the_state_file_follows_sessions_as_they_start_and_end() {
     let _serial = serial();
@@ -1196,12 +1354,17 @@ fn the_state_file_follows_sessions_as_they_start_and_end() {
     let id = |session: SessionId| session.to_string().parse::<u64>().unwrap();
 
     wait_for("both saved", || {
-        (saved_session_ids(&home) == [id(agent), id(shell)]).then_some(())
+        (saved_sessions(&home) == [(id(agent), false), (id(shell), false)]).then_some(())
     });
     s.core().kill(agent).unwrap();
     s.wait_state(agent, AgentState::Exited);
-    wait_for("the agent gone", || {
-        (saved_session_ids(&home) == [id(shell)]).then_some(())
+    // The agent session stays, marked ended. A shell that ends is gone.
+    wait_for("the agent saved as ended", || {
+        (saved_sessions(&home) == [(id(agent), true), (id(shell), false)]).then_some(())
+    });
+    s.core().kill(shell).unwrap();
+    wait_for("the shell gone", || {
+        (saved_sessions(&home) == [(id(agent), true)]).then_some(())
     });
 }
 
@@ -1336,7 +1499,7 @@ fn a_session_saved_before_grove_kept_models_comes_back_with_no_choice() {
     // The state file as grove wrote it before version 7: no model on any session.
     let path = s.cfg.home.join("state.json");
     let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(state["version"], json!(8));
+    assert_eq!(state["version"], json!(9));
     fn forget_models(value: &mut Value) {
         match value {
             Value::Object(object) => {

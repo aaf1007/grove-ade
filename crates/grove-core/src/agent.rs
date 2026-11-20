@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::task::Poll;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,7 +26,7 @@ use tokio::time;
 
 use crate::chat::{Chat, ModelChoice};
 use crate::panel_request::{self, Request, SessionToken};
-use crate::restore::Relaunch;
+use crate::restore::AgentRecord;
 use crate::session::{GROVE_SESSION_ID, GROVE_SESSION_TOKEN, GROVE_SOCKET, Kind, ProcessExit};
 use crate::state::SaveRequests;
 use crate::{
@@ -132,6 +132,32 @@ pub struct AttentionEntry {
     /// the Mac sleeps, so an age shown from one would leave that time out.
     pub since: SystemTime,
 }
+
+/// An agent session as `Core::agent_sessions` lists it. It is listed from its start until the
+/// user deletes it, its process ended or not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSessionInfo {
+    pub session: SessionId,
+    pub worktree: PathBuf,
+    pub agent: Agent,
+    pub mode: Mode,
+    /// The agent session that spawned it as a subagent. None for one the user started.
+    pub parent: Option<SessionId>,
+    /// The first line of its first user message, or "New session" before that.
+    pub title: String,
+    /// When it started, by the wall clock, to the millisecond.
+    pub created: SystemTime,
+    /// Its process ended. `Core::resume_agent_session` starts a new one.
+    pub ended: bool,
+    /// None until its first hook, heuristic or turn.
+    pub state: Option<AgentState>,
+    /// When it entered `state`, by the wall clock. Before its first state, when it started or
+    /// a restart brought it back.
+    pub since: SystemTime,
+}
+
+/// The title of an agent session with no user message yet.
+const NEW_SESSION_TITLE: &str = "New session";
 
 /// What an agent's screen shows, for the status heuristics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,6 +324,10 @@ struct Tracked {
     ended: bool,
     // The agent session that spawned it as a subagent.
     parent: Option<SessionId>,
+    // None until its first user message.
+    title: Option<String>,
+    // When it started, to the millisecond, as the state file keeps it.
+    created: SystemTime,
 }
 
 impl Tracked {
@@ -328,8 +358,60 @@ impl Tracked {
             checked: None,
             ended: false,
             parent: None,
+            title: None,
+            created: now_to_the_millisecond(),
         }
     }
+
+    // The session as the state file kept it.
+    fn of_record(worktree: &Path, record: AgentRecord) -> Tracked {
+        let size = (record.cols, record.rows);
+        let mut tracked = Tracked::new(record.agent, worktree, record.mode, size, record.resume_id);
+        tracked.model = record.model;
+        tracked.parent = record.parent;
+        tracked.title = record.title;
+        if let Some(created) = record.created_unix_ms {
+            tracked.created = UNIX_EPOCH + Duration::from_millis(created);
+        }
+        tracked.ended = record.ended;
+        tracked
+    }
+
+    fn record(&self, id: SessionId) -> AgentRecord {
+        let created = self.created.duration_since(UNIX_EPOCH).ok();
+        AgentRecord {
+            id,
+            agent: self.agent,
+            mode: self.mode,
+            resume_id: self.resume_id.clone(),
+            model: self.model.clone(),
+            cols: self.size.0,
+            rows: self.size.1,
+            parent: self.parent,
+            title: self.title.clone(),
+            created_unix_ms: created.and_then(|since| u64::try_from(since.as_millis()).ok()),
+            ended: self.ended,
+        }
+    }
+}
+
+// The title a user message gives a session: its first line with text, trimmed.
+fn title_of(message: &str) -> Option<String> {
+    let line = message
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    Some(line.to_owned())
+}
+
+// The time now, cut to the millisecond the state file keeps, so a session's created time reads
+// the same before and after a restart.
+fn now_to_the_millisecond() -> SystemTime {
+    let since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let millis = u64::try_from(since_epoch.as_millis()).unwrap_or(u64::MAX);
+    UNIX_EPOCH + Duration::from_millis(millis)
 }
 
 impl Agents {
@@ -356,25 +438,12 @@ impl Agents {
         self.saves.request();
     }
 
-    /// Every agent session whose process has not ended, with its worktree, as a restart brings
-    /// it back. One switching mode counts as running.
-    pub(crate) fn to_relaunch(&self) -> Vec<(PathBuf, Relaunch)> {
+    /// Every agent session with its worktree, as the state file keeps it, ended or not. One
+    /// switching mode counts as running.
+    pub(crate) fn records(&self) -> Vec<(PathBuf, AgentRecord)> {
         lock(&self.live)
             .iter()
-            .filter(|(_, tracked)| !tracked.ended)
-            .map(|(&id, t)| {
-                let relaunch = Relaunch::Agent {
-                    id,
-                    agent: t.agent,
-                    mode: t.mode,
-                    resume_id: t.resume_id.clone(),
-                    model: t.model.clone(),
-                    cols: t.size.0,
-                    rows: t.size.1,
-                    parent: t.parent,
-                };
-                (t.worktree.clone(), relaunch)
-            })
+            .map(|(&id, tracked)| (tracked.worktree.clone(), tracked.record(id)))
             .collect()
     }
 
@@ -516,6 +585,8 @@ impl Agents {
             AgentState::Failed
         };
         tracked.set(exit.session, state, tracked.source(), events);
+        // After its state, so a list read on this event has both.
+        let _ = events.send(CoreEvent::AgentSessionsChanged);
     }
 
     /// A state a chat-mode session's protocol reported, for as long as its process runs.
@@ -539,6 +610,29 @@ impl Agents {
             tracked.resume_id = Some(thread);
         }
         self.saves.request();
+    }
+
+    /// Titles the session after `message`, its first user message, and says the list changed.
+    /// A session that has a title keeps it, and a message with no text gives none.
+    pub(crate) fn title_from(
+        &self,
+        session: SessionId,
+        message: &str,
+        events: &broadcast::Sender<CoreEvent>,
+    ) {
+        let Some(title) = title_of(message) else {
+            return;
+        };
+        {
+            let mut live = lock(&self.live);
+            let Some(tracked) = live.get_mut(&session).filter(|t| t.title.is_none()) else {
+                return;
+            };
+            tracked.title = Some(title);
+        }
+        self.saves.request();
+        // Having no receivers is fine.
+        let _ = events.send(CoreEvent::AgentSessionsChanged);
     }
 
     /// Saves `choice` with the session, for every launch from now on.
@@ -637,6 +731,7 @@ impl Core {
             known,
         );
         tracked.parent = parent;
+        tracked.title = spec.prompt.as_deref().and_then(title_of);
         // Tracked before it starts, so its first hook or message finds it.
         lock(&self.agents.live).insert(session, tracked);
         let start = AgentStart {
@@ -654,25 +749,52 @@ impl Core {
         Ok(session)
     }
 
-    /// Starts agent session `session` again after a restart, in `mode`, on its saved `model`. It
-    /// resumes conversation `resume_id` with the same integration as its first launch, or starts
-    /// a new conversation when no id was captured.
-    pub(crate) fn relaunch_agent(
-        &self,
-        session: SessionId,
-        worktree: &Path,
-        (agent, mode): (Agent, Mode),
-        (resume_id, model): (Option<String>, Option<ModelChoice>),
-        size: (u16, u16),
-        parent: Option<SessionId>,
-    ) -> Result<()> {
-        let mut tracked = Tracked::new(agent, worktree, mode, size, resume_id);
-        tracked.model = model;
-        tracked.parent = parent;
+    /// Brings back the agent session of `record` after a restart. One that had ended comes back
+    /// ended and `Exited`, with no process. Any other starts again in its mode, on its saved
+    /// model: it resumes its conversation with the same integration as its first launch, or
+    /// starts a new conversation when no id was captured.
+    pub(crate) fn restore_agent(&self, worktree: &Path, record: AgentRecord) -> Result<()> {
+        let (session, mode, ended) = (record.id, record.mode, record.ended);
+        let mut tracked = Tracked::of_record(worktree, record);
+        if ended {
+            // Whatever it ended on, it waits on nobody now, so it stays out of the attention
+            // queue.
+            tracked.state = Some((AgentState::Exited, tracked.source()));
+        }
         lock(&self.agents.live).insert(session, tracked);
+        if ended {
+            return Ok(());
+        }
         self.resume_in(session, mode)
             .inspect_err(|_| self.untrack(session))?;
         Ok(())
+    }
+
+    /// Every agent session of every tracked worktree, oldest first, ended ones too.
+    pub fn agent_sessions(&self) -> Vec<AgentSessionInfo> {
+        // Agent sessions outlive a failed removal of their worktree in memory.
+        let worktrees: Vec<PathBuf> = self.tracked().iter().map(|w| w.path.clone()).collect();
+        let mut listed: Vec<AgentSessionInfo> = lock(&self.agents.live)
+            .iter()
+            .filter(|(_, tracked)| worktrees.contains(&tracked.worktree))
+            .map(|(&session, tracked)| AgentSessionInfo {
+                session,
+                worktree: tracked.worktree.clone(),
+                agent: tracked.agent,
+                mode: tracked.mode,
+                parent: tracked.parent,
+                title: tracked
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| NEW_SESSION_TITLE.to_owned()),
+                created: tracked.created,
+                ended: tracked.ended,
+                state: tracked.state.map(|(state, _)| state),
+                since: tracked.entered_wall_clock,
+            })
+            .collect();
+        listed.sort_by_key(|info| info.session);
+        listed
     }
 
     /// Starts a subagent for agent session `parent`: a new agent session in chat mode, in
@@ -877,7 +999,7 @@ impl Core {
             (GROVE_SOCKET, agents.socket.clone().into()),
             (GROVE_SESSION_TOKEN, token.as_str().into()),
         ];
-        match start.mode {
+        let chat = match start.mode {
             Mode::Terminal => {
                 let spec = adapter.launch(&ctx)?;
                 agents.begin(session, Mode::Terminal, None, Some(token));
@@ -885,7 +1007,7 @@ impl Core {
                 if start.agent == Agent::Codex {
                     self.check_codex_hooks(session, worktree, launch_args);
                 }
-                Ok(None)
+                None
             }
             Mode::Chat => {
                 let spec = adapter.launch_chat(&ctx)?;
@@ -894,9 +1016,13 @@ impl Core {
                 let chat = Arc::new(Chat::new(start.agent, thread, start.model.clone()));
                 agents.begin(session, Mode::Chat, Some(chat.clone()), Some(token));
                 self.start_chat(session, worktree, spec, &env, chat.clone(), start.prompt)?;
-                Ok(Some(chat))
+                Some(chat)
             }
-        }
+        };
+        // A new session is listed, or a listed one runs again or in another mode. Having no
+        // receivers is fine.
+        let _ = self.events.send(CoreEvent::AgentSessionsChanged);
+        Ok(chat)
     }
 
     // Runs the check on a thread of its own, so the launch does not wait for it. A check that
@@ -1067,6 +1193,7 @@ impl Drop for Switch<'_> {
                 tracked.source(),
                 self.events,
             );
+            let _ = self.events.send(CoreEvent::AgentSessionsChanged);
         }
     }
 }

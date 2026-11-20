@@ -37,7 +37,8 @@ use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
 
 pub use agent::{
-    AccountInfo, Agent, AgentSpec, AgentState, AttentionEntry, InputKind, Mode, StateSource,
+    AccountInfo, Agent, AgentSessionInfo, AgentSpec, AgentState, AttentionEntry, InputKind, Mode,
+    StateSource,
 };
 pub use chat::{
     AgentMessage, MessageSink, ModelChoice, ModelInfo, Question, QuestionOption, Reply, RequestId,
@@ -89,6 +90,9 @@ pub enum CoreEvent {
         worktree: PathBuf,
         state: AgentState,
     },
+    /// What `agent_sessions` lists changed: an agent session started, got its title, switched
+    /// mode, ended, was resumed or was deleted. The UI calls `agent_sessions` again.
+    AgentSessionsChanged,
     /// A file, the index, HEAD or a ref of the worktree changed, so its diff may have too.
     DiffChanged { worktree: PathBuf },
     /// The worktree's review comments changed: one was added, sent or resolved, or a change to

@@ -39,37 +39,54 @@ pub enum SessionKind {
     },
 }
 
-/// A session a restart brings back, as the state file keeps it.
+/// A session as the state file keeps it. A restart brings back every one of them, and starts a
+/// process for an agent session only if it had not ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub(crate) enum Relaunch {
-    /// No `resume_id` starts a fresh conversation.
-    Agent {
-        id: SessionId,
-        agent: Agent,
-        mode: Mode,
-        resume_id: Option<String>,
-        /// None in a state file from before version 7.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        model: Option<ModelChoice>,
-        cols: u16,
-        rows: u16,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        parent: Option<SessionId>,
-    },
-    Shell {
-        id: SessionId,
-    },
-    Run {
-        id: SessionId,
-        name: String,
-    },
+    Agent(AgentRecord),
+    Shell { id: SessionId },
+    Run { id: SessionId, name: String },
+}
+
+/// An agent session as the state file keeps it, from its start until the user deletes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AgentRecord {
+    pub(crate) id: SessionId,
+    pub(crate) agent: Agent,
+    pub(crate) mode: Mode,
+    /// None starts a fresh conversation.
+    pub(crate) resume_id: Option<String>,
+    /// None in a state file from before version 7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) model: Option<ModelChoice>,
+    pub(crate) cols: u16,
+    pub(crate) rows: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) parent: Option<SessionId>,
+    /// None until its first user message, and in a state file from before version 9.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) title: Option<String>,
+    /// None in a state file from before version 9. Such a session counts as created when the
+    /// file is read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) created_unix_ms: Option<u64>,
+    /// Its process had ended, so a restart starts none for it. A state file from before
+    /// version 9 kept no ended session.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) ended: bool,
+}
+
+fn is_false(flag: &bool) -> bool {
+    !flag
 }
 
 impl Relaunch {
     fn id(&self) -> SessionId {
         match self {
-            Relaunch::Agent { id, .. } | Relaunch::Shell { id } | Relaunch::Run { id, .. } => *id,
+            Relaunch::Agent(AgentRecord { id, .. })
+            | Relaunch::Shell { id }
+            | Relaunch::Run { id, .. } => *id,
         }
     }
 }
@@ -85,13 +102,17 @@ pub(crate) struct StoppedRun {
     pub(crate) comes_back_after_restart: bool,
 }
 
-/// Every session a restart would bring back now, by worktree, oldest first.
+/// Every session the state file keeps now, by worktree, oldest first.
 pub(crate) fn to_relaunch(
     agents: &Agents,
     sessions: &Probe,
     stopped: &Mutex<StoppedRuns>,
 ) -> HashMap<PathBuf, Vec<Relaunch>> {
-    let mut all = agents.to_relaunch();
+    let mut all: Vec<(PathBuf, Relaunch)> = agents
+        .records()
+        .into_iter()
+        .map(|(worktree, record)| (worktree, Relaunch::Agent(record)))
+        .collect();
     for (id, worktree, kind) in sessions.shells_and_runs() {
         let relaunch = match kind {
             Kind::Shell => Relaunch::Shell { id },
@@ -158,12 +179,13 @@ impl Core {
         Ok(sessions)
     }
 
-    /// Brings back the sessions the state file names. Never fails: one that cannot start is left
-    /// out with a `SessionNotRestored` warning. Returns the ids that came back.
+    /// Brings back the sessions the state file names. An agent session that had ended comes back
+    /// ended, with no process. Never fails: one that cannot start is left out with a
+    /// `SessionNotRestored` warning. Returns the ids that came back.
     pub(crate) fn restore(&self, saved: HashMap<PathBuf, Vec<Relaunch>>) -> HashSet<SessionId> {
         let mut back = HashSet::new();
-        // Every restored id is reserved before any session starts, so `new_id` never hands one
-        // out.
+        // Every saved id is reserved before any session starts, an ended session's too, so
+        // `new_id` never hands one out.
         for relaunch in saved.values().flatten() {
             self.sessions.reserve(relaunch.id());
         }
@@ -171,23 +193,7 @@ impl Core {
             for relaunch in relaunches {
                 let id = relaunch.id();
                 let started = match relaunch {
-                    Relaunch::Agent {
-                        agent,
-                        mode,
-                        resume_id,
-                        model,
-                        cols,
-                        rows,
-                        parent,
-                        ..
-                    } => self.relaunch_agent(
-                        id,
-                        &worktree,
-                        (agent, mode),
-                        (resume_id, model),
-                        (cols, rows),
-                        parent,
-                    ),
+                    Relaunch::Agent(record) => self.restore_agent(&worktree, record),
                     // The panel resizes it once it has measured itself.
                     Relaunch::Shell { .. } => self.start_shell(id, &worktree, 80, 24).map(drop),
                     Relaunch::Run { name, .. } => {
