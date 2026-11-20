@@ -464,7 +464,11 @@ enum Message {
     User {
         text: String,
     },
-    TurnStarted,
+    /// Each time is when the core got the message, or what the agent's record says. None when a
+    /// record does not say.
+    TurnStarted {
+        time_unix_ms: Option<u64>,
+    },
     TextDelta {
         text: String,
     },
@@ -472,6 +476,7 @@ enum Message {
         id: String,
         tool: String,
         input: Value,
+        time_unix_ms: Option<u64>,
     },
     ToolResult {
         id: String,
@@ -492,6 +497,7 @@ enum Message {
         reply: Reply,
     },
     TurnEnded {
+        time_unix_ms: Option<u64>,
         #[serde(flatten)]
         outcome: Outcome,
     },
@@ -592,9 +598,19 @@ impl From<AgentMessage> for Message {
     fn from(message: AgentMessage) -> Self {
         match message {
             AgentMessage::User { text } => Message::User { text },
-            AgentMessage::TurnStarted => Message::TurnStarted,
+            AgentMessage::TurnStarted { time_unix_ms } => Message::TurnStarted { time_unix_ms },
             AgentMessage::TextDelta { text } => Message::TextDelta { text },
-            AgentMessage::ToolCall { id, tool, input } => Message::ToolCall { id, tool, input },
+            AgentMessage::ToolCall {
+                id,
+                tool,
+                input,
+                time_unix_ms,
+            } => Message::ToolCall {
+                id,
+                tool,
+                input,
+                time_unix_ms,
+            },
             AgentMessage::ToolResult {
                 id,
                 output,
@@ -621,7 +637,11 @@ impl From<AgentMessage> for Message {
                 request: request.0,
                 reply: reply.into(),
             },
-            AgentMessage::TurnEnded { outcome } => Message::TurnEnded {
+            AgentMessage::TurnEnded {
+                outcome,
+                time_unix_ms,
+            } => Message::TurnEnded {
+                time_unix_ms,
                 outcome: outcome.into(),
             },
             AgentMessage::ReviewBatch { comments } => Message::ReviewBatch {
@@ -714,6 +734,34 @@ impl From<TurnOutcome> for Outcome {
             TurnOutcome::Completed => Outcome::Completed,
             TurnOutcome::Interrupted => Outcome::Interrupted,
             TurnOutcome::Failed { kind, message } => Outcome::Failed { kind, message },
+        }
+    }
+}
+
+/// A change an agent session made, sent as the `agent-change` event for the agent change notice.
+/// Mirrors `AgentChange` in `app/src/bridge.ts`.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(tag = "kind")]
+enum AgentChange {
+    Workspace { worktree: PathBuf, by: String },
+    Profiles { by: String },
+}
+
+impl AgentChange {
+    /// The change `event` reports, when an agent session made it.
+    fn of(event: &CoreEvent) -> Option<Self> {
+        match event {
+            CoreEvent::WorkspaceChanged {
+                worktree,
+                by: Some(by),
+            } => Some(Self::Workspace {
+                worktree: worktree.clone(),
+                by: by.to_string(),
+            }),
+            CoreEvent::ProfilesChanged { by: Some(by) } => {
+                Some(Self::Profiles { by: by.to_string() })
+            }
+            _ => None,
         }
     }
 }
@@ -892,6 +940,29 @@ async fn set_workspace(
     let core = grove.0.read().await;
     let core = core.as_ref().ok_or(QUITTING)?;
     core.set_workspace(&worktree, workspace, None)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// The agent change notice (#4).
+
+#[tauri::command]
+async fn undo_workspace(grove: State<'_, Grove>, worktree: PathBuf) -> Result<(), String> {
+    let core = grove.0.read().await;
+    let core = core.as_ref().ok_or(QUITTING)?;
+    core.undo_workspace(&worktree)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_workspace_to_profile(
+    grove: State<'_, Grove>,
+    worktree: PathBuf,
+) -> Result<(), String> {
+    let core = grove.0.read().await;
+    let core = core.as_ref().ok_or(QUITTING)?;
+    core.save_workspace_to_profile(&worktree)
         .await
         .map_err(|e| e.to_string())
 }
@@ -2135,8 +2206,10 @@ fn main() -> anyhow::Result<()> {
                             };
                             let _ = app.emit("setup", change);
                         }
-                        // The agent's notice with Undo is #130, so the UI only reloads.
-                        Ok(CoreEvent::ProfilesChanged { .. }) => {
+                        Ok(event @ CoreEvent::ProfilesChanged { .. }) => {
+                            if let Some(change) = AgentChange::of(&event) {
+                                let _ = app.emit("agent-change", change);
+                            }
                             let _ = app.emit("profiles-changed", ());
                         }
                         // Each Profile panel of the repo reloads.
@@ -2146,9 +2219,15 @@ fn main() -> anyhow::Result<()> {
                         Ok(CoreEvent::CommentsChanged { worktree }) => {
                             let _ = app.emit("comments-changed", worktree);
                         }
-                        // The UI reloads the workspace. Showing who changed it is issue #130.
-                        Ok(CoreEvent::WorkspaceChanged { worktree, .. }) => {
-                            let _ = app.emit("workspace-changed", worktree);
+                        // The notice goes first, so the UI holds the workspace from before the
+                        // change when the reload comes.
+                        Ok(event @ CoreEvent::WorkspaceChanged { .. }) => {
+                            if let Some(change) = AgentChange::of(&event) {
+                                let _ = app.emit("agent-change", change);
+                            }
+                            if let CoreEvent::WorkspaceChanged { worktree, .. } = event {
+                                let _ = app.emit("workspace-changed", worktree);
+                            }
                         }
                         Ok(_) => {}
                         Err(_) if events.is_closed() => break,
@@ -2197,6 +2276,8 @@ fn main() -> anyhow::Result<()> {
             // Workspaces (#122).
             workspace,
             set_workspace,
+            undo_workspace,
+            save_workspace_to_profile,
             // Worktree management (#52).
             create_worktree,
             set_base_branch,
@@ -2307,6 +2388,32 @@ mod tests {
         assert_eq!((file.added, file.removed), (3, 2));
         assert_eq!(file.old_path, Path::new("old.rs"));
         assert_eq!(file.new_path, Path::new("new.rs"));
+    }
+
+    // The agent change notice (#4).
+
+    #[test]
+    fn only_a_change_an_agent_made_reaches_the_ui_as_an_agent_change() {
+        let workspace = |by| CoreEvent::WorkspaceChanged {
+            worktree: "/code/wt".into(),
+            by,
+        };
+        let by: SessionId = serde_json::from_str("7").unwrap();
+
+        let changes = [
+            workspace(Some(by)),
+            workspace(None),
+            CoreEvent::ProfilesChanged { by: Some(by) },
+            CoreEvent::ProfilesChanged { by: None },
+        ]
+        .iter()
+        .filter_map(AgentChange::of)
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            serde_json::to_string(&changes).unwrap(),
+            r#"[{"kind":"Workspace","worktree":"/code/wt","by":"7"},{"kind":"Profiles","by":"7"}]"#
+        );
     }
 
     // Files panel (#124).
@@ -2700,8 +2807,28 @@ mod tests {
             r#"[{"type":"User","text":"add a test"}]"#
         );
         assert_eq!(
-            message(AgentMessage::TurnStarted),
-            r#"[{"type":"TurnStarted"}]"#
+            message(AgentMessage::TurnStarted {
+                time_unix_ms: Some(1_763_560_920_000)
+            }),
+            r#"[{"type":"TurnStarted","timeUnixMs":1763560920000}]"#
+        );
+        assert_eq!(
+            message(AgentMessage::ToolCall {
+                id: "toolu_03".into(),
+                tool: "Read".into(),
+                input: serde_json::json!({"file_path": "a.rs"}),
+                time_unix_ms: Some(1_763_560_921_500),
+            }),
+            r#"[{"type":"ToolCall","id":"toolu_03","tool":"Read","input":{"file_path":"a.rs"},"timeUnixMs":1763560921500}]"#
+        );
+        assert_eq!(
+            message(AgentMessage::ToolCall {
+                id: "call_1".into(),
+                tool: "commandExecution".into(),
+                input: serde_json::json!({}),
+                time_unix_ms: None,
+            }),
+            r#"[{"type":"ToolCall","id":"call_1","tool":"commandExecution","input":{},"timeUnixMs":null}]"#
         );
         assert_eq!(
             message(AgentMessage::TextDelta {
@@ -2755,18 +2882,20 @@ mod tests {
         );
         assert_eq!(
             message(AgentMessage::TurnEnded {
-                outcome: TurnOutcome::Interrupted
+                outcome: TurnOutcome::Interrupted,
+                time_unix_ms: Some(1_763_560_983_000),
             }),
-            r#"[{"type":"TurnEnded","outcome":"Interrupted"}]"#
+            r#"[{"type":"TurnEnded","timeUnixMs":1763560983000,"outcome":"Interrupted"}]"#
         );
         assert_eq!(
             message(AgentMessage::TurnEnded {
                 outcome: TurnOutcome::Failed {
                     kind: "overloaded".into(),
                     message: "API Error: 529 overloaded".into(),
-                }
+                },
+                time_unix_ms: None,
             }),
-            r#"[{"type":"TurnEnded","outcome":"Failed","kind":"overloaded","message":"API Error: 529 overloaded"}]"#
+            r#"[{"type":"TurnEnded","timeUnixMs":null,"outcome":"Failed","kind":"overloaded","message":"API Error: 529 overloaded"}]"#
         );
         assert_eq!(
             message(AgentMessage::ReviewBatch {
@@ -2857,6 +2986,7 @@ mod tests {
             id: "toolu_01".into(),
             tool: "Edit".into(),
             input: serde_json::json!({"file_path": "src/a.ts"}),
+            time_unix_ms: Some(1_763_560_921_500),
         };
         let result = AgentMessage::ToolResult {
             id: "toolu_01".into(),
@@ -2866,7 +2996,7 @@ mod tests {
 
         assert_eq!(
             json(vec![Message::from(call), Message::from(result)]),
-            r#"[{"type":"ToolCall","id":"toolu_01","tool":"Edit","input":{"file_path":"src/a.ts"}},{"type":"ToolResult","id":"toolu_01","output":"ok","isError":false}]"#
+            r#"[{"type":"ToolCall","id":"toolu_01","tool":"Edit","input":{"file_path":"src/a.ts"},"timeUnixMs":1763560921500},{"type":"ToolResult","id":"toolu_01","output":"ok","isError":false}]"#
         );
     }
 

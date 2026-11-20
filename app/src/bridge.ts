@@ -238,18 +238,20 @@ export type Reply =
 /**
  * One message of a chat-mode conversation, as `Message` in `app/src-tauri/src/main.rs` sends it.
  * A tool result pairs with its call by `id`, and an answer with its request by `request`. A
- * request still pending when its turn ends ends with it.
+ * request still pending when its turn ends ends with it. `timeUnixMs` is when the core got the
+ * message, or when the agent's record says it happened, in milliseconds since the Unix epoch.
+ * null when a record does not say, as for a restored Codex tool call.
  */
 export type AgentMessage =
   | { type: "User"; text: string }
-  | { type: "TurnStarted" }
+  | { type: "TurnStarted"; timeUnixMs: number | null }
   | { type: "TextDelta"; text: string }
-  | { type: "ToolCall"; id: string; tool: string; input: unknown }
+  | { type: "ToolCall"; id: string; tool: string; input: unknown; timeUnixMs: number | null }
   | { type: "ToolResult"; id: string; output: string; isError: boolean }
   | { type: "ApprovalRequested"; request: string; tool: string; input: unknown }
   | { type: "QuestionAsked"; request: string; questions: Question[] }
   | { type: "Answered"; request: string; reply: Reply }
-  | ({ type: "TurnEnded" } & TurnOutcome)
+  | ({ type: "TurnEnded"; timeUnixMs: number | null } & TurnOutcome)
   | { type: "ReviewBatch"; comments: BatchComment[] }
   /** A message the user sent never reached the agent: its process ended first. `text` is what the agent would have got. */
   | { type: "NotDelivered"; text: string };
@@ -345,6 +347,12 @@ export interface Workspace {
   /** Whether the terminal panel is open at the bottom of the panel area. */
   terminal: boolean;
 }
+
+/**
+ * A change an agent session made through `grove-mcp`, as `AgentChange` in `app/src-tauri/src/main.rs`
+ * sends it. It comes before the change's own `workspace-changed` or `profiles-changed`.
+ */
+export type AgentChange = { kind: "Workspace"; worktree: string; by: SessionId } | { kind: "Profiles"; by: SessionId };
 
 /** Everything the UI asks of the core. The app uses `tauriBridge`; tests use `fakeBridge`. */
 export interface Bridge {
@@ -484,6 +492,19 @@ export interface Bridge {
   setWorkspace(worktree: string, workspace: Workspace): Promise<void>;
   /** Calls `listener` with a worktree's path when its workspace changes. Returns the unsubscribe. */
   onWorkspaceChanged(listener: (worktree: string) => void): () => void;
+  // The agent change notice (#4).
+  /** Calls `listener` with each change an agent session made. Returns the unsubscribe. */
+  onAgentChange(listener: (change: AgentChange) => void): () => void;
+  /**
+   * Restores the worktree's workspace from before the last change an agent session made to it,
+   * keeping a panel for each session placed since. Fails when there is nothing to undo.
+   */
+  undoWorkspace(worktree: string): Promise<void>;
+  /**
+   * Writes the worktree's shown agent panels, its tabs and its terminal into its repo's profile.
+   * The selected tab and hidden panels are left out. Fails when the repo uses no profile.
+   */
+  saveWorkspaceToProfile(worktree: string): Promise<void>;
 
   // Worktree management (#52).
   /** Adds a worktree to the repo whose main worktree is at `repo`, with `git worktree add`. */
@@ -651,6 +672,13 @@ export const tauriBridge: Bridge = {
     const unlisten = listen<string>("workspace-changed", (event) => listener(event.payload));
     return () => void unlisten.then((stop) => stop());
   },
+  // The agent change notice (#4).
+  onAgentChange(listener) {
+    const unlisten = listen<AgentChange>("agent-change", (event) => listener(event.payload));
+    return () => void unlisten.then((stop) => stop());
+  },
+  undoWorkspace: (worktree) => invoke("undo_workspace", { worktree }),
+  saveWorkspaceToProfile: (worktree) => invoke("save_workspace_to_profile", { worktree }),
 
   // Worktree management (#52).
   createWorktree: (repo, worktree) => invoke("create_worktree", { repo, worktree }),

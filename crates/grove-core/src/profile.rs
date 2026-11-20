@@ -689,6 +689,42 @@ impl Core {
         Ok(name)
     }
 
+    /// Writes the workspace of `worktree` into the layout of the profile its repo uses: the
+    /// agents of its shown agent panels, its tabs and whether the terminal is open. Hidden panels
+    /// and the selected tab are left out, as a layout has no place for them. A profile other
+    /// repos use changes for them too. Sends one `ProfilesChanged` with no `by`. NoRepoProfile
+    /// when the repo uses none.
+    pub async fn save_workspace_to_profile(&self, worktree: &Path) -> Result<()> {
+        let workspace = self.workspace(worktree)?;
+        let repo = repo_of(&self.tracked(), worktree)
+            .ok_or_else(|| CoreError::UnknownWorktree(worktree.to_path_buf()))?;
+        let name = self
+            .repo_settings(&repo)?
+            .profile
+            .ok_or(CoreError::NoRepoProfile(repo))?;
+        let layout = Layout {
+            chat: Some(
+                workspace
+                    .chat
+                    .iter()
+                    .filter(|panel| panel.shown)
+                    .map(|panel| panel.agent)
+                    .collect(),
+            ),
+            panels: Some(workspace.panels),
+            terminal: Some(workspace.terminal),
+        };
+        let changes = ProfileSettings {
+            layout,
+            ..ProfileSettings::default()
+        };
+        self.write_profiles(
+            move |profiles, agents| profiles.change(&name, changes, agents),
+            None,
+        )
+        .await
+    }
+
     // The name of the profile agent session `caller`'s repo uses.
     fn caller_profile(&self, caller: SessionId) -> std::result::Result<String, Refused> {
         let worktree = self.caller_worktree(caller)?;

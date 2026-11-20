@@ -201,6 +201,8 @@ pub enum CoreError {
     InvalidWorkspace { reason: &'static str },
     #[error("no agent change to the workspace of {} is left to undo", .0.display())]
     NothingToUndo(PathBuf),
+    #[error("the repo at {} uses no profile", .0.display())]
+    NoRepoProfile(PathBuf),
 }
 
 impl CoreError {
