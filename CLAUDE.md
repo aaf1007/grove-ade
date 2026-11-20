@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # grove
 
-Desktop app that kills context switching when running several AI coding agents (Claude Code, Codex) in parallel, one git worktree per task, in a workspace each user and their agents shape per project. The project and repo are both named grove.
+Desktop app that kills context switching when running several AI coding agents (Claude Code, Codex) in parallel, in any project folder, each session in its own git worktree by default (ADR 0017), in a workspace each user and their agents shape per project. The project and repo are both named grove.
 
 ## Read first
 - `GLOSSARY.md`: domain vocabulary. Use these terms exactly in code, docs, and chat.
