@@ -6,6 +6,7 @@ import { App } from "./App";
 import type { Agent, AgentState, StateSource, Workspace, Worktree } from "./bridge";
 import { DEFAULT_WORKSPACE, fakeBridge } from "./fakeBridge";
 import { menuItems } from "./testing";
+import detailsStyles from "./DetailsCard.css?raw";
 import appStyles from "./styles.css?raw";
 
 // The diff view and xterm.js need a real browser. These tests cover only which panels exist and
@@ -98,6 +99,8 @@ function FakeChatPanel({
       onBlur={onBlur}
     >
       <b>{agent}</b>
+      {/* The real panel's text column. */}
+      <div className="thread" />
       <input aria-label="Draft" value={draft} onChange={(event) => setDraft(event.target.value)} />
       <button onClick={() => onOpenDiff()}>Review diff</button>
       <button onClick={() => onOpenDiff("b.rs")}>Open b.rs in the diff</button>
@@ -117,7 +120,37 @@ function setSystemDark(dark: boolean) {
   act(() => schemeListeners.forEach((listener) => listener()));
 }
 
+// jsdom lays nothing out. Tests give an element a box here, by a selector it matches, and
+// `relayout` tells every ResizeObserver that sizes changed.
+let boxes: [string, { left: number; right: number; top: number; bottom: number }][] = [];
+const resizeObservers = new Set<() => void>();
+
+class FakeResizeObserver {
+  callback: () => void;
+  constructor(callback: () => void) {
+    this.callback = callback;
+  }
+  // As a browser does, it reports once soon after it starts to watch.
+  observe() {
+    resizeObservers.add(this.callback);
+    queueMicrotask(() => resizeObservers.has(this.callback) && this.callback());
+  }
+  disconnect() {
+    resizeObservers.delete(this.callback);
+  }
+}
+
+function relayout(next: typeof boxes) {
+  boxes = next;
+  act(() => resizeObservers.forEach((callback) => callback()));
+}
+
 beforeEach(() => {
+  vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    const box = boxes.find(([selector]) => this.matches(selector))?.[1] ?? { left: 0, right: 0, top: 0, bottom: 0 };
+    return { ...box, x: box.left, y: box.top, width: box.right - box.left, height: box.bottom - box.top } as DOMRect;
+  });
   vi.stubGlobal("matchMedia", (media: string) => ({
     get matches() {
       return media === "(prefers-color-scheme: dark)" && systemDark;
@@ -130,6 +163,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  boxes = [];
+  resizeObservers.clear();
   localStorage.clear();
   systemDark = true;
   schemeListeners.clear();
@@ -1915,6 +1950,104 @@ test("the Details card opens in the chat lane, under the title bar, with the pan
     expect(screen.queryByRole("region", { name: "Panel area" })?.contains(card) ?? false).toBe(false);
     await clickButton("Details");
   }
+});
+
+test("opening the Details card leaves the chat's width as it was", async () => {
+  const style = document.createElement("style");
+  style.textContent = appStyles + detailsStyles;
+  document.head.append(style);
+  onTestFinished(() => style.remove());
+  render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 0" });
+  await clickButton("Panel area");
+  const chat = document.querySelector<HTMLElement>(".chat-panels")!;
+  const before = getComputedStyle(chat).marginRight;
+
+  await clickButton("Details");
+
+  expect(getComputedStyle(chat).marginRight).toBe(before);
+});
+
+// The card at the lane's top right, and a text column that reaches under it or stops short of it.
+const CARD = { left: 900, right: 1220, top: 60, bottom: 300 };
+const UNDER_CARD = { left: 300, right: 1080, top: 100, bottom: 860 };
+const BESIDE_CARD = { left: 100, right: 880, top: 100, bottom: 860 };
+
+async function cardWithText(textColumn: typeof CARD) {
+  render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 0" });
+  boxes = [
+    [".details-card", CARD],
+    [".thread", textColumn],
+  ];
+}
+
+const detailsShown = () => screen.queryByRole("region", { name: "Details" }) !== null;
+
+test("the Details card hides while it would cover the chat's text, and shows again when room returns", async () => {
+  await cardWithText(BESIDE_CARD);
+  await clickButton("Details");
+  expect(detailsShown()).toBe(true);
+
+  relayout([
+    [".details-card", CARD],
+    [".thread", UNDER_CARD],
+  ]);
+  expect(detailsShown()).toBe(false);
+  expect(pressed("Details")).toBe("true");
+
+  // A click in the chat leaves a card hidden for lack of room on.
+  await act(async () => fireEvent.pointerDown(screen.getByRole("main")));
+  expect(pressed("Details")).toBe("true");
+
+  relayout([
+    [".details-card", CARD],
+    [".thread", BESIDE_CARD],
+  ]);
+  expect(detailsShown()).toBe(true);
+  expect(pressed("Details")).toBe("true");
+});
+
+test("a click on Details while the card is hidden for lack of room shows it over the text, and Escape turns it off", async () => {
+  await cardWithText(BESIDE_CARD);
+  await clickButton("Details");
+  relayout([
+    [".details-card", CARD],
+    [".thread", UNDER_CARD],
+  ]);
+  expect(detailsShown()).toBe(false);
+
+  await clickButton("Details");
+  expect(detailsShown()).toBe(true);
+  expect(pressed("Details")).toBe("true");
+
+  await act(async () => fireEvent.keyDown(document.body, { key: "Escape" }));
+  expect(detailsShown()).toBe(false);
+  expect(pressed("Details")).toBe("false");
+});
+
+test("turning Details on with no room beside the text shows the card over it, until room comes and goes", async () => {
+  await cardWithText(UNDER_CARD);
+
+  await clickButton("Details");
+  relayout(boxes);
+  expect(detailsShown()).toBe(true);
+
+  // Once it has room, it is an ordinary card again, so losing the room hides it.
+  relayout([
+    [".details-card", CARD],
+    [".thread", BESIDE_CARD],
+  ]);
+  relayout([
+    [".details-card", CARD],
+    [".thread", UNDER_CARD],
+  ]);
+  expect(detailsShown()).toBe(false);
+  expect(pressed("Details")).toBe("true");
 });
 
 test("the title bar names the selected worktree's repo, with its badge, then the worktree", async () => {

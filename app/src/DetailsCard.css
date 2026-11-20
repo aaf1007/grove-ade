@@ -10,12 +10,6 @@
   --details-card-width: 320px;
 }
 
-/* While the card is open and the panel area is closed, the agent panels make room for it, so it
-   covers none of them. */
-.regions.no-panels .chat-area:has(> .details-holder) > :is(.chat-panels, .empty-chat) {
-  margin-right: calc(var(--details-card-width) + 2 * var(--space-12));
-}
-
 .details-card {
   position: absolute;
   top: var(--space-8);
@@ -26,6 +20,21 @@
   border-radius: var(--radius-2xl);
   background: var(--panel);
   box-shadow: var(--shadow-menu);
+  transition:
+    opacity 120ms ease-out,
+    visibility 120ms;
+}
+
+/* Hidden for lack of room, it keeps its box so the app can tell when room returns. */
+.details-card[inert] {
+  visibility: hidden;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .details-card {
+    transition: none;
+  }
 }
 
 /* The chat area clips what overflows it, so the rows scroll inside the window's height. */
