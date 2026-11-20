@@ -24,6 +24,7 @@ const noAgents = {
   onFocusAgent() {},
   waiting: 0,
   onJump() {},
+  onHideSidebar() {},
   onOpenProfiles() {},
   accounts: {},
   appearance: { theme: "system" as const, palette: "default" as const },

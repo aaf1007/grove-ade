@@ -418,21 +418,56 @@ function drag(name: string, from: number, to: number) {
   fireEvent.pointerUp(window, { clientX: to });
 }
 
-test("the title bar collapses the sidebar and shows it again", async () => {
+test("the sidebar switch hides the sidebar from the sidebar's top row and shows it again from the title bar", async () => {
   render(<App bridge={await trackedBridge()} />);
-  const toggle = screen.getByRole("button", { name: "Sidebar" });
-  expect(screen.getByRole("complementary", { name: "Worktrees" })).toBeTruthy();
+  const sidebar = screen.getByRole("complementary", { name: "Worktrees" });
+  const inSidebar = within(sidebar).getByRole("button", { name: "Sidebar" });
+  expect(inSidebar.getAttribute("aria-pressed")).toBe("true");
+  // One switch at a time: the title bar has none while the sidebar is open.
+  expect(within(screen.getByRole("banner")).queryByRole("button", { name: "Sidebar" })).toBeNull();
 
-  fireEvent.click(toggle);
+  fireEvent.click(inSidebar);
 
-  expect(toggle.getAttribute("aria-pressed")).toBe("false");
   expect(screen.queryByRole("complementary", { name: "Worktrees" })).toBeNull();
   expect(screen.queryByRole("separator", { name: "Resize sidebar" })).toBeNull();
+  const inTitleBar = within(screen.getByRole("banner")).getByRole("button", { name: "Sidebar" });
+  expect(inTitleBar.getAttribute("aria-pressed")).toBe("false");
 
-  fireEvent.click(toggle);
+  fireEvent.click(inTitleBar);
 
-  expect(toggle.getAttribute("aria-pressed")).toBe("true");
   expect(await screen.findByRole("button", { name: "feat-36" })).toBeTruthy();
+  expect(within(screen.getByRole("banner")).queryByRole("button", { name: "Sidebar" })).toBeNull();
+});
+
+// Tauri drags the window from a `deep` drag region, except from what can be clicked in it.
+test("the sidebar's top row and the title bar drag the window, and their buttons do not", async () => {
+  const { container } = render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+  const rows = [...container.querySelectorAll("[data-tauri-drag-region]")];
+
+  expect(rows).toHaveLength(2);
+  expect(rows).toContain(container.querySelector(".sidebar-top"));
+  expect(rows).toContain(screen.getByRole("banner"));
+  for (const row of rows) {
+    expect(row.getAttribute("data-tauri-drag-region")).toBe("deep");
+    expect(within(row as HTMLElement).getAllByRole("button").length).toBeGreaterThan(0);
+    expect(row.querySelectorAll("button[data-tauri-drag-region]")).toHaveLength(0);
+  }
+});
+
+test("in full screen the top rows keep no room for the window controls", async () => {
+  const bridge = await trackedBridge();
+  const { container } = render(<App bridge={bridge} />);
+  const app = container.querySelector(".app")!;
+  expect(app.classList.contains("fullscreen")).toBe(false);
+
+  act(() => bridge.setFullscreen(true));
+
+  expect(app.classList.contains("fullscreen")).toBe(true);
+
+  act(() => bridge.setFullscreen(false));
+
+  expect(app.classList.contains("fullscreen")).toBe(false);
 });
 
 test("Cmd-K with the sidebar collapsed shows the sidebar and puts focus in Search", async () => {

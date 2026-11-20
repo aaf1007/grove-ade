@@ -5,7 +5,9 @@ import { IconButton } from "./ui/IconButton";
 
 /**
  * The bar over the chat area and the panel area: the selected worktree's repo and name, and the
- * switches that open the details card, the terminal and the panel area.
+ * switches that open the details card, the terminal and the panel area. It is the window's top
+ * row, so its empty part drags the window. While the sidebar is collapsed it starts after the
+ * window controls and holds the sidebar switch, which the sidebar's own top row holds otherwise.
  */
 export function TitleBar({
   repo,
@@ -13,7 +15,7 @@ export function TitleBar({
   sidebarOpen,
   panelsOpen,
   terminalOpen,
-  onToggleSidebar,
+  onShowSidebar,
   onTogglePanels,
   onToggleTerminal,
   detailsOpen,
@@ -27,7 +29,7 @@ export function TitleBar({
   panelsOpen: boolean;
   /** Whether the selected worktree's terminal is open. null until a worktree's workspace is known. */
   terminalOpen: boolean | null;
-  onToggleSidebar(): void;
+  onShowSidebar(): void;
   onTogglePanels(): void;
   onToggleTerminal(): void;
   /** Whether the details card is open. null while no worktree is selected. */
@@ -35,8 +37,8 @@ export function TitleBar({
   onToggleDetails(): void;
 }) {
   return (
-    <header className="titlebar">
-      <IconButton icon={PanelLeft} label="Sidebar" aria-pressed={sidebarOpen} onClick={onToggleSidebar} />
+    <header className="titlebar" data-tauri-drag-region="deep">
+      {!sidebarOpen && <IconButton icon={PanelLeft} label="Sidebar" aria-pressed="false" onClick={onShowSidebar} />}
       {repo && worktree ? (
         <div className="crumbs" title={`${repo} / ${worktree}`}>
           <span className="crumb-repo">

@@ -33,6 +33,18 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 
+// Stands in for the window: `fullscreen` is what it reports, `resized` fires its resize listener.
+const tauriWindow = vi.hoisted(() => ({ fullscreen: false, resized: undefined as (() => void) | undefined }));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    isFullscreen: async () => tauriWindow.fullscreen,
+    onResized: async (handler: () => void) => {
+      tauriWindow.resized = handler;
+      return () => (tauriWindow.resized = undefined);
+    },
+  }),
+}));
+
 test("a frame from the core is its seq in 8 big-endian bytes, then its output", () => {
   const body = new Uint8Array([0, 0, 0, 0, 0, 0, 1, 2, 0x68, 0x69, 0xe6]).buffer;
 
@@ -89,4 +101,17 @@ test("pickFolder opens the system picker for one folder, and gives its path or n
     { directory: true, multiple: false, title: "Add repo" },
     { directory: true, multiple: false, title: "Add repo" },
   ]);
+});
+
+test("a full screen listener hears the window's state at once, then after each resize", async () => {
+  const got: boolean[] = [];
+
+  const stop = tauriBridge.onFullscreenChanged((fullscreen) => got.push(fullscreen));
+
+  await vi.waitFor(() => expect(got).toEqual([false]));
+  tauriWindow.fullscreen = true;
+  tauriWindow.resized?.();
+  await vi.waitFor(() => expect(got).toEqual([false, true]));
+  stop();
+  await vi.waitFor(() => expect(tauriWindow.resized).toBeUndefined());
 });

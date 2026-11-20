@@ -130,6 +130,10 @@ export function App({ bridge }: { bridge: Bridge }) {
     request: 0,
   });
 
+  // macOS hides the window controls in full screen, so the top rows stop keeping room for them.
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => bridge.onFullscreenChanged(setFullscreen), [bridge]);
+
   useEffect(
     () =>
       bridge.onAgentState((change) => {
@@ -564,7 +568,7 @@ export function App({ bridge }: { bridge: Bridge }) {
 
   return (
     <>
-      <div className="app">
+      <div className={fullscreen ? "app fullscreen" : "app"}>
         <QuitGuard
           bridge={bridge}
           agentStates={agentStates}
@@ -579,7 +583,7 @@ export function App({ bridge }: { bridge: Bridge }) {
               sidebarOpen={layout.sidebarOpen}
               panelsOpen={layout.panelsOpen}
               terminalOpen={workspace?.terminal ?? null}
-              onToggleSidebar={toggleSidebar}
+              onShowSidebar={toggleSidebar}
               onTogglePanels={togglePanels}
               onToggleTerminal={() => selected && toggleTerminal(selected)}
               detailsOpen={selected ? detailsOpen : null}
@@ -617,6 +621,7 @@ export function App({ bridge }: { bridge: Bridge }) {
               onJump={jump}
               onOpenProfiles={() => selected && open(selected, "Profile")}
               onShowSidebar={() => layout.sidebarOpen || toggleSidebar()}
+              onHideSidebar={toggleSidebar}
               accounts={accounts}
               appearance={appearance}
               onAppearance={setAppearance}
