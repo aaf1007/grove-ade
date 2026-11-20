@@ -35,7 +35,7 @@ const noAgents = {
   onJump() {},
   onOpenProfiles() {},
   accounts: {},
-  appearance: { theme: "system" as const, palette: "default" as const },
+  appearance: { theme: "system" as const, palette: "default" as const, appIcon: "auto" as const },
   onAppearance() {},
 };
 
@@ -527,7 +527,7 @@ test("an account with an API key and no plan names the key's source", () => {
   expect(within(footer).getByRole("listitem").textContent).toBe("Ann's org · API key from ANTHROPIC_API_KEY");
 });
 
-test("Settings in the footer opens the appearance menu, which changes palette and theme", () => {
+test("Settings in the footer opens the appearance menu, which changes palette, theme and app icon", () => {
   const appearances: unknown[] = [];
   render(
     <Sidebar
@@ -543,10 +543,12 @@ test("Settings in the footer opens the appearance menu, which changes palette an
   fireEvent.click(within(footer).getByRole("button", { name: "Settings" }));
   fireEvent.click(within(footer).getByRole("button", { name: "Modern" }));
   fireEvent.click(within(footer).getByRole("button", { name: "Light" }));
+  fireEvent.click(within(footer).getByRole("button", { name: "Blue" }));
 
   expect(appearances).toEqual([
-    { theme: "system", palette: "modern" },
-    { theme: "light", palette: "default" },
+    { theme: "system", palette: "modern", appIcon: "auto" },
+    { theme: "light", palette: "default", appIcon: "auto" },
+    { theme: "system", palette: "default", appIcon: "blue" },
   ]);
 });
 

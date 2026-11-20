@@ -626,6 +626,7 @@ test("a saved appearance with an unknown palette id keeps its theme and falls ba
   expect(JSON.parse(localStorage.getItem("grove.appearance") ?? "null")).toEqual({
     palette: "default",
     theme: "light",
+    appIcon: "auto",
   });
 });
 
@@ -1958,4 +1959,98 @@ test("the chat area says no repo is added only once the core's worktree list say
   await act(async () => answer([]));
 
   expect(await within(chatArea).findByText("No repo added yet")).toBeTruthy();
+});
+
+// The app icon (#55): the Dock shows the chosen style in the version that matches the theme.
+
+test("by default the Dock shows the Mono icon that matches the theme, and the menu says Auto", async () => {
+  systemDark = false;
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+  expect(bridge.dockIcons).toEqual(["mono-light"]);
+  expect(pressed("Auto")).toBe("true");
+});
+
+test.each([
+  ["auto", "light", "mono-light"],
+  ["auto", "dark", "mono-dark"],
+  ["mono", "light", "mono-light"],
+  ["mono", "dark", "mono-dark"],
+  ["blue", "light", "blue-light"],
+  ["blue", "dark", "blue-dark"],
+])("the %s style with the %s theme asks for the %s icon", async (appIcon, theme, icon) => {
+  localStorage.setItem("grove.appearance", JSON.stringify({ theme, palette: "default", appIcon }));
+  const bridge = await trackedBridge();
+
+  render(<App bridge={bridge} />);
+
+  expect(bridge.dockIcons).toEqual([icon]);
+});
+
+test("picking a style switches the Dock icon at once, and the choice survives a reload", async () => {
+  systemDark = true;
+  const bridge = await trackedBridge();
+  const { unmount } = render(<App bridge={bridge} />);
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Blue" }));
+
+  expect(bridge.dockIcons).toEqual(["mono-dark", "blue-dark"]);
+  unmount();
+  render(<App bridge={bridge} />);
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  expect(bridge.dockIcons).toEqual(["mono-dark", "blue-dark", "blue-dark"]);
+  expect(pressed("Blue")).toBe("true");
+});
+
+test("a theme change asks for the new icon once", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Light" }));
+  fireEvent.click(screen.getByRole("button", { name: "Light" }));
+  fireEvent.click(screen.getByRole("button", { name: "Dark" }));
+
+  expect(bridge.dockIcons).toEqual(["mono-dark", "mono-light", "mono-dark"]);
+});
+
+test("with the System theme, a macOS appearance change asks for the new icon once", async () => {
+  systemDark = false;
+  localStorage.setItem("grove.appearance", JSON.stringify({ theme: "system", palette: "default", appIcon: "blue" }));
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+
+  setSystemDark(true);
+
+  expect(bridge.dockIcons).toEqual(["blue-light", "blue-dark"]);
+});
+
+test("an appearance saved before the app icon setting keeps its theme and palette and gets Auto", async () => {
+  localStorage.setItem("grove.appearance", JSON.stringify({ theme: "light", palette: "modern" }));
+  const bridge = await trackedBridge();
+
+  render(<App bridge={bridge} />);
+
+  expect(document.documentElement.dataset).toMatchObject({ palette: "modern", theme: "light" });
+  expect(bridge.dockIcons).toEqual(["mono-light"]);
+  expect(JSON.parse(localStorage.getItem("grove.appearance") ?? "null")).toEqual({
+    theme: "light",
+    palette: "modern",
+    appIcon: "auto",
+  });
+});
+
+test("a Dock icon that cannot be set is logged and the app keeps working", async () => {
+  const bridge = await trackedBridge();
+  vi.spyOn(bridge, "setDockIcon").mockRejectedValue("no main thread");
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+
+  render(<App bridge={bridge} />);
+
+  await waitFor(() => expect(console.warn).toHaveBeenCalledWith("could not set the Dock icon:", "no main thread"));
+  expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy();
 });

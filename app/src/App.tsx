@@ -55,7 +55,10 @@ import { Button } from "./ui/Button";
 export function App({ bridge }: { bridge: Bridge }) {
   const { layout, sidebar, panels, toggleSidebar, togglePanels, resizeSidebar, resizePanels } =
     useLayout();
-  const { appearance, setAppearance } = useAppearance();
+  const { appearance, setAppearance, dockIcon } = useAppearance();
+  useEffect(() => {
+    bridge.setDockIcon(dockIcon).catch((e) => console.warn("could not set the Dock icon:", e));
+  }, [bridge, dockIcon]);
   const [selected, setSelected] = useState<string | null>(null);
   // A file the chat asked the Diff panel to show, until the panel took it.
   const [diffReveal, setDiffReveal] = useState<{ worktree: string; path: string } | null>(null);
