@@ -228,16 +228,18 @@ impl Core {
     }
 
     /// Shows resumed agent session `session` in an agent panel of `worktree`: the one saved for
-    /// it, which `workspace` left out while it was ended, or else a new shown one after the
-    /// last. Sends one `WorkspaceChanged` with no `by` either way.
+    /// it, which `workspace` left out while it was ended, shown even if it was hidden, or else
+    /// a new shown one after the last. Sends one `WorkspaceChanged` with no `by` either way.
     pub(crate) fn show_agent_panel(&self, worktree: &Path, session: SessionId, agent: Agent) {
-        let saved = self.workspaces().get(worktree).is_some_and(|saved| {
-            let mut panels = saved.workspace.chat.iter();
-            panels.any(|panel| panel.session == Some(session))
+        let saved = self.workspaces().get_mut(worktree).is_some_and(|saved| {
+            let mut panels = saved.workspace.chat.iter_mut();
+            let panel = panels.find(|panel| panel.session == Some(session));
+            panel.map(|panel| panel.shown = true).is_some()
         });
         if !saved {
             return self.place_agent(worktree, session, agent, None, &[]);
         }
+        self.saves.request();
         // Having no receivers is fine.
         let _ = self.events.send(CoreEvent::WorkspaceChanged {
             worktree: worktree.to_path_buf(),

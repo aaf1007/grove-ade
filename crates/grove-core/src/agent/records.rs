@@ -115,17 +115,22 @@ impl Agents {
     }
 
     /// Removes the folders of `sessions` under the home folder, with the files each launch
-    /// wrote there. One that is gone already is fine. It blocks while it removes them.
+    /// wrote there. One that is gone already is fine. It tries every folder, and fails with
+    /// the first that could not be removed. It blocks while it removes them.
     pub(crate) fn remove_session_folders(&self, sessions: &[SessionId]) -> Result<()> {
+        let mut removed = Ok(());
         for &session in sessions {
             let folder = self.session_folder(session);
             match fs::remove_dir_all(&folder) {
                 Ok(()) => {}
                 Err(e) if e.kind() == ErrorKind::NotFound => {}
-                Err(e) => return Err(CoreError::io("remove the session folder", &folder)(e)),
+                Err(e) if removed.is_ok() => {
+                    removed = Err(CoreError::io("remove the session folder", &folder)(e));
+                }
+                Err(_) => {}
             }
         }
-        Ok(())
+        removed
     }
 }
 
@@ -189,7 +194,9 @@ impl Core {
     /// processes, then drops their records, their agent panels and their folders under the
     /// home folder. Sends `AgentSessionsChanged`, and `WorkspaceChanged` with no `by` for each
     /// worktree that lost a panel. When a process does not exit in time it fails with
-    /// `SessionsStillRunning` and drops nothing, so the call can be made again.
+    /// `SessionsStillRunning` and drops nothing, so the call can be made again. When the state
+    /// cannot be saved it fails after it dropped them all, as removing a worktree does, and
+    /// the next save writes the state without them.
     pub async fn delete_agent_session(&self, session: SessionId) -> Result<()> {
         // Subscribed before any is killed, so no exit is missed.
         let exits = self.events.subscribe();
@@ -222,14 +229,17 @@ impl Core {
                 .events
                 .send(CoreEvent::WorkspaceChanged { worktree, by: None });
         }
-        saved?;
+        // The records are gone, so nothing else would remove their folders later.
         let agents = self.agents.clone();
         let home = self.agents.session_folder(session);
-        self.runtime
+        let removed = self
+            .runtime
             .spawn_blocking(move || agents.remove_session_folders(&deleted))
             .await
             // This fails only if the task panics.
-            .map_err(|e| CoreError::io("remove the session folder", &home)(io::Error::other(e)))?
+            .map_err(|e| CoreError::io("remove the session folder", &home)(io::Error::other(e)));
+        saved?;
+        removed?
     }
 
     /// Starts ended agent session `session` again: a new process under the same session id,
@@ -251,9 +261,12 @@ impl Core {
             }
             // A second resume or a mode switch is refused from here on, so one process starts.
             tracked.switching = true;
+            // It was `Exited` or `Failed`. Set before its new process starts, so this never
+            // replaces a state that process reports, or the state of its exit.
+            tracked.set(session, AgentState::Idle, tracked.source(), &self.events);
             (tracked.agent, tracked.mode, tracked.worktree.clone())
         };
-        // Leaves the session ended however this fails.
+        // Leaves the session ended and `Exited` however this fails.
         let mut resume = Switch {
             agents: &self.agents,
             events: &self.events,
@@ -263,10 +276,6 @@ impl Core {
         self.resume_in(session, mode)?;
         resume.started = true;
         drop(resume);
-        if let Some(tracked) = lock(&self.agents.live).get_mut(&session) {
-            // It was `Exited` or `Failed`, which its new process has not ended on.
-            tracked.set(session, AgentState::Idle, tracked.source(), &self.events);
-        }
         self.show_agent_panel(&worktree, session, agent);
         Ok(())
     }
@@ -289,6 +298,28 @@ mod tests {
             Some("fix the bug".into())
         );
         assert_eq!(title_of(" \n\t\n"), None);
+    }
+
+    #[test]
+    fn a_session_folder_that_cannot_be_removed_does_not_keep_the_others() {
+        let home = tempfile::tempdir().unwrap();
+        let (core, _events) = Core::start(CoreConfig::new(home.path().to_path_buf())).unwrap();
+        let (stuck, removable) = (SessionId(1), SessionId(2));
+        for session in [stuck, removable] {
+            let folder = core.agents.session_folder(session);
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join("mcp.json"), "{}").unwrap();
+        }
+        // A folder that gives up no file cannot be emptied.
+        let stuck_folder = core.agents.session_folder(stuck);
+        fs::set_permissions(&stuck_folder, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let removed = core.agents.remove_session_folders(&[stuck, removable]);
+
+        fs::set_permissions(&stuck_folder, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(removed, Err(CoreError::Io { .. })), "{removed:?}");
+        assert!(stuck_folder.exists());
+        assert!(!core.agents.session_folder(removable).exists());
     }
 
     #[test]

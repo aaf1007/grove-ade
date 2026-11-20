@@ -1392,13 +1392,36 @@ fn deleting_an_ended_session_drops_its_record_and_folder() {
     s.end(ended);
     s.restart();
     assert_eq!(listed(&s), [ended]);
+    // It has no process, so no exit says the list changed. Only the delete does.
+    s.drain_events();
 
     block_on(s.core().delete_agent_session(ended)).unwrap();
 
     assert_eq!(listed(&s), []);
     assert!(!folder.exists());
+    s.wait_list_changed();
     s.restart();
     assert_eq!(listed(&s), []);
+}
+
+#[test]
+fn deleting_a_session_when_the_state_cannot_be_saved_still_drops_its_record_and_folder() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let ended = s.spawn(Agent::Claude, Mode::Chat);
+    let folder = s.cfg.home.join("sessions").join(ended.to_string());
+    s.end(ended);
+    // The state file's temp file cannot be made in a home folder that takes no new files.
+    let home = s.cfg.home.clone();
+    let writable = fs::metadata(&home).unwrap().permissions();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let deleted = block_on(s.core().delete_agent_session(ended));
+
+    fs::set_permissions(&home, writable).unwrap();
+    assert!(matches!(deleted, Err(CoreError::Io { .. })), "{deleted:?}");
+    assert_eq!(listed(&s), []);
+    assert!(!folder.exists());
 }
 
 #[test]
@@ -1473,6 +1496,80 @@ fn resuming_a_session_whose_panel_the_workspace_dropped_gives_it_one_panel() {
 }
 
 #[test]
+fn resuming_a_session_whose_panel_is_hidden_shows_that_panel() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let claude = s.spawn(Agent::Claude, Mode::Chat);
+    let mut hidden = s.core().workspace(&s.worktree).unwrap();
+    let last = hidden.chat.last_mut().unwrap();
+    assert_eq!(*last, panel(Agent::Claude, Some(claude), true));
+    last.shown = false;
+    block_on(s.core().set_workspace(&s.worktree, hidden.clone(), None)).unwrap();
+    s.end(claude);
+
+    s.core().resume_agent_session(claude).unwrap();
+
+    let mut shown = hidden;
+    shown.chat.last_mut().unwrap().shown = true;
+    assert_eq!(s.core().workspace(&s.worktree).unwrap(), shown);
+    // The shown panel is saved.
+    wait_for("the panel saved as shown", || {
+        let state: Value =
+            serde_json::from_slice(&fs::read(s.cfg.home.join("state.json")).ok()?).ok()?;
+        let saved = state.to_string();
+        (!saved.contains(r#""shown":false"#)).then_some(())
+    });
+}
+
+#[test]
+fn a_resume_that_cannot_start_leaves_the_session_ended_and_saved_as_ended() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let claude = s.spawn(Agent::Claude, Mode::Chat);
+    s.end(claude);
+    s.cfg.claude_sidecar_command = s.dir.path().join("no-such-sidecar");
+    s.restart();
+
+    let resumed = s.core().resume_agent_session(claude);
+
+    assert!(resumed.is_err(), "{resumed:?}");
+    let record = s.record(claude).unwrap();
+    assert!(record.ended);
+    assert_eq!(record.state, Some(AgentState::Exited));
+    assert_eq!(s.sessions(), []);
+    let id = claude.to_string().parse::<u64>().unwrap();
+    wait_for("the session saved as ended", || {
+        (saved_sessions(&s.cfg.home) == [(id, true)]).then_some(())
+    });
+    // It is not left resuming, so a later resume is tried and not refused.
+    let again = s.core().resume_agent_session(claude);
+    assert!(
+        matches!(again, Err(ref e) if !matches!(e, CoreError::SwitchingMode(_))),
+        "{again:?}"
+    );
+}
+
+#[test]
+fn a_resumed_session_whose_process_exits_at_once_ends_again_with_the_state_of_that_exit() {
+    let _serial = serial();
+    let mut s = setup(Scenarios {
+        claude_chat: json!([{"exit": 3}]),
+        ..Scenarios::default()
+    });
+    let claude = s.spawn(Agent::Claude, Mode::Chat);
+    s.wait_state(claude, AgentState::Failed);
+
+    s.core().resume_agent_session(claude).unwrap();
+
+    // `Idle` from the resume, then the exit.
+    s.wait_state(claude, AgentState::Idle);
+    s.wait_state(claude, AgentState::Failed);
+    let record = s.record(claude).unwrap();
+    assert!(record.ended);
+    assert_eq!(record.state, Some(AgentState::Failed));
+}
+
+#[test]
 fn resuming_a_session_grove_does_not_know_is_refused() {
     let _serial = serial();
     let s = setup(Scenarios::default());
@@ -1529,20 +1626,22 @@ fn a_version_8_state_file_loads_with_every_session_listed() {
     let codex = s.spawn(Agent::Codex, Mode::Terminal);
     let codex_id = s.resume_id(codex);
     let child = s.spawn_subagent(with_history);
+    let (history_id, child_id) = (s.resume_id(with_history), s.resume_id(child));
     drop(s.core.take());
-    // The state file as a version 8 grove wrote it: no title, created time or ended flag.
+    // The sessions as a version 8 grove wrote them, field by field, so this does not follow
+    // what version 9 writes: no title, created time or ended flag.
     let path = s.cfg.home.join("state.json");
     let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(state["version"], json!(9));
-    for session in state["repos"][0]["main_worktree"]["sessions"]
-        .as_array_mut()
-        .unwrap()
-    {
-        let saved = session.as_object_mut().unwrap();
-        assert!(saved.remove("created_unix_ms").is_some());
-        saved.remove("title");
-        assert!(saved.remove("ended").is_none());
-    }
+    let id = |session: SessionId| session.to_string().parse::<u64>().unwrap();
+    state["repos"][0]["main_worktree"]["sessions"] = json!([
+        {"kind": "agent", "id": id(with_history), "agent": "claude", "mode": "chat",
+         "resume_id": history_id, "cols": 100, "rows": 30},
+        {"kind": "agent", "id": id(codex), "agent": "codex", "mode": "terminal",
+         "resume_id": codex_id, "cols": 100, "rows": 30},
+        {"kind": "agent", "id": id(child), "agent": "claude", "mode": "chat",
+         "resume_id": child_id, "cols": 80, "rows": 24, "parent": id(with_history)},
+    ]);
     state["version"] = json!(8);
     fs::write(&path, state.to_string()).unwrap();
     let loaded = SystemTime::now() - Duration::from_millis(1);

@@ -1123,6 +1123,8 @@ impl Drop for Switch<'_> {
                 tracked.source(),
                 self.events,
             );
+            // `begin` may have had it saved as running.
+            self.agents.saves.request();
             let _ = self.events.send(CoreEvent::AgentSessionsChanged);
         }
     }

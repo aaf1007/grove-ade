@@ -86,7 +86,7 @@ impl Core {
     // agent session records
     pub fn agent_sessions(&self) -> Vec<AgentSessionInfo>; // every agent session of every tracked worktree, ended ones too: worktree, agent, mode, parent, title, created time, ended, agent state and since when
     pub async fn delete_agent_session(&self, s: SessionId) -> Result<()>; // ends it and the subagent sessions below it, drops their records, agent panels and folders in ~/.grovecode/sessions/
-    pub fn resume_agent_session(&self, s: SessionId) -> Result<()>; // an ended session: a new process under the same session id that resumes its conversation, in the agent panel it had
+    pub fn resume_agent_session(&self, s: SessionId) -> Result<()>; // an ended session: a new process under the same session id that resumes its conversation, in the agent panel it had, or in a new one after the last when the workspace no longer has that panel
 
     // files
     pub async fn list_files(&self, wt: WorktreeId) -> Result<Vec<FileEntry>>; // respects .gitignore

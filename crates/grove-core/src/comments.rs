@@ -152,7 +152,7 @@ impl Core {
             let input = self.input(session)?;
             let ids = open.iter().map(|c| c.id).collect();
             let shown = AgentMessage::ReviewBatch { comments };
-            chat.send_as(session, &input, &text, shown, ids)
+            chat.send_as(session, &input, &text, shown, ids, || ())
         })
     }
 }
