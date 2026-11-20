@@ -109,7 +109,9 @@ function agentName(region: HTMLElement) {
 }
 
 function terminalToggle() {
-  return within(screen.getByRole("banner")).getByRole("button", { name: "Terminal" });
+  // It ends the panel area's tab row while the panel area is open, and the title bar otherwise.
+  const bar = screen.queryByRole("region", { name: "Panel area" }) ?? screen.getByRole("banner");
+  return within(bar).getByRole("button", { name: "Terminal" });
 }
 
 function tab(name: string) {
@@ -442,7 +444,7 @@ test("with the + menu closed, Down and Up are left alone", async () => {
   expect(down).toBe(true);
 });
 
-test("the terminal toggles from the title bar, and the + menu's T opens it", async () => {
+test("the terminal switch toggles it, and the + menu's T opens it", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");

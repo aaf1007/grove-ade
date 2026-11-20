@@ -1,11 +1,12 @@
-import { NotebookText, PanelBottom, PanelLeft, PanelRight } from "lucide-react";
+import { NotebookText, PanelLeft } from "lucide-react";
 
 import { DETAILS_CARD_ID } from "./DetailsCard";
+import { PanelSwitches } from "./PanelSwitches";
 import { IconButton } from "./ui/IconButton";
 
 /**
- * The bar over the chat area and the panel area: the selected worktree's repo and name, and the
- * switches that open the details card, the terminal and the panel area.
+ * The bar over the chat lane: the selected worktree's repo and name, and the switch that opens the
+ * details card. While the panel area is closed, the terminal and panel area switches follow it.
  */
 export function TitleBar({
   repo,
@@ -61,15 +62,14 @@ export function TitleBar({
           disabled={detailsOpen === null}
           onClick={onToggleDetails}
         />
-        <IconButton
-          icon={PanelBottom}
-          label="Terminal"
-          title="Terminal at the bottom"
-          aria-pressed={terminalOpen ?? false}
-          disabled={terminalOpen === null}
-          onClick={onToggleTerminal}
-        />
-        <IconButton icon={PanelRight} label="Panel area" aria-pressed={panelsOpen} onClick={onTogglePanels} />
+        {!panelsOpen && (
+          <PanelSwitches
+            terminalOpen={terminalOpen}
+            panelsOpen={panelsOpen}
+            onToggleTerminal={onToggleTerminal}
+            onTogglePanels={onTogglePanels}
+          />
+        )}
       </div>
     </header>
   );

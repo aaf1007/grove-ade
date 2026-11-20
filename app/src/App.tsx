@@ -571,7 +571,7 @@ export function App({ bridge }: { bridge: Bridge }) {
           deleting={deleting.map((worktree) => worktree.displayName)}
         />
         <div className={regions.join(" ")} style={widths}>
-          {/* The title bar spans the chat area and the panel area. The sidebar runs beside it. */}
+          {/* The title bar spans the chat lane. The sidebar and the panel area run beside it. */}
           <div className="window-top">
             <TitleBar
               repo={selectedRepo ? folderName(selectedRepo[0].path) : null}
@@ -740,14 +740,14 @@ export function App({ bridge }: { bridge: Bridge }) {
             />
           )}
           <section className="panel-area" aria-label="Panel area" hidden={!layout.panelsOpen}>
-            {selected && workspace && (
-              <PanelTabs
-                workspace={workspace}
-                onSelect={(tab) => changeWorkspace(selected, (w) => ({ ...w, selected: tab }))}
-                onClose={(tab) => changeWorkspace(selected, (w) => closeTab(w, tab))}
-                onOpen={(panel) => open(selected, panel)}
-              />
-            )}
+            <PanelTabs
+              workspace={workspace ?? null}
+              onSelect={(tab) => selected && changeWorkspace(selected, (w) => ({ ...w, selected: tab }))}
+              onClose={(tab) => selected && changeWorkspace(selected, (w) => closeTab(w, tab))}
+              onOpen={(panel) => selected && open(selected, panel)}
+              onToggleTerminal={() => selected && toggleTerminal(selected)}
+              onTogglePanels={togglePanels}
+            />
             <div
               className="panel-body"
               id={tabId("Files", "panel")}

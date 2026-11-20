@@ -446,7 +446,7 @@ test("Cmd-K with the sidebar collapsed shows the sidebar and puts focus in Searc
   expect(screen.getByRole("button", { name: "Sidebar" }).getAttribute("aria-pressed")).toBe("true");
 });
 
-test("the title bar sits in the window's top row, over the chat area and the panel area", async () => {
+test("the title bar sits over the chat lane, and the panel area runs the window's full height beside it", async () => {
   const style = document.createElement("style");
   style.textContent = appStyles;
   document.head.append(style);
@@ -457,24 +457,26 @@ test("the title bar sits in the window's top row, over the chat area and the pan
     return [found.gridRow, found.gridColumn];
   };
 
-  expect(box(".window-top")).toEqual(["1", "3 / -1"]);
+  expect(box(".window-top")).toEqual(["1", "3"]);
   expect(box(".chat-area")).toEqual(["2", "3"]);
   expect(box(".sidebar-region")).toEqual(["1 / -1", "1"]);
+  expect(box(".split-after")).toEqual(["1 / -1", "4"]);
+  expect(box(".panel-area")).toEqual(["1 / -1", "5"]);
 });
 
-test("the title bar collapses the panel area and shows it again", async () => {
+test("the Panel area switch collapses the panel area and shows it again", async () => {
   render(<App bridge={await trackedBridge()} />);
   await select("feat-36");
-  const toggle = screen.getByRole("button", { name: "Panel area" });
   expect(screen.getByRole("tab", { name: "Files", selected: true })).toBeTruthy();
 
-  fireEvent.click(toggle);
+  // The switch moves between the panel area's tab row and the title bar, so each click finds it again.
+  fireEvent.click(screen.getByRole("button", { name: "Panel area" }));
 
-  expect(toggle.getAttribute("aria-pressed")).toBe("false");
+  expect(pressed("Panel area")).toBe("false");
   expect(screen.queryByRole("region", { name: "Panel area" })).toBeNull();
   expect(screen.queryByRole("separator", { name: "Resize panel area" })).toBeNull();
 
-  fireEvent.click(toggle);
+  fireEvent.click(screen.getByRole("button", { name: "Panel area" }));
 
   expect(screen.getByRole("region", { name: "Panel area" })).toBeTruthy();
 });
@@ -1855,16 +1857,64 @@ test("each title bar switch opens and closes its region, and shows as pressed wh
   }
 });
 
-test("the title bar's switches are in order: details card, terminal, panel area", async () => {
+/** The accessible names of the buttons in `element`, in order. */
+function buttonNames(element: HTMLElement) {
+  return within(element)
+    .getAllByRole("button")
+    .map((button) => button.getAttribute("aria-label") ?? button.textContent);
+}
+
+test("with the panel area closed, the title bar ends with all three switches: details card, terminal, panel area", async () => {
   render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+  await clickButton("Panel area");
   const titleBar = screen.getByRole("banner");
 
-  const names = within(titleBar)
-    .getAllByRole("button")
-    .map((button) => button.getAttribute("aria-label"));
-
-  expect(names.slice(-3)).toEqual(["Details", "Terminal", "Panel area"]);
+  expect(buttonNames(titleBar).slice(-3)).toEqual(["Details", "Terminal", "Panel area"]);
   expect(within(titleBar).queryByRole("button", { name: /waiting|Settings|Appearance/ })).toBeNull();
+});
+
+test("with the panel area open, the title bar ends with Details, and the panel area's switches end its tab row", async () => {
+  render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+  const titleBar = screen.getByRole("banner");
+  const panelArea = screen.getByRole("region", { name: "Panel area" });
+
+  expect(buttonNames(titleBar).at(-1)).toBe("Details");
+  expect(within(titleBar).queryByRole("button", { name: "Terminal" })).toBeNull();
+  expect(within(titleBar).queryByRole("button", { name: "Panel area" })).toBeNull();
+  const tabRow = buttonNames(panelArea);
+  const menu = tabRow.indexOf("Open a panel");
+  expect(tabRow.slice(menu, menu + 3)).toEqual(["Open a panel", "Terminal", "Panel area"]);
+
+  // The panel area's own switch closes it, and the switches go back to the title bar.
+  await act(async () => fireEvent.click(within(panelArea).getByRole("button", { name: "Panel area" })));
+  expect(buttonNames(titleBar).slice(-3)).toEqual(["Details", "Terminal", "Panel area"]);
+});
+
+test("with the panel area open and no worktree selected, its own switch still closes it", async () => {
+  render(<App bridge={await trackedBridge()} />);
+  const panelArea = screen.getByRole("region", { name: "Panel area" });
+
+  expect(within(panelArea).getByRole("button", { name: "Terminal" }).hasAttribute("disabled")).toBe(true);
+  await act(async () => fireEvent.click(within(panelArea).getByRole("button", { name: "Panel area" })));
+
+  expect(screen.queryByRole("region", { name: "Panel area" })).toBeNull();
+  expect(pressed("Panel area")).toBe("false");
+});
+
+test("the Details card opens in the chat lane, under the title bar, with the panel area open or closed", async () => {
+  render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+
+  for (const panelsOpen of [true, false]) {
+    if (!panelsOpen) await clickButton("Panel area");
+    await clickButton("Details");
+    const card = screen.getByRole("region", { name: "Details" });
+    expect(screen.getByRole("main").contains(card)).toBe(true);
+    expect(screen.queryByRole("region", { name: "Panel area" })?.contains(card) ?? false).toBe(false);
+    await clickButton("Details");
+  }
 });
 
 test("the title bar names the selected worktree's repo, with its badge, then the worktree", async () => {
