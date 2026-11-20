@@ -142,6 +142,47 @@ test.each(
   expect(contrast(resolve(values, text), resolve(values, ground))).toBeGreaterThanOrEqual(4.5);
 });
 
+// The four surface steps: sidebar, chat area, raised (the panel area, dialogs and menus) and code.
+// Each must read as its own region, so sorted by lightness each step sits a set distance from the next.
+const surfaces = ["sidebar", "bg", "panel", "code-bg"];
+const minimumLightnessStep = 3;
+
+const modernDark = { ...defaultDark, ...declarations(tokens, ':root[data-palette="modern"]') };
+const everyTheme = {
+  "default dark": defaultThemes.dark,
+  "default light": defaultThemes.light,
+  "modern dark": modernDark,
+  "modern light": {
+    ...defaultThemes.light,
+    ...modernDark,
+    ...declarations(tokens, ':root[data-palette="modern"][data-theme="light"]'),
+  },
+};
+
+test.each(Object.entries(everyTheme))("the surface steps of %s are far enough apart", (_, values) => {
+  const steps = surfaces
+    .map((surface) => ({ surface, lightness: lightness(resolve(values, surface)) }))
+    .sort((first, second) => first.lightness - second.lightness);
+  const tooClose = steps
+    .slice(1)
+    .filter((step, index) => step.lightness - steps[index].lightness < minimumLightnessStep)
+    .map((step, index) => `${steps[index].surface} and ${step.surface}`);
+  expect(tooClose).toEqual([]);
+});
+
+test("the chat area is the darkest surface in the default dark theme", () => {
+  const chat = lightness(resolve(defaultDark, "bg"));
+  for (const surface of surfaces.filter((name) => name !== "bg")) {
+    expect(lightness(resolve(defaultDark, surface)), surface).toBeGreaterThan(chat);
+  }
+});
+
+// CIE L*, from 0 for black to 100 for white, in steps that look even to the eye.
+function lightness(hex: string): number {
+  const relative = luminance(hex);
+  return relative > 216 / 24389 ? 116 * Math.cbrt(relative) - 16 : (relative * 24389) / 27;
+}
+
 // A token's value with var() references followed, as a solid #rrggbb color.
 function resolve(values: Record<string, string>, token: string): string {
   const value = values[`--${token}`];
