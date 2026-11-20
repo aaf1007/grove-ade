@@ -1,4 +1,5 @@
 import { type CSSProperties, useEffect, useEffectEvent, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 import type {
   Account,
@@ -6,6 +7,7 @@ import type {
   AgentStateChanged,
   AttentionEntry,
   Bridge,
+  DockIcon,
   Mode,
   NotificationClicked,
   PanelKind,
@@ -55,7 +57,30 @@ import { Button } from "./ui/Button";
 export function App({ bridge }: { bridge: Bridge }) {
   const { layout, sidebar, panels, toggleSidebar, togglePanels, resizeSidebar, resizePanels } =
     useLayout();
-  const { appearance, setAppearance } = useAppearance();
+  const { appearance, setAppearance, dockIcon } = useAppearance();
+  // One request at a time, so a slow older one cannot land after a newer one. While a request is
+  // out, only the latest icon asked for waits, and it goes next.
+  const dockIconRequest = useRef<{ inFlight: boolean; waiting: DockIcon | null }>({
+    inFlight: false,
+    waiting: null,
+  });
+  useEffect(() => {
+    const request = dockIconRequest.current;
+    const apply = (icon: DockIcon) => {
+      request.inFlight = true;
+      bridge
+        .setDockIcon(icon)
+        .catch((e) => console.warn("could not set the Dock icon:", e))
+        .finally(() => {
+          request.inFlight = false;
+          const next = request.waiting;
+          request.waiting = null;
+          if (next) apply(next);
+        });
+    };
+    if (request.inFlight) request.waiting = dockIcon;
+    else apply(dockIcon);
+  }, [bridge, dockIcon]);
   const [selected, setSelected] = useState<string | null>(null);
   // A file the chat asked the Diff panel to show, until the panel took it.
   const [diffReveal, setDiffReveal] = useState<{ worktree: string; path: string } | null>(null);
@@ -63,6 +88,16 @@ export function App({ bridge }: { bridge: Bridge }) {
   // null until the sidebar has the core's first list.
   const [worktrees, setWorktrees] = useState<Worktree[] | null>(null);
   const sidebarRef = useRef<SidebarHandle>(null);
+  const titleBarSidebarSwitch = useRef<HTMLButtonElement>(null);
+  // A sidebar switch goes away when clicked, so focus moves to the one that takes its place.
+  function hideSidebarFromSwitch() {
+    flushSync(toggleSidebar);
+    titleBarSidebarSwitch.current?.focus();
+  }
+  function showSidebarFromSwitch() {
+    flushSync(toggleSidebar);
+    sidebarRef.current?.focusSidebarSwitch();
+  }
   const {
     workspaces,
     errors: workspaceErrors,
@@ -134,6 +169,10 @@ export function App({ bridge }: { bridge: Bridge }) {
     session: "",
     request: 0,
   });
+
+  // macOS hides the window controls in full screen, so the top rows stop keeping room for them.
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => bridge.onFullscreenChanged(setFullscreen), [bridge]);
 
   useEffect(
     () =>
@@ -582,7 +621,7 @@ export function App({ bridge }: { bridge: Bridge }) {
 
   return (
     <>
-      <div className="app">
+      <div className={fullscreen ? "app fullscreen" : "app"}>
         <QuitGuard
           bridge={bridge}
           agentStates={agentStates}
@@ -597,7 +636,8 @@ export function App({ bridge }: { bridge: Bridge }) {
               sidebarOpen={layout.sidebarOpen}
               panelsOpen={layout.panelsOpen}
               terminalOpen={workspace?.terminal ?? null}
-              onToggleSidebar={toggleSidebar}
+              onShowSidebar={showSidebarFromSwitch}
+              sidebarSwitch={titleBarSidebarSwitch}
               onTogglePanels={togglePanels}
               onToggleTerminal={() => selected && toggleTerminal(selected)}
               detailsOpen={selected ? detailsOpen : null}
@@ -635,6 +675,7 @@ export function App({ bridge }: { bridge: Bridge }) {
               onJump={jump}
               onOpenProfiles={() => selected && open(selected, "Profile")}
               onShowSidebar={() => layout.sidebarOpen || toggleSidebar()}
+              onHideSidebar={hideSidebarFromSwitch}
               accounts={accounts}
               appearance={appearance}
               onAppearance={setAppearance}

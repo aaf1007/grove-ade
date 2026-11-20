@@ -24,9 +24,10 @@ const noAgents = {
   onFocusAgent() {},
   waiting: 0,
   onJump() {},
+  onHideSidebar() {},
   onOpenProfiles() {},
   accounts: {},
-  appearance: { theme: "system" as const, palette: "default" as const },
+  appearance: { theme: "system" as const, palette: "default" as const, appIcon: "auto" as const },
   onAppearance() {},
 };
 

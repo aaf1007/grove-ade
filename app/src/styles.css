@@ -60,6 +60,11 @@ svg {
   height: 100vh;
 }
 
+/* macOS hides the window controls in full screen, so the top rows keep no room for them. */
+.app.fullscreen {
+  --window-controls: 0px;
+}
+
 /* The title bar and the core's warnings, over the chat lane. It outranks `.regions > *`, which
    puts every other region in row 2. */
 .regions > .window-top {
@@ -75,6 +80,11 @@ svg {
   height: var(--topbar);
   padding: 0 var(--space-12);
   font-size: var(--text-body-size);
+}
+
+/* With the sidebar collapsed, the title bar is the top row under the window controls. */
+.regions.no-sidebar .titlebar {
+  padding-left: calc(var(--space-12) + var(--window-controls));
 }
 
 /* The repo's badge and name, a slash, then the worktree's name, which is cut first. */
@@ -251,13 +261,22 @@ svg {
   background: var(--sidebar);
 }
 
+/* The window's top row: the window controls float over its left end, then the sidebar switch. */
+.sidebar-top {
+  display: flex;
+  flex: none;
+  align-items: center;
+  height: var(--topbar);
+  padding: 0 var(--space-10) 0 calc(var(--space-10) + var(--window-controls));
+}
+
 /* New worktree, Search, Needs you and Profiles, over the list. */
 /* One column as wide as the sidebar. An auto one would grow to the Search box's own width. */
 .sidebar-nav {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   flex: none;
-  padding: var(--space-8);
+  padding: var(--space-4) var(--space-8) var(--space-8);
 }
 
 .nav-row {

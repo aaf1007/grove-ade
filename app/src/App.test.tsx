@@ -453,21 +453,60 @@ function drag(name: string, from: number, to: number) {
   fireEvent.pointerUp(window, { clientX: to });
 }
 
-test("the title bar collapses the sidebar and shows it again", async () => {
+test("the sidebar switch hides the sidebar from the sidebar's top row and shows it again from the title bar", async () => {
   render(<App bridge={await trackedBridge()} />);
-  const toggle = screen.getByRole("button", { name: "Sidebar" });
-  expect(screen.getByRole("complementary", { name: "Worktrees" })).toBeTruthy();
+  const sidebar = screen.getByRole("complementary", { name: "Worktrees" });
+  const inSidebar = within(sidebar).getByRole("button", { name: "Sidebar" });
+  expect(inSidebar.getAttribute("aria-pressed")).toBe("true");
+  // One switch at a time: the title bar has none while the sidebar is open.
+  expect(within(screen.getByRole("banner")).queryByRole("button", { name: "Sidebar" })).toBeNull();
 
-  fireEvent.click(toggle);
+  fireEvent.click(inSidebar);
 
-  expect(toggle.getAttribute("aria-pressed")).toBe("false");
   expect(screen.queryByRole("complementary", { name: "Worktrees" })).toBeNull();
   expect(screen.queryByRole("separator", { name: "Resize sidebar" })).toBeNull();
+  const inTitleBar = within(screen.getByRole("banner")).getByRole("button", { name: "Sidebar" });
+  expect(inTitleBar.getAttribute("aria-pressed")).toBe("false");
+  // The switch clicked went away, so focus moves to the one that took its place.
+  expect(document.activeElement).toBe(inTitleBar);
 
-  fireEvent.click(toggle);
+  fireEvent.click(inTitleBar);
 
-  expect(toggle.getAttribute("aria-pressed")).toBe("true");
   expect(await screen.findByRole("button", { name: "feat-36" })).toBeTruthy();
+  expect(within(screen.getByRole("banner")).queryByRole("button", { name: "Sidebar" })).toBeNull();
+  const shown = screen.getByRole("complementary", { name: "Worktrees" });
+  expect(document.activeElement).toBe(within(shown).getByRole("button", { name: "Sidebar" }));
+});
+
+// Tauri drags the window from a `deep` drag region, except from what can be clicked in it.
+test("the sidebar's top row and the title bar drag the window, and their buttons do not", async () => {
+  const { container } = render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+  const rows = [...container.querySelectorAll("[data-tauri-drag-region]")];
+
+  expect(rows).toHaveLength(2);
+  expect(rows).toContain(container.querySelector(".sidebar-top"));
+  expect(rows).toContain(screen.getByRole("banner"));
+  for (const row of rows) {
+    expect(row.getAttribute("data-tauri-drag-region")).toBe("deep");
+    expect(within(row as HTMLElement).getAllByRole("button").length).toBeGreaterThan(0);
+    expect(row.querySelectorAll("button[data-tauri-drag-region]")).toHaveLength(0);
+  }
+});
+
+test("in full screen the top rows keep no room for the window controls", async () => {
+  const bridge = await trackedBridge();
+  const { container } = render(<App bridge={bridge} />);
+  const app = container.querySelector(".app")!;
+  expect(app.classList.contains("fullscreen")).toBe(false);
+
+  act(() => bridge.setFullscreen(true));
+
+  expect(app.classList.contains("fullscreen")).toBe(true);
+
+  act(() => bridge.setFullscreen(false));
+
+  expect(app.classList.contains("fullscreen")).toBe(false);
 });
 
 test("Cmd-K with the sidebar collapsed shows the sidebar and puts focus in Search", async () => {
@@ -663,6 +702,7 @@ test("a saved appearance with an unknown palette id keeps its theme and falls ba
   expect(JSON.parse(localStorage.getItem("grove.appearance") ?? "null")).toEqual({
     palette: "default",
     theme: "light",
+    appIcon: "auto",
   });
 });
 
@@ -2141,4 +2181,129 @@ test("the chat area says no repo is added only once the core's worktree list say
   await act(async () => answer([]));
 
   expect(await within(chatArea).findByText("No repo added yet")).toBeTruthy();
+});
+
+// The app icon (#55): the Dock shows the chosen style in the version that matches the theme.
+
+test("by default the Dock shows the Mono icon that matches the theme, and the menu says Auto", async () => {
+  systemDark = false;
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+  expect(bridge.dockIcons).toEqual(["mono-light"]);
+  expect(pressed("Auto")).toBe("true");
+});
+
+test.each([
+  ["auto", "light", "mono-light"],
+  ["auto", "dark", "mono-dark"],
+  ["mono", "light", "mono-light"],
+  ["mono", "dark", "mono-dark"],
+  ["blue", "light", "blue-light"],
+  ["blue", "dark", "blue-dark"],
+])("the %s style with the %s theme asks for the %s icon", async (appIcon, theme, icon) => {
+  localStorage.setItem("grove.appearance", JSON.stringify({ theme, palette: "default", appIcon }));
+  const bridge = await trackedBridge();
+
+  render(<App bridge={bridge} />);
+
+  expect(bridge.dockIcons).toEqual([icon]);
+});
+
+test("picking a style switches the Dock icon at once, and the choice survives a reload", async () => {
+  systemDark = true;
+  const bridge = await trackedBridge();
+  const { unmount } = render(<App bridge={bridge} />);
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Blue" }));
+
+  await waitFor(() => expect(bridge.dockIcons).toEqual(["mono-dark", "blue-dark"]));
+  unmount();
+  render(<App bridge={bridge} />);
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  await waitFor(() => expect(bridge.dockIcons).toEqual(["mono-dark", "blue-dark", "blue-dark"]));
+  expect(pressed("Blue")).toBe("true");
+});
+
+test("theme changes made while a request is out ask only for the last icon", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Light" }));
+  fireEvent.click(screen.getByRole("button", { name: "Light" }));
+  fireEvent.click(screen.getByRole("button", { name: "Dark" }));
+
+  // The Light click waits behind the first request and is replaced by the Dark click.
+  await waitFor(() => expect(bridge.dockIcons).toEqual(["mono-dark", "mono-dark"]));
+});
+
+test("with the System theme, a macOS appearance change asks for the new icon once", async () => {
+  systemDark = false;
+  localStorage.setItem("grove.appearance", JSON.stringify({ theme: "system", palette: "default", appIcon: "blue" }));
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+
+  setSystemDark(true);
+
+  await waitFor(() => expect(bridge.dockIcons).toEqual(["blue-light", "blue-dark"]));
+});
+
+test("an appearance saved before the app icon setting keeps its theme and palette and gets Auto", async () => {
+  localStorage.setItem("grove.appearance", JSON.stringify({ theme: "light", palette: "modern" }));
+  const bridge = await trackedBridge();
+
+  render(<App bridge={bridge} />);
+
+  expect(document.documentElement.dataset).toMatchObject({ palette: "modern", theme: "light" });
+  expect(bridge.dockIcons).toEqual(["mono-light"]);
+  expect(JSON.parse(localStorage.getItem("grove.appearance") ?? "null")).toEqual({
+    theme: "light",
+    palette: "modern",
+    appIcon: "auto",
+  });
+});
+
+test("a Dock icon that cannot be set is logged and the app keeps working", async () => {
+  const bridge = await trackedBridge();
+  vi.spyOn(bridge, "setDockIcon").mockRejectedValue("no main thread");
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+
+  render(<App bridge={bridge} />);
+
+  await waitFor(() => expect(console.warn).toHaveBeenCalledWith("could not set the Dock icon:", "no main thread"));
+  expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy();
+});
+
+test("quick icon changes leave the last requested Dock icon applied, even when an older request is slow", async () => {
+  systemDark = true;
+  const bridge = await trackedBridge();
+  const finishers: (() => void)[] = [];
+  const applied: string[] = [];
+  vi.spyOn(bridge, "setDockIcon").mockImplementation((icon) => {
+    return new Promise<void>((resolve) => {
+      finishers.push(() => {
+        applied.push(icon);
+        resolve();
+      });
+    });
+  });
+  render(<App bridge={bridge} />);
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Blue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Mono" }));
+  fireEvent.click(screen.getByRole("button", { name: "Blue" }));
+
+  // Only the first request is out while it is slow.
+  expect(finishers).toHaveLength(1);
+  while (finishers.length > 0) {
+    finishers.shift()?.();
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+  await waitFor(() => expect(applied.at(-1)).toBe("blue-dark"));
 });

@@ -8,6 +8,7 @@ import type {
   Bridge,
   DeleteCheck,
   DiffBase,
+  DockIcon,
   Editor,
   FileDiff,
   FileVersions,
@@ -98,6 +99,8 @@ export interface FakeBridge extends Bridge {
   revealed: string[];
   /** Every link `openLinkInDefaultBrowser` opened, in order. */
   openedLinks: string[];
+  /** Every icon `setDockIcon` showed, in order. */
+  dockIcons: DockIcon[];
   /** Makes the next `pickFolder` give `path`, or null as a cancel does. Until called, it cancels. */
   willPickFolder(path: string | null): void;
   /** How many times `pickFolder` was opened. */
@@ -192,6 +195,8 @@ export interface FakeBridge extends Bridge {
   clickNotification(clicked: NotificationClicked): void;
   /** How many times `quit` was called. */
   quitCount(): number;
+  /** Puts the window in or out of full screen. It starts out of it. */
+  setFullscreen(fullscreen: boolean): void;
   /** Ends the worktree's setup script with exit `code`. null means a signal ended it. */
   finishSetup(worktree: string, code: number | null): void;
   // Terminal mode (#127).
@@ -310,6 +315,7 @@ export function fakeBridge(
   const opened: FakeBridge["opened"] = [];
   const revealed: string[] = [];
   const openedLinks: string[] = [];
+  const dockIcons: DockIcon[] = [];
   let nextFolder: string | null = null;
   let foldersPicked = 0;
   const spawned: FakeBridge["spawned"] = [];
@@ -358,6 +364,8 @@ export function fakeBridge(
   const deleted: FakeBridge["deleted"] = [];
   const repoProfiles = new Map<string, string | null>();
   const quitListeners = new Set<() => void>();
+  const fullscreenListeners = new Set<(fullscreen: boolean) => void>();
+  let fullscreen = false;
   const notificationListeners = new Set<(clicked: NotificationClicked) => void>();
   let quits = 0;
   const setupListeners = new Set<(change: SetupChanged) => void>();
@@ -851,6 +859,10 @@ export function fakeBridge(
     opened,
     revealed,
     openedLinks,
+    dockIcons,
+    async setDockIcon(icon) {
+      dockIcons.push(icon);
+    },
     spawned,
     spawnedAgents,
     sent,
@@ -1148,6 +1160,15 @@ export function fakeBridge(
     },
     deleted,
     requestQuit: () => quitListeners.forEach((listener) => listener()),
+    onFullscreenChanged(listener) {
+      fullscreenListeners.add(listener);
+      listener(fullscreen);
+      return () => fullscreenListeners.delete(listener);
+    },
+    setFullscreen(on) {
+      fullscreen = on;
+      fullscreenListeners.forEach((listener) => listener(on));
+    },
     onNotificationClicked(listener) {
       notificationListeners.add(listener);
       return () => notificationListeners.delete(listener);

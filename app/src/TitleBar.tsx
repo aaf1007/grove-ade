@@ -1,4 +1,5 @@
 import { NotebookText, PanelLeft } from "lucide-react";
+import type { Ref } from "react";
 
 import { DETAILS_CARD_ID } from "./DetailsCard";
 import { PanelSwitches } from "./PanelSwitches";
@@ -7,6 +8,9 @@ import { IconButton } from "./ui/IconButton";
 /**
  * The bar over the chat lane: the selected worktree's repo and name, and the switch that opens the
  * details card. While the panel area is closed, the terminal and panel area switches follow it.
+ * It sits in the window's top row, so its empty part drags the window. While the sidebar is
+ * collapsed it starts after the window controls and holds the sidebar switch, which the sidebar's
+ * own top row holds otherwise.
  */
 export function TitleBar({
   repo,
@@ -14,7 +18,8 @@ export function TitleBar({
   sidebarOpen,
   panelsOpen,
   terminalOpen,
-  onToggleSidebar,
+  onShowSidebar,
+  sidebarSwitch,
   onTogglePanels,
   onToggleTerminal,
   detailsOpen,
@@ -28,7 +33,9 @@ export function TitleBar({
   panelsOpen: boolean;
   /** Whether the selected worktree's terminal is open. null until a worktree's workspace is known. */
   terminalOpen: boolean | null;
-  onToggleSidebar(): void;
+  onShowSidebar(): void;
+  /** The sidebar switch, while the sidebar is collapsed. */
+  sidebarSwitch?: Ref<HTMLButtonElement>;
   onTogglePanels(): void;
   onToggleTerminal(): void;
   /** Whether the details card is open. null while no worktree is selected. */
@@ -36,8 +43,16 @@ export function TitleBar({
   onToggleDetails(): void;
 }) {
   return (
-    <header className="titlebar">
-      <IconButton icon={PanelLeft} label="Sidebar" aria-pressed={sidebarOpen} onClick={onToggleSidebar} />
+    <header className="titlebar" data-tauri-drag-region="deep">
+      {!sidebarOpen && (
+        <IconButton
+          ref={sidebarSwitch}
+          icon={PanelLeft}
+          label="Sidebar"
+          aria-pressed="false"
+          onClick={onShowSidebar}
+        />
+      )}
       {repo && worktree ? (
         <div className="crumbs" title={`${repo} / ${worktree}`}>
           <span className="crumb-repo">

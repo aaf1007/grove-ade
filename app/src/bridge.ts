@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 
 /** A worktree grove tracks, as the core reports it. */
@@ -358,6 +359,9 @@ export interface Workspace {
  * A change an agent session made through `grove-mcp`, as `AgentChange` in `app/src-tauri/src/main.rs`
  * sends it. It comes before the change's own `workspace-changed` or `profiles-changed`.
  */
+/** A Dock icon grove bundles: the app icon's style, in its light or dark version (#55). */
+export type DockIcon = "mono-dark" | "mono-light" | "blue-dark" | "blue-light";
+
 export type AgentChange = { kind: "Workspace"; worktree: string; by: SessionId } | { kind: "Profiles"; by: SessionId };
 
 /** Everything the UI asks of the core. The app uses `tauriBridge`; tests use `fakeBridge`. */
@@ -567,6 +571,11 @@ export interface Bridge {
   /** Quits grove, which ends every session. */
   quit(): Promise<void>;
   /**
+   * Calls `listener` with whether the window is full screen, at once and on each change. macOS
+   * hides the window controls in full screen. Returns the unsubscribe.
+   */
+  onFullscreenChanged(listener: (fullscreen: boolean) => void): () => void;
+  /**
    * As `spawnAgent`, once the worktree's setup script succeeds, or at once when none runs. Fails,
    * starting nothing, when setup failed.
    */
@@ -600,6 +609,8 @@ export interface Bridge {
   lastFocusedAgent(worktree: string): Promise<SessionId | null>;
   /** Whether the session's program has bracketed paste on. Fails for an agent session in chat mode. */
   bracketedPaste(session: SessionId): Promise<boolean>;
+  /** Shows `icon` in the Dock while grove runs. When grove quits, the bundle icon shows again. */
+  setDockIcon(icon: DockIcon): Promise<void>;
 }
 
 // A failed command rejects with the core's error message as a string.
@@ -716,6 +727,18 @@ export const tauriBridge: Bridge = {
     return () => void unlisten.then((stop) => stop());
   },
   quit: () => invoke("quit"),
+  // Entering and leaving full screen resize the window.
+  onFullscreenChanged(listener) {
+    const window = getCurrentWindow();
+    let listening = true;
+    const check = () => void window.isFullscreen().then((fullscreen) => listening && listener(fullscreen));
+    check();
+    const unlisten = window.onResized(check);
+    return () => {
+      listening = false;
+      void unlisten.then((stop) => stop());
+    };
+  },
   spawnAgentAfterSetup: (worktree, agent, panel) =>
     invoke("spawn_agent_after_setup", { worktree, agent, panel }),
   onSetup(listener) {
@@ -735,6 +758,7 @@ export const tauriBridge: Bridge = {
   },
   lastFocusedAgent: (worktree) => invoke("last_focused_agent", { worktree }),
   bracketedPaste: (session) => invoke("bracketed_paste", { session }),
+  setDockIcon: (icon) => invoke("set_dock_icon", { icon }),
 };
 
 /**
