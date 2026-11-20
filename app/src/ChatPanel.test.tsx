@@ -1713,3 +1713,152 @@ test("a refused link says why in the error line, and a link that opens clears it
   expect(screen.queryByRole("alert")).toBeNull();
   expect(bridge.openedLinks).toEqual(["https://docs.rs/logos"]);
 });
+
+// The agent change notice (#4).
+
+function notice() {
+  return screen.queryByRole("group", { name: "Agent change" });
+}
+
+function noticeButtons() {
+  return within(notice()!)
+    .getAllByRole("button")
+    .map((button) => button.textContent);
+}
+
+async function agentOpensLogs(bridge: FakeBridge, by = "0") {
+  const workspace = await bridge.workspace(worktree);
+  await act(async () =>
+    bridge.agentChangesWorkspace(worktree, by, { ...workspace, panels: [...workspace.panels, "Logs"], selected: "Logs" }),
+  );
+}
+
+test("an agent's workspace change shows a notice above the composer that names the session and the change", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  composer().focus();
+
+  await agentOpensLogs(bridge);
+
+  expect(notice()!.textContent).toContain("Claude Code changed this workspace:");
+  expect(notice()!.textContent).toContain("opened the Logs panel");
+  expect(noticeButtons()).toEqual(["Undo", "Keep"]);
+  expect(notice()!.compareDocumentPosition(composer()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(document.activeElement).toBe(composer());
+});
+
+test("the notice says each thing the agent changed", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  const workspace = await bridge.workspace(worktree);
+
+  await act(async () =>
+    bridge.agentChangesWorkspace(worktree, "0", {
+      chat: [...workspace.chat, { agent: "Codex", session: null, shown: true }],
+      panels: ["Diff", "Logs"],
+      selected: "Diff",
+      terminal: false,
+    }),
+  );
+
+  expect(notice()!.textContent).toContain(
+    "opened the Logs panel, closed the Files panel, closed the terminal and added a Codex panel",
+  );
+});
+
+test("Undo restores the workspace exactly, and the notice goes", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  const before = await bridge.workspace(worktree);
+  await agentOpensLogs(bridge);
+
+  await act(async () => fireEvent.click(within(notice()!).getByRole("button", { name: "Undo" })));
+
+  expect(bridge.undone).toEqual([worktree]);
+  expect(await bridge.workspace(worktree)).toEqual(before);
+  expect(notice()).toBeNull();
+});
+
+test("a refused Undo says why and keeps the notice", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  await agentOpensLogs(bridge);
+  await act(() => bridge.undoWorkspace(worktree));
+
+  await act(async () => fireEvent.click(within(notice()!).getByRole("button", { name: "Undo" })));
+
+  expect(within(notice()!).getByRole("alert").textContent).toContain("left to undo");
+});
+
+test("Keep leaves the workspace as the agent made it, and the notice goes", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  await agentOpensLogs(bridge);
+
+  fireEvent.click(within(notice()!).getByRole("button", { name: "Keep" }));
+
+  expect(notice()).toBeNull();
+  expect(bridge.undone).toEqual([]);
+  expect((await bridge.workspace(worktree)).panels).toContain("Logs");
+});
+
+test("Save to profile shows when the repo uses a profile, and writes the workspace into it", async () => {
+  const bridge = await started();
+  await bridge.setRepoProfile(worktree, "Rust crate");
+  await shownPanel(bridge);
+  await agentOpensLogs(bridge);
+
+  expect(noticeButtons()).toEqual(["Undo", "Keep", "Save to profile"]);
+  await act(async () => fireEvent.click(within(notice()!).getByRole("button", { name: "Save to profile" })));
+
+  expect(bridge.savedToProfile).toEqual([worktree]);
+  expect(notice()).toBeNull();
+});
+
+test("a change the user made, or another agent session made, shows no notice", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  const workspace = await bridge.workspace(worktree);
+
+  await act(() => bridge.setWorkspace(worktree, { ...workspace, terminal: false }));
+  expect(notice()).toBeNull();
+
+  await agentOpensLogs(bridge, "7");
+  expect(notice()).toBeNull();
+});
+
+test("an agent's profile change shows a notice with Keep only", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+
+  await act(async () => bridge.agentChangesProfile("0"));
+
+  expect(notice()!.textContent).toContain("Claude Code changed a profile");
+  expect(noticeButtons()).toEqual(["Keep"]);
+  fireEvent.click(within(notice()!).getByRole("button", { name: "Keep" }));
+  expect(notice()).toBeNull();
+});
+
+test("the notice shows in terminal mode too", async () => {
+  const bridge = await started();
+  await bridge.setMode("0", "Terminal");
+  await shownPanel(bridge);
+
+  await agentOpensLogs(bridge);
+
+  expect(notice()!.textContent).toContain("opened the Logs panel");
+});
+
+test("an unanswered notice stays through a switch to terminal mode and back", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  await agentOpensLogs(bridge);
+
+  await switchTo("Terminal");
+  expect(notice()!.textContent).toContain("opened the Logs panel");
+  await switchTo("Chat");
+  expect(notice()!.textContent).toContain("opened the Logs panel");
+
+  await act(async () => fireEvent.click(within(notice()!).getByRole("button", { name: "Undo" })));
+  expect(bridge.undone).toEqual([worktree]);
+});

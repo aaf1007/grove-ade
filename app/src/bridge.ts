@@ -347,6 +347,12 @@ export interface Workspace {
   terminal: boolean;
 }
 
+/**
+ * A change an agent session made through `grove-mcp`, as `AgentChange` in `app/src-tauri/src/main.rs`
+ * sends it. It comes before the change's own `workspace-changed` or `profiles-changed`.
+ */
+export type AgentChange = { kind: "Workspace"; worktree: string; by: SessionId } | { kind: "Profiles"; by: SessionId };
+
 /** Everything the UI asks of the core. The app uses `tauriBridge`; tests use `fakeBridge`. */
 export interface Bridge {
   /** Adds the repo that `path` is in and adopts every worktree in its `git worktree list`. */
@@ -483,6 +489,19 @@ export interface Bridge {
   setWorkspace(worktree: string, workspace: Workspace): Promise<void>;
   /** Calls `listener` with a worktree's path when its workspace changes. Returns the unsubscribe. */
   onWorkspaceChanged(listener: (worktree: string) => void): () => void;
+  // The agent change notice (#4).
+  /** Calls `listener` with each change an agent session made. Returns the unsubscribe. */
+  onAgentChange(listener: (change: AgentChange) => void): () => void;
+  /**
+   * Restores the worktree's workspace from before the last change an agent session made to it,
+   * keeping a panel for each session placed since. Fails when there is nothing to undo.
+   */
+  undoWorkspace(worktree: string): Promise<void>;
+  /**
+   * Writes the worktree's shown agent panels, its tabs and its terminal into its repo's profile.
+   * The selected tab and hidden panels are left out. Fails when the repo uses no profile.
+   */
+  saveWorkspaceToProfile(worktree: string): Promise<void>;
 
   // Worktree management (#52).
   /** Adds a worktree to the repo whose main worktree is at `repo`, with `git worktree add`. */
@@ -649,6 +668,13 @@ export const tauriBridge: Bridge = {
     const unlisten = listen<string>("workspace-changed", (event) => listener(event.payload));
     return () => void unlisten.then((stop) => stop());
   },
+  // The agent change notice (#4).
+  onAgentChange(listener) {
+    const unlisten = listen<AgentChange>("agent-change", (event) => listener(event.payload));
+    return () => void unlisten.then((stop) => stop());
+  },
+  undoWorkspace: (worktree) => invoke("undo_workspace", { worktree }),
+  saveWorkspaceToProfile: (worktree) => invoke("save_workspace_to_profile", { worktree }),
 
   // Worktree management (#52).
   createWorktree: (repo, worktree) => invoke("create_worktree", { repo, worktree }),

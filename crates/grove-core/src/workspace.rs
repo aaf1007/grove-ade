@@ -266,7 +266,8 @@ impl Core {
 
     /// Restores the workspace of `worktree` from before the last change an agent made, even if
     /// the user changed it since, and sends `WorkspaceChanged` with no `by`. It can be undone
-    /// once.
+    /// once. A running session the restored workspace has no panel for, such as one placed since,
+    /// keeps one: the panel at its place if that one is empty, or else a new one after the last.
     pub async fn undo_workspace(&self, worktree: &Path) -> Result<()> {
         {
             let tracked = self.tracked();
@@ -274,7 +275,27 @@ impl Core {
             let mut workspaces = self.workspaces();
             let nothing = || CoreError::NothingToUndo(worktree.to_path_buf());
             let saved = workspaces.get_mut(worktree).ok_or_else(nothing)?;
-            saved.workspace = saved.before_agent_change.take().ok_or_else(nothing)?;
+            let mut restored = saved.before_agent_change.take().ok_or_else(nothing)?;
+            // Only leaf locks, so taking them here cannot deadlock.
+            let running = self.running_in(worktree);
+            for (at, panel) in saved.workspace.chat.iter().enumerate() {
+                let Some(session) = panel.session.filter(|s| running.contains(s)) else {
+                    continue;
+                };
+                if restored.chat.iter().any(|p| p.session == Some(session)) {
+                    continue;
+                }
+                let kept = AgentPanel {
+                    agent: panel.agent,
+                    session: Some(session),
+                    shown: true,
+                };
+                match restored.chat.get_mut(at) {
+                    Some(empty) if empty.session.is_none() => *empty = kept,
+                    _ => restored.chat.push(kept),
+                }
+            }
+            saved.workspace = restored;
         }
         self.changed(worktree, None).await
     }
