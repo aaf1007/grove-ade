@@ -16,6 +16,7 @@ export function tabId(tab: PanelKind, part: "tab" | "panel") {
  * The panel area's top row: a tab per open panel, each with its close button, then the + menu and
  * the terminal and panel area switches. While the menu is open, each panel's letter opens it, and
  * Up and Down move through its items. With no worktree selected, the row holds only the switches.
+ * It sits in the window's top row, so its empty part drags the window.
  */
 export function PanelTabs({
   workspace,
@@ -34,7 +35,7 @@ export function PanelTabs({
   onTogglePanels(): void;
 }) {
   return (
-    <div className="ui-panel-tabs">
+    <div className="ui-panel-tabs" data-tauri-drag-region="deep">
       {workspace && <Tabs workspace={workspace} onSelect={onSelect} onClose={onClose} onOpen={onOpen} />}
       <PanelSwitches
         terminalOpen={workspace?.terminal ?? null}

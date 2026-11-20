@@ -479,14 +479,15 @@ test("the sidebar switch hides the sidebar from the sidebar's top row and shows 
 });
 
 // Tauri drags the window from a `deep` drag region, except from what can be clicked in it.
-test("the sidebar's top row and the title bar drag the window, and their buttons do not", async () => {
+test("the window's top rows drag the window, and their buttons do not", async () => {
   const { container } = render(<App bridge={await trackedBridge()} />);
   await select("feat-36");
   const rows = [...container.querySelectorAll("[data-tauri-drag-region]")];
 
-  expect(rows).toHaveLength(2);
+  expect(rows).toHaveLength(3);
   expect(rows).toContain(container.querySelector(".sidebar-top"));
   expect(rows).toContain(screen.getByRole("banner"));
+  expect(rows).toContain(container.querySelector(".ui-panel-tabs"));
   for (const row of rows) {
     expect(row.getAttribute("data-tauri-drag-region")).toBe("deep");
     expect(within(row as HTMLElement).getAllByRole("button").length).toBeGreaterThan(0);
