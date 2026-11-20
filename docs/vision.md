@@ -14,8 +14,8 @@ Me first: one developer on macOS running 3 to 8 agent sessions across worktrees.
 The agent IDE that fits how you work. A control room for coding agents: you chat with Claude and Codex, watch several of them at once, review their work and read code, in a workspace you and your agents shape per project.
 
 The window has three regions:
-- **Sidebar:** repos, then their worktrees, each with branch, change counts, age and agent state.
-- **Chat area:** one or more agent sessions side by side, in chat mode by default. A picker in the composer sets the agent, model and effort.
+- **Sidebar:** projects, then their sessions, each with agent state, branch, change counts, age and whether it runs in a worktree.
+- **Chat area:** the selected agent session, with the subagent sessions it spawned side by side, in chat mode by default. A picker in the composer sets the agent, model and effort.
 - **Panel area:** tabs for files and the editor, the diff, a browser and logs, with a terminal at the bottom.
 
 ## What makes it different
