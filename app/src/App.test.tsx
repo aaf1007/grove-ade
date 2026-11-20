@@ -1998,15 +1998,15 @@ test("picking a style switches the Dock icon at once, and the choice survives a 
 
   fireEvent.click(screen.getByRole("button", { name: "Blue" }));
 
-  expect(bridge.dockIcons).toEqual(["mono-dark", "blue-dark"]);
+  await waitFor(() => expect(bridge.dockIcons).toEqual(["mono-dark", "blue-dark"]));
   unmount();
   render(<App bridge={bridge} />);
   fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-  expect(bridge.dockIcons).toEqual(["mono-dark", "blue-dark", "blue-dark"]);
+  await waitFor(() => expect(bridge.dockIcons).toEqual(["mono-dark", "blue-dark", "blue-dark"]));
   expect(pressed("Blue")).toBe("true");
 });
 
-test("a theme change asks for the new icon once", async () => {
+test("theme changes made while a request is out ask only for the last icon", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   fireEvent.click(screen.getByRole("button", { name: "Settings" }));
@@ -2015,7 +2015,8 @@ test("a theme change asks for the new icon once", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Light" }));
   fireEvent.click(screen.getByRole("button", { name: "Dark" }));
 
-  expect(bridge.dockIcons).toEqual(["mono-dark", "mono-light", "mono-dark"]);
+  // The Light click waits behind the first request and is replaced by the Dark click.
+  await waitFor(() => expect(bridge.dockIcons).toEqual(["mono-dark", "mono-dark"]));
 });
 
 test("with the System theme, a macOS appearance change asks for the new icon once", async () => {
@@ -2026,7 +2027,7 @@ test("with the System theme, a macOS appearance change asks for the new icon onc
 
   setSystemDark(true);
 
-  expect(bridge.dockIcons).toEqual(["blue-light", "blue-dark"]);
+  await waitFor(() => expect(bridge.dockIcons).toEqual(["blue-light", "blue-dark"]));
 });
 
 test("an appearance saved before the app icon setting keeps its theme and palette and gets Auto", async () => {
@@ -2053,4 +2054,34 @@ test("a Dock icon that cannot be set is logged and the app keeps working", async
 
   await waitFor(() => expect(console.warn).toHaveBeenCalledWith("could not set the Dock icon:", "no main thread"));
   expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy();
+});
+
+test("quick icon changes leave the last requested Dock icon applied, even when an older request is slow", async () => {
+  systemDark = true;
+  const bridge = await trackedBridge();
+  const finishers: (() => void)[] = [];
+  const applied: string[] = [];
+  vi.spyOn(bridge, "setDockIcon").mockImplementation((icon) => {
+    return new Promise<void>((resolve) => {
+      finishers.push(() => {
+        applied.push(icon);
+        resolve();
+      });
+    });
+  });
+  render(<App bridge={bridge} />);
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Blue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Mono" }));
+  fireEvent.click(screen.getByRole("button", { name: "Blue" }));
+
+  // Only the first request is out while it is slow.
+  expect(finishers).toHaveLength(1);
+  while (finishers.length > 0) {
+    finishers.shift()?.();
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+  await waitFor(() => expect(applied.at(-1)).toBe("blue-dark"));
 });
