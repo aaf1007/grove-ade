@@ -432,11 +432,15 @@ test("the sidebar switch hides the sidebar from the sidebar's top row and shows 
   expect(screen.queryByRole("separator", { name: "Resize sidebar" })).toBeNull();
   const inTitleBar = within(screen.getByRole("banner")).getByRole("button", { name: "Sidebar" });
   expect(inTitleBar.getAttribute("aria-pressed")).toBe("false");
+  // The switch clicked went away, so focus moves to the one that took its place.
+  expect(document.activeElement).toBe(inTitleBar);
 
   fireEvent.click(inTitleBar);
 
   expect(await screen.findByRole("button", { name: "feat-36" })).toBeTruthy();
   expect(within(screen.getByRole("banner")).queryByRole("button", { name: "Sidebar" })).toBeNull();
+  const shown = screen.getByRole("complementary", { name: "Worktrees" });
+  expect(document.activeElement).toBe(within(shown).getByRole("button", { name: "Sidebar" }));
 });
 
 // Tauri drags the window from a `deep` drag region, except from what can be clicked in it.

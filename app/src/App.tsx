@@ -1,4 +1,5 @@
 import { type CSSProperties, useEffect, useEffectEvent, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 import type {
   Account,
@@ -63,6 +64,16 @@ export function App({ bridge }: { bridge: Bridge }) {
   // null until the sidebar has the core's first list.
   const [worktrees, setWorktrees] = useState<Worktree[] | null>(null);
   const sidebarRef = useRef<SidebarHandle>(null);
+  const titleBarSidebarSwitch = useRef<HTMLButtonElement>(null);
+  // A sidebar switch goes away when clicked, so focus moves to the one that takes its place.
+  function hideSidebarFromSwitch() {
+    flushSync(toggleSidebar);
+    titleBarSidebarSwitch.current?.focus();
+  }
+  function showSidebarFromSwitch() {
+    flushSync(toggleSidebar);
+    sidebarRef.current?.focusSidebarSwitch();
+  }
   const {
     workspaces,
     errors: workspaceErrors,
@@ -583,7 +594,8 @@ export function App({ bridge }: { bridge: Bridge }) {
               sidebarOpen={layout.sidebarOpen}
               panelsOpen={layout.panelsOpen}
               terminalOpen={workspace?.terminal ?? null}
-              onShowSidebar={toggleSidebar}
+              onShowSidebar={showSidebarFromSwitch}
+              sidebarSwitch={titleBarSidebarSwitch}
               onTogglePanels={togglePanels}
               onToggleTerminal={() => selected && toggleTerminal(selected)}
               detailsOpen={selected ? detailsOpen : null}
@@ -621,7 +633,7 @@ export function App({ bridge }: { bridge: Bridge }) {
               onJump={jump}
               onOpenProfiles={() => selected && open(selected, "Profile")}
               onShowSidebar={() => layout.sidebarOpen || toggleSidebar()}
-              onHideSidebar={toggleSidebar}
+              onHideSidebar={hideSidebarFromSwitch}
               accounts={accounts}
               appearance={appearance}
               onAppearance={setAppearance}

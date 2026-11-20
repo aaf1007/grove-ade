@@ -1,4 +1,5 @@
 import { NotebookText, PanelBottom, PanelLeft, PanelRight } from "lucide-react";
+import type { Ref } from "react";
 
 import { DETAILS_CARD_ID } from "./DetailsCard";
 import { IconButton } from "./ui/IconButton";
@@ -16,6 +17,7 @@ export function TitleBar({
   panelsOpen,
   terminalOpen,
   onShowSidebar,
+  sidebarSwitch,
   onTogglePanels,
   onToggleTerminal,
   detailsOpen,
@@ -30,6 +32,8 @@ export function TitleBar({
   /** Whether the selected worktree's terminal is open. null until a worktree's workspace is known. */
   terminalOpen: boolean | null;
   onShowSidebar(): void;
+  /** The sidebar switch, while the sidebar is collapsed. */
+  sidebarSwitch?: Ref<HTMLButtonElement>;
   onTogglePanels(): void;
   onToggleTerminal(): void;
   /** Whether the details card is open. null while no worktree is selected. */
@@ -38,7 +42,15 @@ export function TitleBar({
 }) {
   return (
     <header className="titlebar" data-tauri-drag-region="deep">
-      {!sidebarOpen && <IconButton icon={PanelLeft} label="Sidebar" aria-pressed="false" onClick={onShowSidebar} />}
+      {!sidebarOpen && (
+        <IconButton
+          ref={sidebarSwitch}
+          icon={PanelLeft}
+          label="Sidebar"
+          aria-pressed="false"
+          onClick={onShowSidebar}
+        />
+      )}
       {repo && worktree ? (
         <div className="crumbs" title={`${repo} / ${worktree}`}>
           <span className="crumb-repo">

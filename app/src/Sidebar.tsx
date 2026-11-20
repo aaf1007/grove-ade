@@ -52,6 +52,8 @@ export function sessionNames(agents: AgentSession[]): Record<SessionId, string> 
 export interface SidebarHandle {
   /** Opens the folder picker and adds the folder picked, as the sidebar's Add repo does. */
   addRepo(): void;
+  /** Puts focus on the sidebar switch in the top row. */
+  focusSidebarSwitch(): void;
 }
 
 /** What a worktree's menu does. */
@@ -227,7 +229,11 @@ export function Sidebar({
     refresh();
   }
 
-  useImperativeHandle(ref, () => ({ addRepo: () => void addRepo() }));
+  const sidebarSwitch = useRef<HTMLButtonElement>(null);
+  useImperativeHandle(ref, () => ({
+    addRepo: () => void addRepo(),
+    focusSidebarSwitch: () => sidebarSwitch.current?.focus(),
+  }));
 
   function toggleRepo(path: string) {
     setFoldedRepos((folded) => toggled(folded, path));
@@ -317,7 +323,13 @@ export function Sidebar({
       {/* The window's top row: room for the window controls, then the sidebar switch. Its empty
           part drags the window, as a title bar does. */}
       <div className="sidebar-top" data-tauri-drag-region="deep">
-        <IconButton icon={PanelLeft} label="Sidebar" aria-pressed="true" onClick={onHideSidebar} />
+        <IconButton
+          ref={sidebarSwitch}
+          icon={PanelLeft}
+          label="Sidebar"
+          aria-pressed="true"
+          onClick={onHideSidebar}
+        />
       </div>
       <nav className="sidebar-nav" aria-label="Sidebar">
         <button
