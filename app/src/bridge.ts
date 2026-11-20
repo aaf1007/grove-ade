@@ -359,6 +359,9 @@ export interface Workspace {
  * A change an agent session made through `grove-mcp`, as `AgentChange` in `app/src-tauri/src/main.rs`
  * sends it. It comes before the change's own `workspace-changed` or `profiles-changed`.
  */
+/** A Dock icon grove bundles: the app icon's style, in its light or dark version (#55). */
+export type DockIcon = "mono-dark" | "mono-light" | "blue-dark" | "blue-light";
+
 export type AgentChange = { kind: "Workspace"; worktree: string; by: SessionId } | { kind: "Profiles"; by: SessionId };
 
 /** Everything the UI asks of the core. The app uses `tauriBridge`; tests use `fakeBridge`. */
@@ -606,6 +609,8 @@ export interface Bridge {
   lastFocusedAgent(worktree: string): Promise<SessionId | null>;
   /** Whether the session's program has bracketed paste on. Fails for an agent session in chat mode. */
   bracketedPaste(session: SessionId): Promise<boolean>;
+  /** Shows `icon` in the Dock while grove runs. When grove quits, the bundle icon shows again. */
+  setDockIcon(icon: DockIcon): Promise<void>;
 }
 
 // A failed command rejects with the core's error message as a string.
@@ -753,6 +758,7 @@ export const tauriBridge: Bridge = {
   },
   lastFocusedAgent: (worktree) => invoke("last_focused_agent", { worktree }),
   bracketedPaste: (session) => invoke("bracketed_paste", { session }),
+  setDockIcon: (icon) => invoke("set_dock_icon", { icon }),
 };
 
 /**

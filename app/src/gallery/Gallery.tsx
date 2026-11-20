@@ -305,7 +305,7 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
             onJump={() => {}}
             onOpenProfiles={() => {}}
             accounts={{ Claude: { email: "dev@example.com", organization: null, plan: "Max", apiKeySource: null } }}
-            appearance={{ theme: "system", palette: "default" }}
+            appearance={{ theme: "system", palette: "default", appIcon: "auto" }}
             onAppearance={() => {}}
           />
           {pane && (
