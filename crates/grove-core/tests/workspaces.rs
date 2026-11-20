@@ -659,7 +659,7 @@ fn a_state_file_from_before_workspaces_starts_each_worktree_from_the_layout() {
     );
     block_on(core.set_workspace(&repo, arranged(), None)).unwrap();
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&state).unwrap()).unwrap();
-    assert_eq!(saved["version"], 7);
+    assert_eq!(saved["version"], 8);
 }
 
 // A tracked repo, in a started core whose Claude Code, Claude sidecar and Codex are a script

@@ -172,6 +172,16 @@ export function Sidebar({
   const listAtStart = useEffectEvent(refresh);
   useEffect(() => listAtStart(), [bridge]);
 
+  // A subagent that starts in another worktree nests that worktree, and no event says so. The
+  // first state of a session the sidebar has not seen lists the worktrees again.
+  const seenSessions = useRef<Set<SessionId> | null>(null);
+  const refreshOnNewSession = useEffectEvent((sessions: SessionId[]) => {
+    const seen = seenSessions.current;
+    seenSessions.current = new Set(sessions);
+    if (seen && sessions.some((session) => !seen.has(session))) refresh();
+  });
+  useEffect(() => refreshOnNewSession(Object.keys(agentStates)), [agentStates]);
+
   // `repo` opens, so the new worktree's selected row shows.
   function created(repo: string, worktree: Worktree, startAgent: boolean) {
     setDialog(null);
@@ -251,9 +261,53 @@ export function Sidebar({
   }, []);
 
   const names = sessionNames(agents);
+  // A worktree's row, then under it its agent sessions and the worktrees nested under it. A nested
+  // worktree has only its sessions under it, so worktrees nest one level deep.
+  function row(worktree: Worktree, nestedRows: Worktree[], isNested: boolean) {
+    const own = agents.filter((agent) => agent.worktree === worktree.path);
+    const setup = setups[worktree.path] ?? worktree.setup;
+    const children = own.length + nestedRows.length;
+    const childrenOpen = !foldedSessions.includes(worktree.path);
+    return (
+      <li key={worktree.path} title={worktree.path} className={isNested ? "nested-worktree" : undefined}>
+        <WorktreeRow
+          worktree={worktree}
+          selected={worktree.path === selected}
+          state={mostUrgent(own.map((agent) => agentStates[agent.session]))}
+          setupRunning={setup?.state === "Running"}
+          sessionsOpen={children > 0 ? childrenOpen : null}
+          onToggleSessions={() => toggleSessions(worktree.path)}
+          onClick={() => (own.length === 1 ? onShowAgent(own[0]) : onSelect(worktree.path))}
+          onPick={(kind) => {
+            if (kind !== "start") return setDialog({ kind, worktree });
+            onSelect(worktree.path);
+            onStartAgent(worktree.path);
+          }}
+        />
+        {setup && <SetupStatus setup={setup} />}
+        {children > 0 && childrenOpen && (
+          <ul className="agent-sessions">
+            {own.map((agent) => (
+              <li key={agent.session}>
+                <button
+                  className="session-row"
+                  aria-current={shownAgents.includes(agent.session)}
+                  onClick={() => onFocusAgent(agent)}
+                >
+                  <span className="session-name">{names[agent.session]}</span>
+                  <StatusDot state={agentStates[agent.session]} />
+                </button>
+              </li>
+            ))}
+            {nestedRows.map((child) => row(child, [], true))}
+          </ul>
+        )}
+      </li>
+    );
+  }
   const shownRepos = repos.flatMap((repo) => {
     const shown = repo.filter((worktree) => matches(worktree, query));
-    return shown.length > 0 ? [{ head: repo[0], worktrees: shown }] : [];
+    return shown.length > 0 ? [{ head: repo[0], worktrees: shown, nested: nestingParents(repo) }] : [];
   });
   return (
     <aside className="sidebar" aria-label="Worktrees">
@@ -301,7 +355,7 @@ export function Sidebar({
       </div>
       <div className="sidebar-tree">
         {error && <p role="alert">{error}</p>}
-        {shownRepos.map(({ head, worktrees: repo }) => {
+        {shownRepos.map(({ head, worktrees: repo, nested }) => {
           const name = folderName(head.path);
           // Search shows the matching rows of a folded repo too, and keeps it from folding.
           const searching = query.trim() !== "";
@@ -329,46 +383,13 @@ export function Sidebar({
               </div>
               {open && (
                 <ul>
-                  {repo.map((worktree) => {
-                    const own = agents.filter((agent) => agent.worktree === worktree.path);
-                    const setup = setups[worktree.path] ?? worktree.setup;
-                    const sessionsOpen = !foldedSessions.includes(worktree.path);
-                    return (
-                      <li key={worktree.path} title={worktree.path}>
-                        <WorktreeRow
-                          worktree={worktree}
-                          selected={worktree.path === selected}
-                          state={mostUrgent(own.map((agent) => agentStates[agent.session]))}
-                          setupRunning={setup?.state === "Running"}
-                          sessionsOpen={own.length > 0 ? sessionsOpen : null}
-                          onToggleSessions={() => toggleSessions(worktree.path)}
-                          onClick={() => (own.length === 1 ? onShowAgent(own[0]) : onSelect(worktree.path))}
-                          onPick={(kind) => {
-                            if (kind !== "start") return setDialog({ kind, worktree });
-                            onSelect(worktree.path);
-                            onStartAgent(worktree.path);
-                          }}
-                        />
-                        {setup && <SetupStatus setup={setup} />}
-                        {own.length > 0 && sessionsOpen && (
-                          <ul className="agent-sessions">
-                            {own.map((agent) => (
-                              <li key={agent.session}>
-                                <button
-                                  className="session-row"
-                                  aria-current={shownAgents.includes(agent.session)}
-                                  onClick={() => onFocusAgent(agent)}
-                                >
-                                  <span className="session-name">{names[agent.session]}</span>
-                                  <StatusDot state={agentStates[agent.session]} />
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </li>
-                    );
-                  })}
+                  {repo
+                    // A nested worktree shows under its parent, unless Search hides the parent.
+                    .filter((worktree) => !repo.some((parent) => parent.path === nested.get(worktree.path)))
+                    .map((worktree) => {
+                      const nestedRows = repo.filter((child) => nested.get(child.path) === worktree.path);
+                      return row(worktree, nestedRows, false);
+                    })}
                 </ul>
               )}
             </section>
@@ -633,6 +654,34 @@ function WorktreeMenu({
       items={items.map(([action, label]) => ({ key: action, label, onSelect: () => onPick(action) }))}
     />
   );
+}
+
+/**
+ * The worktree each nested worktree of one repo shows under, by path: the top of its chain. A
+ * worktree of another repo, or a loop, nests nothing. The core writes neither, but an older state
+ * file may hold one. The main worktree never nests.
+ */
+export function nestingParents(repo: Worktree[]): Map<string, string> {
+  const byPath = new Map(repo.map((worktree) => [worktree.path, worktree]));
+  const parentOf = (worktree: Worktree) =>
+    worktree.isMain || worktree.nestedUnder === null ? undefined : byPath.get(worktree.nestedUnder);
+  const nested = new Map<string, string>();
+  for (const worktree of repo) {
+    const seen = new Set([worktree.path]);
+    let top = parentOf(worktree);
+    while (top) {
+      const up = parentOf(top);
+      if (!up) break;
+      if (seen.has(top.path)) {
+        top = undefined;
+        break;
+      }
+      seen.add(top.path);
+      top = up;
+    }
+    if (top && !seen.has(top.path)) nested.set(worktree.path, top.path);
+  }
+  return nested;
 }
 
 // The core lists worktrees repo by repo, main worktree first, so each main worktree starts a repo.

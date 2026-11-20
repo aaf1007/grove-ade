@@ -82,6 +82,7 @@ fn main_worktree(path: &Path) -> WorktreeInfo {
         display_name: "main".into(),
         issue_link: None,
         base_branch: Some("main".into()),
+        nested_under: None,
     }
 }
 
@@ -126,6 +127,7 @@ fn adding_a_repo_adopts_worktrees_it_already_has() {
                 display_name: "detached".into(),
                 issue_link: None,
                 base_branch: Some("main".into()),
+                nested_under: None,
             },
             WorktreeInfo {
                 path: real("feature"),
@@ -134,6 +136,7 @@ fn adding_a_repo_adopts_worktrees_it_already_has() {
                 display_name: "feature".into(),
                 issue_link: None,
                 base_branch: Some("main".into()),
+                nested_under: None,
             },
         ]
     );
@@ -215,6 +218,7 @@ fn a_new_name_makes_a_branch_from_the_base_branch() {
         display_name: "topic".into(),
         issue_link: None,
         base_branch: Some("main".into()),
+        nested_under: None,
     };
     assert_eq!(added, expected);
     assert_eq!(

@@ -22,8 +22,9 @@ use crate::{
 // overrides, which hold them. Version 4 added each worktree's workspace. Version 5 added each
 // worktree's sessions to bring back and its review comments, and the session in each agent
 // panel. Version 6 added the parent of each agent session that is a subagent. Version 7 added
-// each agent session's model and effort.
-const VERSION: u32 = 7;
+// each agent session's model and effort. Version 8 added the worktree each worktree nests
+// under.
+const VERSION: u32 = 8;
 
 /// `state.json` in the home folder: the repos and worktrees grove tracks, each repo's settings,
 /// and each worktree's workspace, sessions and review comments, kept across restarts.
@@ -95,6 +96,9 @@ struct SavedWorktree {
     display_name: String,
     issue_link: Option<String>,
     base_branch: Option<String>,
+    // An older file has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nested_under: Option<PathBuf>,
     // None uses the profile layout, as for every worktree in an older file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace: Option<SavedWorkspace>,
@@ -427,6 +431,7 @@ impl SavedWorktree {
             display_name: worktree.display_name.clone(),
             issue_link: worktree.issue_link.clone(),
             base_branch: worktree.base_branch.clone(),
+            nested_under: worktree.nested_under.clone(),
             workspace: workspace.map(SavedWorkspace::of),
             sessions,
             comments: comments.into_iter().map(Into::into).collect(),
@@ -441,6 +446,7 @@ impl SavedWorktree {
             display_name: self.display_name,
             issue_link: self.issue_link,
             base_branch: self.base_branch,
+            nested_under: self.nested_under,
         }
     }
 }

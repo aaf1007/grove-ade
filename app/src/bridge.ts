@@ -14,6 +14,12 @@ export interface Worktree {
   issueLink: string | null;
   /** What a whole-branch diff compares against. null when the repo has no default branch. */
   baseBranch: string | null;
+  /**
+   * The worktree of the same repo whose agent session first started a subagent here, which makes
+   * this a nested worktree. It stays after both sessions end, and goes when that worktree leaves
+   * grove. null for one that nests under nothing, and always for a main worktree.
+   */
+  nestedUnder: string | null;
   /** The setup script grove ran after adding it. null when it ran none since grove started. */
   setup: SetupState | null;
 }

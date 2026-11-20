@@ -292,6 +292,10 @@ impl Setup {
     }
 
     fn spawn(&self, agent: Agent, mode: Mode) -> SessionId {
+        self.spawn_in(&self.worktree, agent, mode)
+    }
+
+    fn spawn_in(&self, worktree: &Path, agent: Agent, mode: Mode) -> SessionId {
         let spec = AgentSpec {
             agent,
             mode,
@@ -300,13 +304,39 @@ impl Setup {
             rows: 30,
             panel: None,
         };
-        self.core().spawn_agent(&self.worktree, spec).unwrap()
+        self.core().spawn_agent(worktree, spec).unwrap()
+    }
+
+    // A new worktree of the repo, on a new branch.
+    fn add_worktree(&self, branch: &str) -> PathBuf {
+        let new = NewWorktree {
+            branch: branch.into(),
+            ..NewWorktree::default()
+        };
+        block_on(self.core().create_worktree(&self.worktree, new))
+            .unwrap()
+            .worktree
+            .path
+    }
+
+    // The worktree that `worktree` nests under, as the list says.
+    fn nested_under(&self, worktree: &Path) -> Option<PathBuf> {
+        block_on(self.core().list_worktrees())
+            .into_iter()
+            .find(|w| w.path == worktree)
+            .unwrap()
+            .nested_under
     }
 
     // Has `parent`, a Claude session in chat mode, ask grove for a Claude subagent the way
     // grove-mcp does, with its own token. Returns the subagent.
     fn spawn_subagent(&self, parent: SessionId) -> SessionId {
-        let reply = self.ask_for_subagent(parent);
+        self.spawn_subagent_in(parent, None)
+    }
+
+    // `spawn_subagent` in `worktree`, or else in the parent's own.
+    fn spawn_subagent_in(&self, parent: SessionId, worktree: Option<&Path>) -> SessionId {
+        let reply = self.ask_for_subagent_in(parent, worktree);
         let child: u64 = reply["result"]["session"]
             .as_str()
             .unwrap()
@@ -317,6 +347,10 @@ impl Setup {
 
     // The core's reply when `parent` asks for a subagent, with the token of its latest launch.
     fn ask_for_subagent(&self, parent: SessionId) -> Value {
+        self.ask_for_subagent_in(parent, None)
+    }
+
+    fn ask_for_subagent_in(&self, parent: SessionId, worktree: Option<&Path>) -> Value {
         let token = wait_for("the parent's token", || {
             read_log(&self.claude_chat).iter().rev().find_map(|line| {
                 let env = line.get("env")?;
@@ -324,10 +358,14 @@ impl Setup {
                     .then(|| env["GROVE_SESSION_TOKEN"].as_str().unwrap().to_owned())
             })
         });
+        let mut ask = json!({"type": "subagent_spawn", "agent": "claude", "prompt": "hi"});
+        if let Some(worktree) = worktree {
+            ask["worktree"] = json!(worktree);
+        }
         let request = json!({
             "session": parent.to_string(),
             "token": token,
-            "request": {"type": "subagent_spawn", "agent": "claude", "prompt": "hi"},
+            "request": ask,
         });
         let mut stream = UnixStream::connect(&self.cfg.socket).unwrap();
         stream.write_all(request.to_string().as_bytes()).unwrap();
@@ -613,6 +651,127 @@ fn a_subagent_lists_its_parent_and_comes_back_with_it_after_a_restart() {
     s.restart();
     wait_launches(&s.claude_chat, 4);
     assert_eq!(s.sessions(), listed);
+}
+
+#[test]
+fn a_subagent_in_another_worktree_nests_it_under_the_parents_and_that_outlives_both_and_a_restart()
+{
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let other = s.add_worktree("feat-nested");
+    let parent = s.spawn(Agent::Claude, Mode::Chat);
+    assert_eq!(s.nested_under(&other), None);
+
+    let child = s.spawn_subagent_in(parent, Some(&other));
+
+    assert_eq!(s.nested_under(&other), Some(s.worktree.clone()));
+    assert_eq!(s.nested_under(&s.worktree), None);
+    s.core().kill(child).unwrap();
+    s.core().kill(parent).unwrap();
+    s.wait_state(parent, AgentState::Exited);
+    assert_eq!(s.nested_under(&other), Some(s.worktree.clone()));
+    s.restart();
+    assert_eq!(s.nested_under(&other), Some(s.worktree.clone()));
+}
+
+#[test]
+fn a_worktree_keeps_the_first_worktree_it_nests_under_and_a_subagent_in_its_parents_own_nests_nothing()
+ {
+    let _serial = serial();
+    let s = setup(Scenarios::default());
+    let other = s.add_worktree("feat-nested");
+    let third = s.add_worktree("feat-third");
+    let first_parent = s.spawn(Agent::Claude, Mode::Chat);
+    s.spawn_subagent_in(first_parent, Some(&other));
+    let second_parent = s.spawn_in(&third, Agent::Claude, Mode::Chat);
+
+    s.spawn_subagent_in(second_parent, Some(&other));
+    s.spawn_subagent(first_parent);
+
+    assert_eq!(s.nested_under(&other), Some(s.worktree.clone()));
+    assert_eq!(s.nested_under(&s.worktree), None);
+    assert_eq!(s.nested_under(&third), None);
+}
+
+#[test]
+fn a_worktree_nested_under_one_that_is_deleted_or_forgotten_nests_under_nothing_and_can_nest_again()
+{
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let (deleted, forgotten) = (s.add_worktree("plan-a"), s.add_worktree("plan-b"));
+    let (child_a, child_b) = (s.add_worktree("feat-a"), s.add_worktree("feat-b"));
+    for (parent, child) in [(&deleted, &child_a), (&forgotten, &child_b)] {
+        let session = s.spawn_in(parent, Agent::Claude, Mode::Chat);
+        s.spawn_subagent_in(session, Some(child));
+        assert_eq!(s.nested_under(child), Some(parent.clone()));
+    }
+    let delete = RemoveOpts::Delete {
+        confirmed: true,
+        delete_branch: false,
+    };
+
+    block_on(s.core().remove_worktree(&deleted, delete)).unwrap();
+    block_on(s.core().remove_worktree(&forgotten, RemoveOpts::Forget)).unwrap();
+
+    assert_eq!(s.nested_under(&child_a), None);
+    assert_eq!(s.nested_under(&child_b), None);
+    s.restart();
+    assert_eq!(s.nested_under(&child_a), None);
+    // A worktree added at the deleted one's path is a stranger, and nothing nests under it.
+    assert_eq!(s.add_worktree("plan-a"), deleted);
+    assert_eq!(s.nested_under(&child_a), None);
+    let main = s.spawn(Agent::Claude, Mode::Chat);
+    s.spawn_subagent_in(main, Some(&child_a));
+    assert_eq!(s.nested_under(&child_a), Some(s.worktree.clone()));
+}
+
+#[test]
+fn a_subagent_that_would_close_a_loop_of_nesting_nests_nothing() {
+    let _serial = serial();
+    let s = setup(Scenarios::default());
+    let (a, b, c) = (
+        s.add_worktree("a"),
+        s.add_worktree("b"),
+        s.add_worktree("c"),
+    );
+    let in_a = s.spawn_in(&a, Agent::Claude, Mode::Chat);
+    s.spawn_subagent_in(in_a, Some(&b));
+    let in_b = s.spawn_in(&b, Agent::Claude, Mode::Chat);
+    s.spawn_subagent_in(in_b, Some(&c));
+
+    // Straight back, and back through the chain.
+    s.spawn_subagent_in(in_b, Some(&a));
+    let in_c = s.spawn_in(&c, Agent::Claude, Mode::Chat);
+    s.spawn_subagent_in(in_c, Some(&a));
+
+    assert_eq!(s.nested_under(&a), None);
+    assert_eq!(s.nested_under(&b), Some(a.clone()));
+    assert_eq!(s.nested_under(&c), Some(b.clone()));
+}
+
+#[test]
+fn a_subagent_in_another_repo_or_in_a_main_worktree_nests_nothing() {
+    let _serial = serial();
+    let s = setup(Scenarios::default());
+    let feat = s.add_worktree("feat");
+    let other = s.dir.path().join("other");
+    fs::create_dir(&other).unwrap();
+    git(&other, &["init", "-q", "-b", "main"]);
+    git(&other, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    let other = other.canonicalize().unwrap();
+    block_on(s.core().add_repo(&other)).unwrap();
+    let in_other = s.spawn_in(&other, Agent::Claude, Mode::Chat);
+    let in_feat = s.spawn_in(&feat, Agent::Claude, Mode::Chat);
+
+    s.spawn_subagent_in(in_other, Some(&feat));
+    s.spawn_subagent_in(in_feat, Some(&s.worktree));
+
+    assert_eq!(s.nested_under(&feat), None);
+    assert_eq!(s.nested_under(&s.worktree), None);
+    // The refused one used up nothing.
+    let main = s.spawn(Agent::Claude, Mode::Chat);
+    s.spawn_subagent_in(main, Some(&feat));
+    assert_eq!(s.nested_under(&feat), Some(s.worktree.clone()));
 }
 
 #[test]
@@ -1177,7 +1336,7 @@ fn a_session_saved_before_grove_kept_models_comes_back_with_no_choice() {
     // The state file as grove wrote it before version 7: no model on any session.
     let path = s.cfg.home.join("state.json");
     let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(state["version"], json!(7));
+    assert_eq!(state["version"], json!(8));
     fn forget_models(value: &mut Value) {
         match value {
             Value::Object(object) => {

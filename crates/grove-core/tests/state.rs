@@ -146,6 +146,7 @@ fn every_change_to_repos_and_worktrees_survives_a_restart() {
         display_name: "main".into(),
         issue_link: None,
         base_branch: Some("main".into()),
+        nested_under: None,
     };
     assert_eq!(
         block_on(core.list_worktrees()),
@@ -158,6 +159,7 @@ fn every_change_to_repos_and_worktrees_survives_a_restart() {
                 display_name: "Login fix".into(),
                 issue_link: Some(issue.into()),
                 base_branch: Some("develop".into()),
+                nested_under: None,
             },
             main(&second),
             WorktreeInfo {
@@ -167,6 +169,7 @@ fn every_change_to_repos_and_worktrees_survives_a_restart() {
                 display_name: "detached".into(),
                 issue_link: None,
                 base_branch: Some("main".into()),
+                nested_under: None,
             },
         ]
     );
@@ -234,6 +237,37 @@ fn a_state_file_from_before_repo_settings_loads_with_empty_settings() {
 }
 
 #[test]
+fn a_state_file_from_before_nested_worktrees_loads_with_none_nested() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let repo = new_repo(dir.path(), "repo");
+    let linked = dir.path().join("linked");
+    let cfg = CoreConfig::new(dir.path().join("home"));
+    fs::create_dir(&cfg.home).unwrap();
+    // As a version 7 grove wrote it, with no nested_under.
+    let v7 = format!(
+        r#"{{"version": 7, "repos": [{{"main_worktree": {{"path": "{}", "branch": "main",
+        "display_name": "main", "issue_link": null, "base_branch": "main"}},
+        "linked_worktrees": [{{"path": "{}", "branch": "feat", "display_name": "feat",
+        "issue_link": null, "base_branch": "main"}}]}}]}}"#,
+        repo.display(),
+        linked.display()
+    );
+    fs::write(cfg.home.join("state.json"), v7).unwrap();
+
+    let (core, _events) = Core::start(cfg).unwrap();
+
+    let listed = block_on(core.list_worktrees());
+    assert_eq!(
+        listed
+            .iter()
+            .map(|w| (&w.path, &w.nested_under))
+            .collect::<Vec<_>>(),
+        [(&repo, &None), (&linked, &None)]
+    );
+}
+
+#[test]
 fn a_state_file_from_before_profiles_moves_run_sessions_and_launch_args_into_overrides() {
     let _serial = serial();
     let dir = short_temp_dir();
@@ -284,7 +318,7 @@ fn a_state_file_from_before_profiles_moves_run_sessions_and_launch_args_into_ove
     // The next save writes the new version, which reads back the same.
     block_on(core.set_repo_settings(&app, migrated.clone())).unwrap();
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&state).unwrap()).unwrap();
-    assert_eq!(saved["version"], 7);
+    assert_eq!(saved["version"], 8);
     let core = restart(core, dir.path());
     assert_eq!(core.repo_settings(&app).unwrap(), migrated);
 }
