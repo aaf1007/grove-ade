@@ -115,3 +115,12 @@ test("a full screen listener hears the window's state at once, then after each r
   stop();
   await vi.waitFor(() => expect(tauriWindow.resized).toBeUndefined());
 });
+
+test("a full screen listener hears nothing once it unsubscribed, even from a check still running", async () => {
+  const got: boolean[] = [];
+
+  tauriBridge.onFullscreenChanged((fullscreen) => got.push(fullscreen))();
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(got).toEqual([]);
+});

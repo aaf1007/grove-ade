@@ -725,10 +725,14 @@ export const tauriBridge: Bridge = {
   // Entering and leaving full screen resize the window.
   onFullscreenChanged(listener) {
     const window = getCurrentWindow();
-    const check = () => void window.isFullscreen().then(listener);
+    let listening = true;
+    const check = () => void window.isFullscreen().then((fullscreen) => listening && listener(fullscreen));
     check();
     const unlisten = window.onResized(check);
-    return () => void unlisten.then((stop) => stop());
+    return () => {
+      listening = false;
+      void unlisten.then((stop) => stop());
+    };
   },
   spawnAgentAfterSetup: (worktree, agent, panel) =>
     invoke("spawn_agent_after_setup", { worktree, agent, panel }),
