@@ -98,6 +98,10 @@ export interface FakeBridge extends Bridge {
   revealed: string[];
   /** Every link `openLinkInDefaultBrowser` opened, in order. */
   openedLinks: string[];
+  /** Makes the next `pickFolder` give `path`, or null as a cancel does. Until called, it cancels. */
+  willPickFolder(path: string | null): void;
+  /** How many times `pickFolder` was opened. */
+  readonly foldersPicked: number;
   /** Every shell session started, in order. */
   spawned: { session: SessionId; worktree: string; cols: number; rows: number }[];
   /** Every agent session started, in order. */
@@ -301,6 +305,8 @@ export function fakeBridge(
   const opened: FakeBridge["opened"] = [];
   const revealed: string[] = [];
   const openedLinks: string[] = [];
+  let nextFolder: string | null = null;
+  let foldersPicked = 0;
   const spawned: FakeBridge["spawned"] = [];
   const spawnedAgents: FakeBridge["spawnedAgents"] = [];
   const sent: FakeBridge["sent"] = [];
@@ -612,6 +618,18 @@ export function fakeBridge(
           ...w,
         })),
       );
+    },
+    async pickFolder() {
+      foldersPicked++;
+      const picked = nextFolder;
+      nextFolder = null;
+      return picked;
+    },
+    willPickFolder(path) {
+      nextFolder = path;
+    },
+    get foldersPicked() {
+      return foldersPicked;
     },
     async listWorktrees() {
       return tracked.map((w) => ({ ...w }));

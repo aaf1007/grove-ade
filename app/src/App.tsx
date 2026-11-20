@@ -22,7 +22,15 @@ import { PanelTabs, tabId } from "./PanelTabs";
 import type { ModelChoice } from "./Picker";
 import { ProfilePanel } from "./ProfilePanel";
 import { QuitGuard } from "./QuitGuard";
-import { AGENT_NAMES, type AgentSession, Sidebar, byRepo, folderName, sessionNames } from "./Sidebar";
+import {
+  AGENT_NAMES,
+  type AgentSession,
+  Sidebar,
+  type SidebarHandle,
+  byRepo,
+  folderName,
+  sessionNames,
+} from "./Sidebar";
 import { Splitter } from "./Splitter";
 import { TerminalPanel } from "./TerminalPanel";
 import { useAppearance } from "./theme";
@@ -52,7 +60,9 @@ export function App({ bridge }: { bridge: Bridge }) {
   // A file the chat asked the Diff panel to show, until the panel took it.
   const [diffReveal, setDiffReveal] = useState<{ worktree: string; path: string } | null>(null);
   // Every tracked worktree, as the sidebar last listed them.
-  const [worktrees, setWorktrees] = useState<Worktree[]>([]);
+  // null until the sidebar has the core's first list.
+  const [worktrees, setWorktrees] = useState<Worktree[] | null>(null);
+  const sidebarRef = useRef<SidebarHandle>(null);
   const {
     workspaces,
     errors: workspaceErrors,
@@ -542,7 +552,7 @@ export function App({ bridge }: { bridge: Bridge }) {
   const agentError = selected && startErrors[startKey("agent", selected)];
   const workspaceError = selected && workspaceErrors[selected];
   const detailsSession = selected ? focusedSession(selected) : null;
-  const selectedRepo = byRepo(worktrees).find((repo) => repo.some((w) => w.path === selected));
+  const selectedRepo = byRepo(worktrees ?? []).find((repo) => repo.some((w) => w.path === selected));
   const selectedWorktree = selectedRepo?.find((w) => w.path === selected);
   const regions = ["regions"];
   if (!layout.sidebarOpen) regions.push("no-sidebar");
@@ -610,6 +620,7 @@ export function App({ bridge }: { bridge: Bridge }) {
               accounts={accounts}
               appearance={appearance}
               onAppearance={setAppearance}
+              ref={sidebarRef}
             />
           </div>
           {layout.sidebarOpen && (
@@ -699,13 +710,23 @@ export function App({ bridge }: { bridge: Bridge }) {
                     ),
                 )}
             </div>
-            {(!selected || workspace?.chat.every((panel) => !panel.shown)) && (
+            {worktrees?.length === 0 && (
+              <div className="empty-chat">
+                <h2>No repo added yet</h2>
+                <p>
+                  <Button size="sm" onClick={() => sidebarRef.current?.addRepo()}>
+                    Add repo
+                  </Button>
+                </p>
+              </div>
+            )}
+            {!!worktrees?.length && (!selected || workspace?.chat.every((panel) => !panel.shown)) && (
               <div className="empty-chat">
                 <h2>{selected ? "No agent session in this worktree" : "No worktree selected"}</h2>
                 <p>
                   {selected
-                    ? "Start Claude Code from the worktree in the sidebar."
-                    : "Add a repo and pick a worktree in the sidebar."}
+                    ? "Start Claude Code from the worktree's menu in the sidebar."
+                    : "Pick a worktree in the sidebar."}
                 </p>
               </div>
             )}

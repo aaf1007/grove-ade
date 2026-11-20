@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 
 /** A worktree grove tracks, as the core reports it. */
 export interface Worktree {
@@ -357,6 +358,8 @@ export type AgentChange = { kind: "Workspace"; worktree: string; by: SessionId }
 export interface Bridge {
   /** Adds the repo that `path` is in and adopts every worktree in its `git worktree list`. */
   addRepo(path: string): Promise<void>;
+  /** Opens the system folder picker. The picked folder's path, or null when cancelled. */
+  pickFolder(): Promise<string | null>;
   /** Every tracked worktree, repo by repo in the order they were added, main worktree first. */
   listWorktrees(): Promise<Worktree[]>;
   /** The worktree's diff against `base`, file by file in path order. */
@@ -596,6 +599,7 @@ export interface Bridge {
 // A failed command rejects with the core's error message as a string.
 export const tauriBridge: Bridge = {
   addRepo: (path) => invoke("add_repo", { path }),
+  pickFolder: () => open({ directory: true, multiple: false, title: "Add repo" }),
   listWorktrees: () => invoke("list_worktrees"),
   diff: (worktree, base) => invoke("diff", { worktree, base }),
   fileVersions: (worktree, base, file) => invoke("file_versions", { worktree, base, file }),
