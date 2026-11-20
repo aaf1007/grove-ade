@@ -57,6 +57,8 @@ export function App({ bridge }: { bridge: Bridge }) {
     useLayout();
   const { appearance, setAppearance } = useAppearance();
   const [selected, setSelected] = useState<string | null>(null);
+  // A file the chat asked the Diff panel to show, until the panel took it.
+  const [diffReveal, setDiffReveal] = useState<{ worktree: string; path: string } | null>(null);
   // Every tracked worktree, as the sidebar last listed them.
   // null until the sidebar has the core's first list.
   const [worktrees, setWorktrees] = useState<Worktree[] | null>(null);
@@ -668,7 +670,10 @@ export function App({ bridge }: { bridge: Bridge }) {
                   order={places[started.session]?.at}
                   state={agentStates[started.session]}
                   focusRequest={jumped.session === started.session ? jumped.request : 0}
-                  onOpenDiff={() => open(started.worktree, "Diff")}
+                  onOpenDiff={(path) => {
+                    open(started.worktree, "Diff");
+                    if (path) setDiffReveal({ worktree: started.worktree, path });
+                  }}
                   onChangeAgent={(agent) => changeAgent(started, agent)}
                   onSplit={shownCount < MAX_SHOWN_AGENT_PANELS ? () => split(started) : undefined}
                   onHide={
@@ -771,6 +776,8 @@ export function App({ bridge }: { bridge: Bridge }) {
                   worktree={selected}
                   agentStates={agentStates}
                   opened={diffOpened[selected]}
+                  reveal={diffReveal?.worktree === selected ? diffReveal.path : null}
+                  onRevealed={() => setDiffReveal(null)}
                   onSent={(session) => {
                     // The batch shows in its panel, so the panel shows too.
                     const started = agents.find((agent) => agent.session === session);

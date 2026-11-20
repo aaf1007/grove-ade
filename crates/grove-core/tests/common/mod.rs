@@ -77,3 +77,48 @@ pub fn write_script(path: &Path, body: &str) {
             .success()
     );
 }
+
+/// `messages` with their times taken out, to compare with messages a test writes, which cannot
+/// know when the core got them. `times` checks the times.
+#[allow(dead_code)]
+pub fn untimed(
+    messages: impl IntoIterator<Item = grove_core::AgentMessage>,
+) -> Vec<grove_core::AgentMessage> {
+    use grove_core::AgentMessage;
+    messages
+        .into_iter()
+        .map(|mut message| {
+            match &mut message {
+                AgentMessage::TurnStarted { time_unix_ms }
+                | AgentMessage::ToolCall { time_unix_ms, .. }
+                | AgentMessage::TurnEnded { time_unix_ms, .. } => *time_unix_ms = None,
+                _ => {}
+            }
+            message
+        })
+        .collect()
+}
+
+/// The times of the messages in `messages` that have one: turn starts, tool calls and turn ends.
+#[allow(dead_code)]
+pub fn times(messages: &[grove_core::AgentMessage]) -> Vec<Option<u64>> {
+    use grove_core::AgentMessage;
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::TurnStarted { time_unix_ms }
+            | AgentMessage::ToolCall { time_unix_ms, .. }
+            | AgentMessage::TurnEnded { time_unix_ms, .. } => Some(*time_unix_ms),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The time now, in milliseconds since the Unix epoch.
+#[allow(dead_code)]
+pub fn now_unix_ms() -> u64 {
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after 1970");
+    since_epoch.as_millis() as u64
+}

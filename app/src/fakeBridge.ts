@@ -1,5 +1,6 @@
 import type {
   AccountChanged,
+  AgentChange,
   Agent,
   AgentMessage,
   AgentStateChanged,
@@ -90,7 +91,7 @@ export interface FakeBridge extends Bridge {
    * Adds the messages to a chat-mode session's conversation, as its agent sends them. If a panel
    * subscribed, they go to it as one frame, as the core's batcher sends them.
    */
-  messages(session: SessionId, ...messages: AgentMessage[]): void;
+  messages(session: SessionId, ...messages: FakeMessage[]): void;
   /** Every `openInEditor` call, in order. */
   opened: { editor: Editor; worktree: string; file: string; line: number }[];
   /** Every worktree `revealInFinder` showed, in order. */
@@ -167,6 +168,18 @@ export interface FakeBridge extends Bridge {
    * sends the held ones, in order, and stops holding.
    */
   holdWorkspaceChanges(): () => void;
+  // The agent change notice (#4).
+  /**
+   * Saves the worktree's workspace as the agent session `by` does through `grove-mcp`: the one from
+   * before stays for Undo, and `agent-change` comes before `workspace-changed`, as in the core.
+   */
+  agentChangesWorkspace(worktree: string, by: SessionId, workspace: Workspace): void;
+  /** Changes a profile as the agent session `by` does through `grove-mcp`. */
+  agentChangesProfile(by: SessionId): void;
+  /** Every `undoWorkspace` call the fake core took, in order. */
+  undone: string[];
+  /** Every `saveWorkspaceToProfile` call the fake core took, in order. */
+  savedToProfile: string[];
 
   // Worktree management (#52).
   /** Changes what the fake core finds in the worktree. A worktree starts clean and unmerged. */
@@ -261,6 +274,20 @@ export const FAKE_MODELS: Record<Agent, Model[]> = {
   ],
 };
 
+/** An agent message as a test writes it: a time it leaves out is null, as a record with none. */
+export type FakeMessage = AgentMessage extends infer Message
+  ? Message extends { timeUnixMs: number | null }
+    ? Omit<Message, "timeUnixMs"> & { timeUnixMs?: number | null }
+    : Message
+  : never;
+
+function withTime(message: FakeMessage): AgentMessage {
+  if (!TIMED.has(message.type)) return message as AgentMessage;
+  return { ...message, timeUnixMs: (message as { timeUnixMs?: number | null }).timeUnixMs ?? null } as AgentMessage;
+}
+
+const TIMED = new Set<AgentMessage["type"]>(["TurnStarted", "ToolCall", "TurnEnded"]);
+
 /**
  * An in-memory bridge for tests, with no Tauri and no core. `repos` maps a path the user can
  * add to the worktrees git would list for it, main worktree first.
@@ -321,6 +348,11 @@ export function fakeBridge(
   // Workspaces (#122): the saved ones, by worktree path.
   const workspaces = new Map<string, Workspace>();
   const workspacesSet: FakeBridge["workspacesSet"] = [];
+  // The agent change notice (#4): each worktree's workspace from before an agent changed it.
+  const beforeAgentChange = new Map<string, Workspace>();
+  const agentChangeListeners = new Set<(change: AgentChange) => void>();
+  const undone: string[] = [];
+  const savedToProfile: string[] = [];
   // Worktree management (#52).
   const statuses = new Map<string, FakeWorktreeStatus>();
   const deleted: FakeBridge["deleted"] = [];
@@ -815,7 +847,7 @@ export function fakeBridge(
       accounts.set(change.agent, change);
       accountListeners.forEach((listener) => listener(change));
     },
-    messages: (session, ...messages) => addMessages(session, messages),
+    messages: (session, ...messages) => addMessages(session, messages.map(withTime)),
     opened,
     revealed,
     openedLinks,
@@ -905,6 +937,41 @@ export function fakeBridge(
       return () => workspaceListeners.delete(listener);
     },
     workspacesSet,
+    // The agent change notice (#4).
+    onAgentChange(listener) {
+      agentChangeListeners.add(listener);
+      return () => agentChangeListeners.delete(listener);
+    },
+    agentChangesWorkspace(worktree, by, workspace) {
+      checkTracked(worktree);
+      beforeAgentChange.set(worktree, structuredClone(workspaces.get(worktree) ?? DEFAULT_WORKSPACE));
+      workspaces.set(worktree, structuredClone(workspace));
+      agentChangeListeners.forEach((listener) => listener({ kind: "Workspace", worktree, by }));
+      workspaceChanged(worktree);
+    },
+    agentChangesProfile(by) {
+      agentChangeListeners.forEach((listener) => listener({ kind: "Profiles", by }));
+      profilesChanged();
+    },
+    async undoWorkspace(worktree) {
+      checkTracked(worktree);
+      const before = beforeAgentChange.get(worktree);
+      if (!before) throw `no agent change to the workspace of ${worktree} is left to undo`;
+      beforeAgentChange.delete(worktree);
+      workspaces.set(worktree, before);
+      undone.push(worktree);
+      workspaceChanged(worktree);
+    },
+    async saveWorkspaceToProfile(worktree) {
+      checkTracked(worktree);
+      const at = tracked.findIndex((w) => w.path === worktree);
+      const repo = tracked.slice(0, at + 1).filter((w) => w.isMain).pop()!.path;
+      if (!repoProfiles.get(repo)) throw `the repo at ${repo} uses no profile`;
+      savedToProfile.push(worktree);
+      profilesChanged();
+    },
+    undone,
+    savedToProfile,
     spawnAgentWithoutPanel: startAgentSession,
     holdWorkspaceChanges() {
       heldWorkspaceChanges = [];

@@ -355,6 +355,151 @@ fn only_the_last_agent_change_can_be_undone_and_only_once() {
 }
 
 #[test]
+fn undo_puts_a_session_placed_after_the_agent_change_in_its_own_panel_when_that_is_empty() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let (core, mut events, repo) = core_with_fake_agents(dir.path());
+    let agent = sleeper(&core, &repo);
+    let before = Workspace {
+        chat: vec![
+            panel(Agent::Claude, None, true),
+            panel(Agent::Codex, None, true),
+        ],
+        ..arranged()
+    };
+    block_on(core.set_workspace(&repo, before.clone(), None)).unwrap();
+    let one_panel = Workspace {
+        chat: vec![panel(Agent::Claude, None, true)],
+        ..before.clone()
+    };
+    block_on(core.set_workspace(&repo, one_panel, Some(agent))).unwrap();
+    // Placed in a new panel after the last, the second one.
+    let placed = core
+        .spawn_agent(&repo, in_panel(Agent::Codex, None))
+        .unwrap();
+    workspace_changes_within(&mut events, Duration::from_millis(100));
+
+    block_on(core.undo_workspace(&repo)).unwrap();
+
+    assert_eq!(
+        core.workspace(&repo).unwrap(),
+        Workspace {
+            chat: vec![
+                panel(Agent::Claude, None, true),
+                panel(Agent::Codex, Some(placed), true),
+            ],
+            ..before
+        }
+    );
+    assert_eq!(
+        workspace_changes_within(&mut events, Duration::from_millis(300)),
+        [(repo, None)]
+    );
+}
+
+#[test]
+fn undo_puts_a_placed_session_after_the_last_panel_when_its_own_is_taken() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let (core, _events, repo) = core_with_fake_agents(dir.path());
+    let agent = sleeper(&core, &repo);
+    let first = core
+        .spawn_agent(&repo, in_panel(Agent::Claude, Some(0)))
+        .unwrap();
+    let before = core.workspace(&repo).unwrap();
+    let swapped = Workspace {
+        chat: vec![
+            panel(Agent::Codex, None, true),
+            panel(Agent::Claude, Some(first), true),
+        ],
+        ..before.clone()
+    };
+    block_on(core.set_workspace(&repo, swapped, Some(agent))).unwrap();
+    let placed = core
+        .spawn_agent(&repo, in_panel(Agent::Codex, Some(0)))
+        .unwrap();
+
+    block_on(core.undo_workspace(&repo)).unwrap();
+
+    assert_eq!(
+        core.workspace(&repo).unwrap().chat,
+        [
+            panel(Agent::Claude, Some(first), true),
+            panel(Agent::Codex, Some(placed), true),
+        ]
+    );
+}
+
+#[test]
+fn undo_leaves_out_the_panel_of_a_session_that_ended() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let (core, mut events, repo) = core_with_fake_agents(dir.path());
+    let agent = sleeper(&core, &repo);
+    let before = core.workspace(&repo).unwrap();
+    block_on(core.set_workspace(&repo, arranged(), Some(agent))).unwrap();
+    let placed = core
+        .spawn_agent(&repo, in_panel(Agent::Codex, None))
+        .unwrap();
+    core.kill(placed).unwrap();
+    wait_exited(&mut events, placed);
+
+    block_on(core.undo_workspace(&repo)).unwrap();
+
+    assert_eq!(core.workspace(&repo).unwrap(), before);
+}
+
+#[test]
+fn save_to_profile_writes_the_shown_agents_tabs_and_terminal_into_the_repos_profile() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let (core, mut events, repo) = core_with_repo(dir.path());
+    use_profile(&core, &repo, Some("Rust crate"), Layout::default());
+    block_on(core.set_workspace(&repo, arranged(), None)).unwrap();
+    while events.try_recv().is_ok() {}
+
+    block_on(core.save_workspace_to_profile(&repo)).unwrap();
+
+    let profile = core
+        .profiles()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.name == "Rust crate")
+        .unwrap();
+    // The hidden Codex panel and the selected tab have no place in a layout.
+    assert_eq!(
+        profile.settings.layout,
+        Layout {
+            chat: Some(vec![Agent::Codex, Agent::Claude]),
+            panels: Some(vec![PanelKind::Diff, PanelKind::Logs]),
+            terminal: Some(false),
+        }
+    );
+    let mut by = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let CoreEvent::ProfilesChanged { by: who } = event {
+            by.push(who);
+        }
+    }
+    assert_eq!(by, [None]);
+}
+
+#[test]
+fn save_to_profile_is_refused_for_a_repo_with_no_profile() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let (core, _events, repo) = core_with_repo(dir.path());
+    use_profile(&core, &repo, None, Layout::default());
+
+    let err = block_on(core.save_workspace_to_profile(&repo)).unwrap_err();
+
+    assert!(
+        matches!(err, CoreError::NoRepoProfile(ref r) if *r == repo),
+        "{err}"
+    );
+}
+
+#[test]
 fn a_user_change_alone_leaves_nothing_to_undo() {
     let _serial = serial();
     let dir = short_temp_dir();

@@ -505,12 +505,13 @@ fn one_recorded_turn() -> Value {
 fn turn_messages(text: &str) -> Vec<AgentMessage> {
     vec![
         AgentMessage::User { text: text.into() },
-        AgentMessage::TurnStarted,
+        AgentMessage::TurnStarted { time_unix_ms: None },
         AgentMessage::TextDelta {
             text: format!("re: {text}"),
         },
         AgentMessage::TurnEnded {
             outcome: TurnOutcome::Completed,
+            time_unix_ms: None,
         },
     ]
 }
@@ -570,7 +571,66 @@ fn a_claude_chat_session_with_messages_comes_back_resumed_with_its_history() {
         let history = s.core().subscribe(claude, sink).ok()?;
         (!history.is_empty()).then_some(history)
     });
+    // The record has no times, as a record from before grove read them, so the history has none.
     assert_eq!(history, turn_messages("fix the bug"));
+}
+
+#[test]
+fn a_restored_claude_chat_session_keeps_the_times_its_record_has_not_the_time_of_the_restore() {
+    let _serial = serial();
+    let (started, called, ended) = (
+        1_763_560_920_000_u64,
+        1_763_560_921_500_u64,
+        1_763_560_983_000_u64,
+    );
+    let record = |message: Value| json!({ "record": message });
+    let input = json!({"file_path": "a.rs"});
+    let mut s = setup(Scenarios {
+        claude_chat: json!([
+            {"wait_message": "user_message"},
+            record(json!({"type": "user", "text": "{{text}}"})),
+            record(json!({"type": "turn_start", "time_unix_ms": started})),
+            record(json!({"type": "tool_call", "id": "toolu_1", "tool": "Read", "input": input,
+                          "time_unix_ms": called})),
+            record(json!({"type": "turn_end", "time_unix_ms": ended})),
+            {"send": {"type": "turn_start"}},
+            {"send": {"type": "turn_end"}},
+            {"wait_message": "never"},
+        ]),
+        ..Scenarios::default()
+    });
+    let claude = s.spawn(Agent::Claude, Mode::Chat);
+    s.core().send_message(claude, "read it").unwrap();
+    s.wait_state(claude, AgentState::Done);
+
+    s.restart();
+
+    let history = wait_for("the history", || {
+        let (sink, _frames) = unbounded_channel();
+        let history = s.core().subscribe(claude, sink).ok()?;
+        (!history.is_empty()).then_some(history)
+    });
+    assert_eq!(
+        history,
+        [
+            AgentMessage::User {
+                text: "read it".into()
+            },
+            AgentMessage::TurnStarted {
+                time_unix_ms: Some(started)
+            },
+            AgentMessage::ToolCall {
+                id: "toolu_1".into(),
+                tool: "Read".into(),
+                input,
+                time_unix_ms: Some(called),
+            },
+            AgentMessage::TurnEnded {
+                outcome: TurnOutcome::Completed,
+                time_unix_ms: Some(ended),
+            },
+        ]
+    );
 }
 
 #[test]

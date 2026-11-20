@@ -121,6 +121,15 @@ shapes below. Subagents' messages are left out, as they are live. The record kee
 interrupts or errors, so every turn ends plain. The core adds the messages to the
 conversation and sets no state from them.
 
+In a `history`, `turn_start`, `tool_call` and `turn_end` also carry `time_unix_ms`: when Claude
+wrote the message to its record, in milliseconds since the Unix epoch. A turn starts at its user
+message's time and ends at the time of its last message. The field is left out when the record
+has no time. Live messages never carry it: the core stamps the time it gets them.
+
+```json
+{"type":"tool_call","id":"toolu_1","tool":"Bash","input":{"command":"ls"},"time_unix_ms":1763560921500}
+```
+
 ### `account`
 
 Who is logged in, as the agent reports it. Sent once the sidecar knows, and again if it

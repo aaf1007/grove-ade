@@ -1021,14 +1021,6 @@ svg {
   text-align: center;
 }
 
-.working-for {
-  display: flex;
-  height: var(--control-xs);
-  align-items: center;
-  color: var(--muted);
-  font: var(--text-body);
-}
-
 .card {
   overflow: hidden;
   border: 1px solid var(--line);
@@ -1068,12 +1060,6 @@ svg {
   padding: 0 var(--space-12) var(--space-12);
 }
 
-.file-rows {
-  margin: 0;
-  padding: var(--space-4) 0;
-  list-style: none;
-}
-
 .batch-items {
   margin: 0;
   padding: 0;
@@ -1095,18 +1081,9 @@ svg {
   justify-self: start;
 }
 
-.file-row {
-  padding: var(--space-4) var(--space-12);
-  overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: var(--text-code-sm-size);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .composer-wrap {
   flex: none;
-  padding: var(--space-8) var(--space-48) var(--space-16);
+  padding: var(--space-8) var(--space-48) var(--space-10);
 }
 
 .composer-error {
@@ -1116,13 +1093,20 @@ svg {
   font-size: var(--text-meta-size);
 }
 
+/* Over the chat: the panel at 88% with a blur, and a 1px outline inside its edge. Focus keeps it. */
 .composer {
   max-width: var(--chat-lane);
   margin: 0 auto;
-  border: 1px solid var(--line);
   border-radius: var(--radius-2xl);
-  background: var(--panel);
+  outline: 1px solid var(--line-soft);
+  outline-offset: -1px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
   box-shadow: var(--shadow-composer);
+  backdrop-filter: blur(12px);
+}
+
+:root[data-theme="light"] .composer {
+  outline-color: var(--line);
 }
 
 /* Two lines empty, then grows to 208px and scrolls. */
@@ -1160,16 +1144,16 @@ svg {
 .picker-btn {
   display: inline-flex;
   max-width: 100%;
-  height: 26px;
+  height: var(--control-sm);
   align-items: center;
   gap: var(--space-6);
   padding: 0 var(--space-8);
   overflow: hidden;
   border: 0;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: none;
-  color: var(--muted);
-  font-size: var(--text-label-size);
+  color: var(--fg);
+  font: var(--text-control);
   white-space: nowrap;
 }
 
@@ -1186,9 +1170,9 @@ svg {
 
 .picker-pop {
   top: auto;
-  right: auto;
+  right: 0;
   bottom: calc(100% + 6px);
-  left: 0;
+  left: auto;
   width: 290px;
   max-width: calc(100vw - 48px);
   max-height: 60vh;

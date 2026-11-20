@@ -96,6 +96,13 @@ button.tool:hover {
   white-space: nowrap;
 }
 
+.tool-time {
+  flex: none;
+  color: var(--muted);
+  font: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Under the row's label: past its icon and gap. */
 .tool-output,
 .tool-calls {
@@ -245,6 +252,193 @@ button.tool:hover {
 
 .question-card .question-submit {
   border-radius: var(--radius-full);
+}
+
+/* What the panel's agent session changed in the workspace or a profile, above the composer. */
+.agent-change {
+  display: flex;
+  max-width: var(--chat-lane);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-10);
+  margin: 0 auto var(--space-8);
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-xl);
+  background: var(--panel);
+  font: var(--text-body);
+}
+
+/* Whole lines for the text: when the buttons do not fit beside it, they wrap below it. */
+.agent-change-text {
+  flex: 1 1 calc(var(--space-32) * 8);
+  min-width: 0;
+}
+
+.agent-change-what {
+  color: var(--muted);
+}
+
+.agent-change-actions {
+  display: inline-flex;
+  margin-left: auto;
+  gap: var(--space-12);
+}
+
+.agent-change-action {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: var(--text-control);
+  cursor: pointer;
+}
+
+.agent-change-action:first-child {
+  color: var(--fg);
+}
+
+.agent-change-action:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.agent-change-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-change-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--failed);
+  font-size: var(--text-meta-size);
+}
+
+/* The worktree's changed files after the last turn. */
+.files-card {
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: calc(var(--radius-lg) + var(--space-2));
+  background: var(--code-bg);
+}
+
+.files-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-12);
+  font: var(--text-label);
+}
+
+.files-rows {
+  margin: 0;
+  padding: 0 0 var(--space-6);
+  list-style: none;
+}
+
+.files-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-12);
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: var(--text-code-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.files-row:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.files-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.files-counts {
+  display: inline-flex;
+  gap: var(--space-6);
+  font-family: var(--font-mono);
+}
+
+.files-counts .added {
+  color: var(--add);
+}
+
+.files-counts .removed {
+  color: var(--del);
+}
+
+/* The agent's mark, in its color. */
+.agent-mark {
+  display: inline-flex;
+  flex: none;
+}
+
+.agent-mark svg {
+  width: var(--icon);
+  height: var(--icon);
+  stroke-width: 2.2;
+}
+
+.agent-mark.Claude {
+  color: var(--claude);
+}
+
+.agent-mark.Codex {
+  color: var(--codex);
+}
+
+.picker-effort {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* Under the composer, in its lane: the branch, the profile, and the Chat/Terminal switch. */
+.composer-strip {
+  display: flex;
+  max-width: var(--chat-lane);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-16);
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-8) 0;
+  color: var(--muted);
+  font: var(--text-meta);
+}
+
+.composer-strip > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-strip > span svg {
+  width: var(--space-12);
+  height: var(--space-12);
+  flex: none;
+}
+
+.composer-strip > .spacer {
+  flex: 1;
+}
+
+/* Only the strip, at the bottom of the panel: in terminal mode, or while the mode is unknown. */
+.composer-wrap.strip-only {
+  margin-top: auto;
+  padding-top: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -19,7 +19,7 @@ use tokio::sync::broadcast::{self, error::TryRecvError};
 use tokio::sync::mpsc::unbounded_channel;
 
 mod common;
-use common::grove_hook;
+use common::{grove_hook, now_unix_ms, times, untimed};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -243,7 +243,8 @@ fn chat_spec(agent: Agent, prompt: Option<&str>) -> AgentSpec {
 }
 
 /// A subscribed sink's frames, each stamped when it came. A thread of its own receives and
-/// stamps them, so a busy test never makes a frame look late.
+/// stamps them, so a busy test never makes a frame look late. Its messages have their times
+/// taken out, which the tests that check times read from `Core::subscribe` themselves.
 struct Frames {
     arrivals: mpsc::Receiver<(Vec<AgentMessage>, Instant)>,
     frames: Vec<(Vec<AgentMessage>, Instant)>,
@@ -252,12 +253,12 @@ struct Frames {
 impl Frames {
     fn subscribe(core: &Core, session: SessionId) -> (Vec<AgentMessage>, Frames) {
         let (sink, mut rx) = unbounded_channel();
-        let history = core.subscribe(session, sink).unwrap();
+        let history = untimed(core.subscribe(session, sink).unwrap());
         let (stamped, arrivals) = mpsc::channel();
         // Ends once the core drops the sink.
         thread::spawn(move || {
             while let Some(frame) = rx.blocking_recv() {
-                if stamped.send((frame, Instant::now())).is_err() {
+                if stamped.send((untimed(frame), Instant::now())).is_err() {
                     return;
                 }
             }
@@ -324,9 +325,14 @@ fn user(text: &str) -> AgentMessage {
     AgentMessage::User { text: text.into() }
 }
 
+fn started() -> AgentMessage {
+    AgentMessage::TurnStarted { time_unix_ms: None }
+}
+
 fn ended() -> AgentMessage {
     AgentMessage::TurnEnded {
         outcome: TurnOutcome::Completed,
+        time_unix_ms: None,
     }
 }
 
@@ -381,7 +387,7 @@ fn a_message_makes_the_session_working_its_deltas_arrive_in_order_and_the_turn_e
         frames.messages(),
         [
             user("hi"),
-            AgentMessage::TurnStarted,
+            started(),
             delta("Hel"),
             delta("lo"),
             delta(" there"),
@@ -611,7 +617,8 @@ fn a_turn_that_ends_on_an_error_makes_the_session_failed_with_the_error_kind() {
         outcome: TurnOutcome::Failed {
             kind: "overloaded".into(),
             message: "API Error: 529 overloaded".into(),
-        }
+        },
+        time_unix_ms: None,
     }));
 }
 
@@ -908,7 +915,7 @@ fn a_message_the_sidecar_exits_before_starting_a_turn_on_shows_as_not_delivered(
         history,
         [
             user("one"),
-            AgentMessage::TurnStarted,
+            started(),
             delta("ok"),
             ended(),
             user("two"),
@@ -943,15 +950,7 @@ fn a_message_sent_during_a_turn_is_not_delivered_only_when_the_sidecar_exits_bef
 
         s.wait_exit(session);
         let (history, _) = Frames::subscribe(&s.core, session);
-        assert_eq!(
-            history,
-            [
-                user("one"),
-                AgentMessage::TurnStarted,
-                user("and this"),
-                last
-            ]
-        );
+        assert_eq!(history, [user("one"), started(), user("and this"), last]);
     }
 }
 
@@ -968,7 +967,7 @@ fn a_message_the_sidecar_started_a_turn_on_stays_delivered_when_it_exits_mid_tur
     s.wait_exit(session);
 
     let (history, _) = Frames::subscribe(&s.core, session);
-    assert_eq!(history, [user("go"), AgentMessage::TurnStarted]);
+    assert_eq!(history, [user("go"), started()]);
 }
 
 #[test]
@@ -990,10 +989,7 @@ fn lines_that_are_not_protocol_messages_are_skipped() {
     assert_eq!(s.next_state().1, AgentState::Done);
     frames.take();
     let (history, _) = Frames::subscribe(&s.core, session);
-    assert_eq!(
-        history,
-        [user("go"), AgentMessage::TurnStarted, delta("ok"), ended()]
-    );
+    assert_eq!(history, [user("go"), started(), delta("ok"), ended()]);
 }
 
 #[test]
@@ -1026,17 +1022,19 @@ fn tool_calls_and_results_are_kept_in_order_and_never_change_the_state() {
         history,
         [
             user("go"),
-            AgentMessage::TurnStarted,
+            started(),
             AgentMessage::ToolCall {
                 id: "toolu_03".into(),
                 tool: "Bash".into(),
                 input,
+                time_unix_ms: None,
             },
             result("toolu_03", "1 passed", false),
             AgentMessage::ToolCall {
                 id: "toolu_04".into(),
                 tool: "Read".into(),
                 input: json!({"file_path": "x"}),
+                time_unix_ms: None,
             },
             result("toolu_04", "no such file", true),
             result("toolu_05", "", false),
@@ -1044,6 +1042,34 @@ fn tool_calls_and_results_are_kept_in_order_and_never_change_the_state() {
             ended()
         ]
     );
+}
+
+#[test]
+fn a_tool_call_and_its_turn_from_the_sidecar_carry_the_times_the_core_got_them() {
+    let steps = json!([
+        {"wait_message": "user_message"},
+        {"send": {"type": "turn_start"}},
+        {"send": {"type": "tool_call", "id": "toolu_03", "tool": "Bash", "input": {"command": "ls"}}},
+        {"send": {"type": "turn_end"}},
+        {"wait_message": "never"},
+    ]);
+    let mut s = setup(steps);
+    let before = now_unix_ms();
+    let session = s.spawn(Some("go"));
+
+    assert_eq!(s.next_state().1, AgentState::Working);
+    assert_eq!(s.next_state().1, AgentState::Done);
+    let after = now_unix_ms();
+    let (sink, _frames) = unbounded_channel();
+    let stamped = times(&s.core.subscribe(session, sink).unwrap());
+    assert_eq!(stamped.len(), 3, "a turn start, a tool call and a turn end");
+    for time in stamped {
+        let time = time.expect("each has a time");
+        assert!(
+            (before..=after).contains(&time),
+            "{time} is not in {before}..={after}"
+        );
+    }
 }
 
 #[test]
@@ -1276,12 +1302,7 @@ fn an_approval_request_makes_the_session_need_approval_and_allow_once_reaches_th
     let (history, mut frames) = Frames::subscribe(&s.core, session);
     assert_eq!(
         history,
-        [
-            user("go"),
-            AgentMessage::TurnStarted,
-            user("now"),
-            approval_asked("r1")
-        ]
+        [user("go"), started(), user("now"), approval_asked("r1")]
     );
 
     s.core.answer(session, id("r1"), Reply::AllowOnce).unwrap();
@@ -1470,7 +1491,8 @@ fn interrupt_mid_turn_reaches_the_sidecar_and_leaves_the_session_idle() {
     assert_eq!(
         history.last(),
         Some(&AgentMessage::TurnEnded {
-            outcome: TurnOutcome::Interrupted
+            outcome: TurnOutcome::Interrupted,
+            time_unix_ms: None,
         })
     );
 }
@@ -1692,12 +1714,13 @@ fn sink_message(message: &Value) -> Option<AgentMessage> {
     let text = |key: &str| message[key].as_str().unwrap().to_owned();
     Some(match message["type"].as_str().unwrap() {
         "user_message" => user(&text("text")),
-        "turn_start" => AgentMessage::TurnStarted,
+        "turn_start" => started(),
         "text_delta" => delta(&text("text")),
         "tool_call" => AgentMessage::ToolCall {
             id: text("id"),
             tool: text("tool"),
             input: message["input"].clone(),
+            time_unix_ms: None,
         },
         "tool_result" => AgentMessage::ToolResult {
             id: text("id"),
@@ -1705,6 +1728,7 @@ fn sink_message(message: &Value) -> Option<AgentMessage> {
             is_error: message["is_error"].as_bool().unwrap_or(false),
         },
         "turn_end" => AgentMessage::TurnEnded {
+            time_unix_ms: None,
             outcome: if message["interrupted"] == true {
                 TurnOutcome::Interrupted
             } else if let Some(error) = message.get("error") {
