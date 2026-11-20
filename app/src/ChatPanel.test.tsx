@@ -251,7 +251,7 @@ test("the composer grows with its draft, also after it was hidden or its width c
 
 test("each tool call is one row with a past-tense label and no JSON, and opening it shows its output", async () => {
   const bridge = await started();
-  await shownPanel(bridge);
+  await shownPanel(bridge, { state: working("Working") });
 
   act(() =>
     bridge.messages(
@@ -282,7 +282,7 @@ test("each tool call is one row with a past-tense label and no JSON, and opening
 
 test("three Read calls then two Bash calls fold into two rows, and each opens to list its calls", async () => {
   const bridge = await started();
-  await shownPanel(bridge);
+  await shownPanel(bridge, { state: working("Working") });
 
   act(() =>
     bridge.messages(
@@ -314,7 +314,7 @@ test("three Read calls then two Bash calls fold into two rows, and each opens to
 
 test("edits fold by file, and calls of other kinds stay apart", async () => {
   const bridge = await started();
-  await shownPanel(bridge);
+  await shownPanel(bridge, { state: working("Working") });
 
   act(() =>
     bridge.messages(
@@ -332,6 +332,32 @@ test("edits fold by file, and calls of other kinds stay apart", async () => {
 
   const rows = [...document.querySelectorAll(".thread .tool-label")].map((label) => label.textContent);
   expect(rows).toEqual(["Edited 2 files", "Searched for TODO", "Searched for FIXME", "Read a.ts"]);
+});
+
+test("when its turn ends, a turn's rows fold into one line that opens to them", async () => {
+  const bridge = await started();
+  const view = await shownPanel(bridge, { state: working("Working") });
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted" },
+      { type: "ToolCall", id: "1", tool: "commandExecution", input: { command: "/bin/zsh -lc 'touch qa.txt'" } },
+      { type: "ToolResult", id: "1", output: "", isError: false },
+      { type: "ToolCall", id: "2", tool: "Edit", input: { file_path: `${worktree}/a.ts` } },
+      { type: "ToolResult", id: "2", output: "", isError: false },
+    ),
+  );
+  nextFrame();
+  expect(screen.getByRole("button", { name: "Ran touch qa.txt" })).toBeTruthy();
+
+  act(() => bridge.messages("0", { type: "TurnEnded", outcome: "Completed" }));
+  nextFrame();
+  view.rerender(<Panel bridge={bridge} state={working("Idle")} />);
+
+  expect(screen.queryByRole("button", { name: "Ran touch qa.txt" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Ran 1 command, edited 1 file" }));
+  expect(screen.getByRole("button", { name: "Ran touch qa.txt" })).toBeTruthy();
 });
 
 test("a failed call is a row of its own in failed, with its output under it", async () => {
@@ -524,7 +550,7 @@ test("a turn with no tool call has the work header too, counting from its start 
 
 test("a tool row shows the clock time of its call, and a call with no time shows none", async () => {
   const bridge = await started();
-  await shownPanel(bridge);
+  await shownPanel(bridge, { state: working("Working") });
   const at = new Date(2026, 10, 19, 14, 2, 30).getTime();
 
   act(() =>
