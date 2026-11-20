@@ -3,6 +3,10 @@
 mod claude;
 mod codex;
 pub(crate) mod heuristic;
+mod records;
+
+pub use records::AgentSessionInfo;
+use records::title_of;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -132,32 +136,6 @@ pub struct AttentionEntry {
     /// the Mac sleeps, so an age shown from one would leave that time out.
     pub since: SystemTime,
 }
-
-/// An agent session as `Core::agent_sessions` lists it. It is listed from its start until the
-/// user deletes it, its process ended or not.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentSessionInfo {
-    pub session: SessionId,
-    pub worktree: PathBuf,
-    pub agent: Agent,
-    pub mode: Mode,
-    /// The agent session that spawned it as a subagent. None for one the user started.
-    pub parent: Option<SessionId>,
-    /// The first line of its first user message, or "New session" before that.
-    pub title: String,
-    /// When it started, by the wall clock, to the millisecond.
-    pub created: SystemTime,
-    /// Its process ended. `Core::resume_agent_session` starts a new one.
-    pub ended: bool,
-    /// None until its first hook, heuristic or turn.
-    pub state: Option<AgentState>,
-    /// When it entered `state`, by the wall clock. Before its first state, when it started or
-    /// a restart brought it back.
-    pub since: SystemTime,
-}
-
-/// The title of an agent session with no user message yet.
-const NEW_SESSION_TITLE: &str = "New session";
 
 /// What an agent's screen shows, for the status heuristics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -395,15 +373,6 @@ impl Tracked {
     }
 }
 
-// The title a user message gives a session: its first line with text, trimmed.
-fn title_of(message: &str) -> Option<String> {
-    let line = message
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())?;
-    Some(line.to_owned())
-}
-
 // The time now, cut to the millisecond the state file keeps, so a session's created time reads
 // the same before and after a restart.
 fn now_to_the_millisecond() -> SystemTime {
@@ -612,29 +581,6 @@ impl Agents {
         self.saves.request();
     }
 
-    /// Titles the session after `message`, its first user message, and says the list changed.
-    /// A session that has a title keeps it, and a message with no text gives none.
-    pub(crate) fn title_from(
-        &self,
-        session: SessionId,
-        message: &str,
-        events: &broadcast::Sender<CoreEvent>,
-    ) {
-        let Some(title) = title_of(message) else {
-            return;
-        };
-        {
-            let mut live = lock(&self.live);
-            let Some(tracked) = live.get_mut(&session).filter(|t| t.title.is_none()) else {
-                return;
-            };
-            tracked.title = Some(title);
-        }
-        self.saves.request();
-        // Having no receivers is fine.
-        let _ = events.send(CoreEvent::AgentSessionsChanged);
-    }
-
     /// Saves `choice` with the session, for every launch from now on.
     pub(crate) fn choose_model(&self, session: SessionId, choice: ModelChoice) {
         if let Some(tracked) = lock(&self.live).get_mut(&session) {
@@ -732,8 +678,16 @@ impl Core {
         );
         tracked.parent = parent;
         tracked.title = spec.prompt.as_deref().and_then(title_of);
-        // Tracked before it starts, so its first hook or message finds it.
-        lock(&self.agents.live).insert(session, tracked);
+        {
+            let mut live = lock(&self.agents.live);
+            // A parent deleted since it asked spawns nothing, so no record names a parent
+            // that is gone.
+            if let Some(parent) = parent.filter(|parent| !live.contains_key(parent)) {
+                return Err(CoreError::NotAnAgentSession(parent));
+            }
+            // Tracked before it starts, so its first hook or message finds it.
+            live.insert(session, tracked);
+        }
         let start = AgentStart {
             agent: spec.agent,
             mode: spec.mode,
@@ -768,33 +722,6 @@ impl Core {
         self.resume_in(session, mode)
             .inspect_err(|_| self.untrack(session))?;
         Ok(())
-    }
-
-    /// Every agent session of every tracked worktree, oldest first, ended ones too.
-    pub fn agent_sessions(&self) -> Vec<AgentSessionInfo> {
-        // Agent sessions outlive a failed removal of their worktree in memory.
-        let worktrees: Vec<PathBuf> = self.tracked().iter().map(|w| w.path.clone()).collect();
-        let mut listed: Vec<AgentSessionInfo> = lock(&self.agents.live)
-            .iter()
-            .filter(|(_, tracked)| worktrees.contains(&tracked.worktree))
-            .map(|(&session, tracked)| AgentSessionInfo {
-                session,
-                worktree: tracked.worktree.clone(),
-                agent: tracked.agent,
-                mode: tracked.mode,
-                parent: tracked.parent,
-                title: tracked
-                    .title
-                    .clone()
-                    .unwrap_or_else(|| NEW_SESSION_TITLE.to_owned()),
-                created: tracked.created,
-                ended: tracked.ended,
-                state: tracked.state.map(|(state, _)| state),
-                since: tracked.entered_wall_clock,
-            })
-            .collect();
-        listed.sort_by_key(|info| info.session);
-        listed
     }
 
     /// Starts a subagent for agent session `parent`: a new agent session in chat mode, in
@@ -974,7 +901,7 @@ impl Core {
         start: AgentStart,
     ) -> Result<Option<Arc<Chat>>> {
         let agents = &self.agents;
-        let dir = agents.home.join("sessions").join(session.to_string());
+        let dir = agents.session_folder(session);
         fs::create_dir_all(&dir).map_err(CoreError::io("create the session folder", &dir))?;
         let launch_args = self.launch_args(worktree, start.agent);
         // Each process gets a new token, a restored or switched one too, so no earlier process
@@ -1019,6 +946,11 @@ impl Core {
                 Some(chat)
             }
         };
+        // Deleted while its process started, so nothing else would end that process.
+        if !lock(&agents.live).contains_key(&session) {
+            let _ = self.kill(session);
+            return Err(CoreError::NotAnAgentSession(session));
+        }
         // A new session is listed, or a listed one runs again or in another mode. Having no
         // receivers is fine.
         let _ = self.events.send(CoreEvent::AgentSessionsChanged);
@@ -1114,12 +1046,10 @@ impl Core {
     /// `Done`, each oldest first by when it entered that state. The UI calls this again on
     /// every `AgentState` event.
     pub fn attention_queue(&self) -> Vec<AttentionEntry> {
-        // Agent sessions outlive the removal of their worktree, and a failed one would stay
-        // here for good.
-        let worktrees: Vec<PathBuf> = self.tracked().iter().map(|w| w.path.clone()).collect();
+        // Removing a worktree drops the records of its sessions, so none waits here for a
+        // worktree that is gone.
         let waiting = lock(&self.agents.live)
             .iter()
-            .filter(|(_, tracked)| worktrees.contains(&tracked.worktree))
             .filter_map(|(&session, tracked)| {
                 let (state, _) = tracked.state?;
                 let entry = AttentionEntry {
@@ -1167,7 +1097,7 @@ const READ_DEADLINE: Duration = Duration::from_millis(500);
 // How long `set_mode` waits for a resumed chat's history.
 const HISTORY_WAIT: Duration = Duration::from_secs(10);
 
-// A running `set_mode`. Dropping it ends the switch.
+// A running `set_mode` or `resume_agent_session`. Dropping it ends the switch.
 struct Switch<'a> {
     agents: &'a Agents,
     events: &'a broadcast::Sender<CoreEvent>,

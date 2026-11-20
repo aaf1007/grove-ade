@@ -108,9 +108,10 @@ pub enum CoreEvent {
         repo: PathBuf,
         by: Option<SessionId>,
     },
-    /// A worktree's workspace changed through `set_workspace`, `undo_workspace`, or
-    /// `spawn_agent` placing a new agent session in its panel. `by` is the agent session that
-    /// changed it, None for the user, for an undo and for a placement.
+    /// A worktree's workspace changed through `set_workspace`, `undo_workspace`, `spawn_agent`
+    /// placing a new agent session in its panel, `resume_agent_session` showing a panel again,
+    /// or `delete_agent_session` dropping one. `by` is the agent session that changed it, None
+    /// for the user and for the rest.
     WorkspaceChanged {
         worktree: PathBuf,
         by: Option<SessionId>,
