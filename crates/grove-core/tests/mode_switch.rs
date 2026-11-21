@@ -453,7 +453,7 @@ fn codex_chat_to_terminal_resumes_in_the_tui_with_the_integration_flags_and_back
     );
 }
 
-/// The MCP servers each launch got, as the fakes read them: a first launch in chat mode, a
+/// The MCP servers grove passed each launch, as the fakes read them: a first launch in chat mode, a
 /// resume in the TUI, a resume in chat mode, and a first launch in the TUI. For Claude, the
 /// servers in each `mcp.json`; for Codex, the `mcp_servers` of each launch, the hook check's app
 /// servers included.
@@ -505,14 +505,14 @@ fn mcp_servers_of_every_launch(agent: Agent, mcp_server: Option<PathBuf>) -> Vec
 }
 
 #[test]
-fn claude_with_no_mcp_server_gets_no_grove_server_on_any_launch() {
+fn claude_with_no_mcp_server_is_passed_no_grove_server_on_any_launch() {
     for servers in mcp_servers_of_every_launch(Agent::Claude, None) {
         assert_eq!(servers, json!({}));
     }
 }
 
 #[test]
-fn codex_with_no_mcp_server_gets_no_grove_server_on_any_launch() {
+fn codex_with_no_mcp_server_is_passed_no_grove_server_on_any_launch() {
     for servers in mcp_servers_of_every_launch(Agent::Codex, None) {
         assert_eq!(servers, json!({}));
     }

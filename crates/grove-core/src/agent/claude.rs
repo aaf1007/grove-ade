@@ -208,7 +208,7 @@ impl ClaudeCode {
     }
 
     /// grove-mcp, with the session's id and token and the socket in its own environment. No
-    /// server without grove-mcp.
+    /// server of grove's without grove-mcp.
     fn mcp_config(&self, ctx: &LaunchCtx) -> Value {
         let Some(mcp_server) = &self.mcp_server else {
             return json!({"mcpServers": {}});

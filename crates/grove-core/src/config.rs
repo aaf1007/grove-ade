@@ -14,8 +14,8 @@ pub struct CoreConfig {
     pub codex_command: PathBuf,
     /// The command that starts the Claude sidecar, which runs Claude in chat mode.
     pub claude_sidecar_command: PathBuf,
-    /// The command that starts `grove-mcp`, the MCP server every agent session gets. None gives
-    /// agent sessions no grove MCP server.
+    /// The command that starts `grove-mcp`, the MCP server grove adds to every agent session.
+    /// With None, grove adds no MCP server of its own.
     pub mcp_server: Option<PathBuf>,
     /// The path of `grove-hook`, which agent hooks run.
     pub hook_relay: PathBuf,

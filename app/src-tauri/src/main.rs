@@ -2219,8 +2219,8 @@ fn main() -> anyhow::Result<()> {
     if let Some(sidecar) = next_to_this_executable("claude-sidecar") {
         cfg.claude_sidecar_command = sidecar;
     }
-    // grove-mcp sits next to this executable, as grove-hook does. Without it agent sessions get
-    // no grove MCP server, so they cannot open panels or spawn subagents.
+    // grove-mcp sits next to this executable, as grove-hook does. Without it grove adds no MCP
+    // server of its own to agent sessions, so they cannot open panels or spawn subagents.
     cfg.mcp_server = next_to_this_executable("grove-mcp");
     let (core, mut events) = Core::start(cfg)?;
 
