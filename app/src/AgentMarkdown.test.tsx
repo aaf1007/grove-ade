@@ -86,7 +86,8 @@ function codeOfLength(length: number) {
 // How long the colored 20,000-character block may take to show. It is about 3,600 spans, which
 // jsdom draws in 100 to 400 ms on an idle machine and in seconds on a loaded runner that runs test
 // files side by side. Blocks color in order, so the short block after it shows once the long one
-// is decided, colored or left plain.
+// is decided, colored or left plain. Each case's short block is its own, so a block colored by
+// the other case cannot show at once from the cache.
 const MOST_MS_TO_SHOW_A_LONG_BLOCK = 10_000;
 
 test.each([
@@ -95,7 +96,7 @@ test.each([
 ])(
   "a block of %i characters is colored: %s",
   async (length, colored) => {
-    const container = shown("```ts\n" + codeOfLength(length) + "```\n\n```ts\nconst ready = true;\n```");
+    const container = shown("```ts\n" + codeOfLength(length) + "```\n\n```ts\nconst ready" + length + " = true;\n```");
     const [long, short] = container.querySelectorAll("pre > code");
 
     // Ask the short block, not the page: a search of the page reads every span, on every change.
