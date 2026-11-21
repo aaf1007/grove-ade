@@ -70,7 +70,7 @@ Each rule here can be checked against a diff. The Engineering rules below apply 
 - grove never writes hooks or MCP config into a worktree, and never reads or stores agent credentials.
 
 ## Rule enforcement
-`correct` keeps this table in step with the rules above. Proposed here for the owner's approval.
+`correct` keeps this table in step with the rules in this file. Proposed here for the owner's approval.
 
 | Rule | Enforced by |
 |---|---|
