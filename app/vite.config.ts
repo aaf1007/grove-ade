@@ -7,5 +7,5 @@ export default defineConfig({
   clearScreen: false,
   server: { port: 1420, strictPort: true },
   // A `?raw` import of a CSS file gives its text. Vitest empties CSS it does not process.
-  test: { environment: "jsdom", css: { include: [/\.css\?raw$/] } },
+  test: { environment: "jsdom", setupFiles: ["src/jsdomGaps.ts"], css: { include: [/\.css\?raw$/] } },
 });

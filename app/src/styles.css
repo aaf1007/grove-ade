@@ -896,19 +896,25 @@ svg {
 
 .msg-user {
   align-self: flex-end;
-  max-width: 80%;
+  max-width: min(80%, var(--text-transcript-measure));
   padding: var(--space-12);
   border-radius: var(--radius-2xl);
   background: var(--message);
-  font: var(--text-body);
+  font: var(--text-transcript);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .msg-agent {
   padding: var(--space-2) var(--space-4);
-  font: var(--text-body);
+  font: var(--text-transcript);
   overflow-wrap: anywhere;
+}
+
+/* Prose keeps a readable line length. Code and tables may use the whole lane, in a list or quote too. */
+.msg-agent :is(p, h1, h2, h3, h4, h5, h6),
+.msg-agent :is(ul, ol, blockquote):not(:has(.code-block, table)) {
+  max-width: var(--text-transcript-measure);
 }
 
 /* Agent text is markdown. A single newline in a paragraph shows as a line break, as the agent wrote it. */
@@ -988,7 +994,7 @@ svg {
   border-radius: var(--radius-sm);
   background: var(--hover);
   font-family: var(--font-mono);
-  font-size: var(--text-code-sm-size);
+  font-size: var(--text-transcript-code-size);
 }
 
 /* A wide table scrolls sideways inside the message, not the whole thread. */
@@ -1025,7 +1031,7 @@ svg {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--code-bg);
-  font: var(--text-code);
+  font: var(--text-transcript-code);
   overflow-wrap: normal;
 }
 

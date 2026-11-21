@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "vitest";
 
-import { codeFont, colorToken, monacoTheme, onAppearanceChange, terminalTheme } from "./codeTheme";
+import { codeFont, colorToken, monacoTheme, onAppearanceChange, syntaxTokenOf, terminalTheme } from "./codeTheme";
 import tokens from "./tokens.css?raw";
 import { setAppearance, tokensInDocument } from "./tokensInDocument";
 
@@ -202,6 +202,17 @@ test("the code font reads from the minified shorthand", () => {
   });
 
   expect(codeFont()).toMatchObject({ fontSize: 13, lineHeight: 18 });
+});
+
+test.each([
+  ["keyword.ts", "syn-kw"],
+  ["string.ts", "syn-str"],
+  ["string.key.json", "syn-prop"],
+  ["string.escape.rust", "syn-const"],
+  ["identifier.ts", undefined],
+  ["keywords.ts", undefined],
+])("a %s token in a chat code block takes %s, as in the editor", (type, token) => {
+  expect(syntaxTokenOf(type)).toBe(token);
 });
 
 test("a missing token is an error, not a stock color", () => {

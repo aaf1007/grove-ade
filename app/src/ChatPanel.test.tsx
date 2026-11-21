@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Profiler } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
@@ -1817,6 +1817,8 @@ async function threadAfterStreaming(deltas: string[]): Promise<string> {
     act(() => bridge.messages("0", { type: "TextDelta", text }));
     nextFrame();
   }
+  // The code block is colored after it paints. Compare once it is.
+  await waitFor(() => expect(container.querySelector("pre span")).not.toBeNull());
   const html = container.querySelector(".thread")!.innerHTML;
   cleanup();
   return html;
