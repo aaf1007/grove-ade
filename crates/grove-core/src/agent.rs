@@ -687,6 +687,11 @@ impl Core {
             if let Some(parent) = parent.filter(|parent| !live.contains_key(parent)) {
                 return Err(CoreError::NotAnAgentSession(parent));
             }
+            // Counted under the lock that inserts it, so two requests never both take the
+            // last place under the limit.
+            if let Some(parent) = parent {
+                self.agents.check_live_subagents(&live, parent)?;
+            }
             // Tracked before it starts, so its first hook or message finds it.
             live.insert(session, tracked);
         }
@@ -750,10 +755,9 @@ impl Core {
                 limit: MAX_SUBAGENT_DEPTH,
             });
         }
-        let limit = self.agents.max_live_subagents_per_parent;
-        if live_subagents(&live, parent) >= limit {
-            return Err(CoreError::TooManyLiveSubagents { parent, limit });
-        }
+        // Refused here before anything changes. The check that decides is the one under the
+        // lock that inserts the new session.
+        self.agents.check_live_subagents(&live, parent)?;
         drop(live);
         let worktree = worktree.unwrap_or_else(|| parent_worktree.clone());
         // Nested before the spawn, so the list is right by the new session's first state.
@@ -1176,14 +1180,25 @@ fn subagent_depth(live: &HashMap<SessionId, Tracked>, session: SessionId) -> usi
     depth
 }
 
-// How many subagents `parent` started itself that have not ended.
-fn live_subagents(live: &HashMap<SessionId, Tracked>, parent: SessionId) -> usize {
-    live.values()
-        .filter(|tracked| tracked.parent == Some(parent) && !tracked.ended)
-        .count()
-}
-
 impl Agents {
+    // Refuses when `parent` has the most live subagents one session may have: those it started
+    // itself that have not ended.
+    fn check_live_subagents(
+        &self,
+        live: &HashMap<SessionId, Tracked>,
+        parent: SessionId,
+    ) -> Result<()> {
+        let limit = self.max_live_subagents_per_parent;
+        let live_subagents = live
+            .values()
+            .filter(|tracked| tracked.parent == Some(parent) && !tracked.ended)
+            .count();
+        if live_subagents >= limit {
+            return Err(CoreError::TooManyLiveSubagents { parent, limit });
+        }
+        Ok(())
+    }
+
     /// The worktree of agent session `session`, while its process has not ended.
     pub(crate) fn running_worktree(&self, session: SessionId) -> Option<PathBuf> {
         lock(&self.live)
@@ -1665,6 +1680,67 @@ mod tests {
         );
         assert!(events.try_recv().is_err());
         assert_eq!(lock(&core.agents.live).len(), 9);
+    }
+
+    #[test]
+    fn two_requests_for_the_last_place_under_the_limit_start_one_subagent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let git = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(&repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(git.success());
+        // Stands in for the Claude sidecar, and runs until it is killed.
+        let sidecar = dir.path().join("claude-sidecar");
+        fs::write(&sidecar, "#!/bin/sh\nexec sleep 600\n").unwrap();
+        fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut cfg = CoreConfig::new(dir.path().join("home"));
+        cfg.claude_sidecar_command = sidecar;
+        cfg.max_live_subagents_per_parent = 1;
+        let (core, _events) = Core::start(cfg).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(core.add_repo(&repo)).unwrap();
+        let worktree = runtime.block_on(core.list_worktrees())[0].path.clone();
+        let parent = SessionId(50);
+        let tracked = Tracked::new(Agent::Claude, &worktree, Mode::Chat, (80, 24), None);
+        lock(&core.agents.live).insert(parent, tracked);
+
+        // Both wait for the agents, which the test holds, then go on side by side.
+        let agents = lock(&core.agents.live);
+        let spawned = thread::scope(|scope| {
+            let spawn = || core.spawn_subagent(parent, Agent::Claude, "hi".into(), None);
+            let (a, b) = (scope.spawn(spawn), scope.spawn(spawn));
+            thread::sleep(Duration::from_millis(100));
+            drop(agents);
+            [a.join().unwrap(), b.join().unwrap()]
+        });
+
+        let refused = |spawned: &Result<_>| {
+            matches!(
+                spawned,
+                Err(CoreError::TooManyLiveSubagents { limit: 1, .. })
+            )
+        };
+        assert_eq!(
+            spawned.iter().filter(|s| s.is_ok()).count(),
+            1,
+            "{spawned:?}"
+        );
+        assert_eq!(
+            spawned.iter().filter(|s| refused(s)).count(),
+            1,
+            "{spawned:?}"
+        );
+        assert_eq!(lock(&core.agents.live).len(), 2);
     }
 
     #[test]
