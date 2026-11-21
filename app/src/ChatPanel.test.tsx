@@ -1145,49 +1145,123 @@ async function settle() {
   nextFrame();
 }
 
-function approvalLine() {
-  return screen.getByRole("group", { name: "Claude Code wants to use Bash" });
+function approvalCard(action = "run a command") {
+  return screen.getByRole("group", { name: `Claude Code wants to ${action}` });
 }
 
-test("an approval shows under its tool row, with no card and no second row", async () => {
+function choices(card: HTMLElement) {
+  return within(card)
+    .getAllByRole("button")
+    .map((b) => b.getAttribute("aria-label") ?? b.textContent);
+}
+
+test("an approval shows as a card above the composer with its command and three choices", async () => {
   await asked(bashCall, approval);
 
+  const card = approvalCard();
+  expect(card.closest(".composer-wrap")).toBeTruthy();
+  expect(within(card).getByText("npm test").tagName).toBe("CODE");
+  expect(within(card).getByText("Run the tests")).toBeTruthy();
+  expect(choices(card)).toEqual(["DeclineN", "Always allow this session", "ApproveY"]);
   expect(screen.getAllByRole("button", { name: "Ran npm test" })).toHaveLength(1);
-  const line = approvalLine();
-  expect(line.classList.contains("card")).toBe(false);
-  expect(within(line).getByText("Waiting for approval")).toBeTruthy();
-  expect(within(line).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([
-    "Decline",
-    "Approve",
-    "More approval options",
-  ]);
+  expect(screen.queryByText("Waiting for approval")).toBeNull();
+});
+
+test.each<[string, FakeMessage[], string, string]>([
+  [
+    "Claude Code's edit",
+    [{ type: "ApprovalRequested", request: "toolu_03", tool: "Edit", input: { file_path: `${worktree}/src/main.ts` } }],
+    "edit a file",
+    "src/main.ts",
+  ],
+  [
+    "Codex's file change, named by its call",
+    [
+      {
+        type: "ToolCall",
+        id: "patch_1",
+        tool: "fileChange",
+        input: { changes: [{ path: `${worktree}/a.ts` }, { path: `${worktree}/b.ts` }] },
+      },
+      {
+        type: "ApprovalRequested",
+        request: "patch_1",
+        tool: "fileChange",
+        input: { itemId: "patch_1", reason: "fix the import" },
+      },
+    ],
+    "edit 2 files",
+    "a.ts\nb.ts",
+  ],
+])("%s shows its files on the card", async (_, messages, action, files) => {
+  await asked(...messages);
+
+  const card = approvalCard(action);
+  expect(card.querySelector("code")!.textContent).toBe(files);
+});
+
+test("Codex's request for more permissions says so, with its reason", async () => {
+  const permissions = { network: { enabled: true }, fileSystem: null };
+  await asked({ type: "ApprovalRequested", request: "perm_1", tool: "permissions", input: { reason: "fetch", permissions } });
+
+  const card = approvalCard("change its permissions");
+  expect(within(card).getByText("fetch")).toBeTruthy();
 });
 
 test("an approval with no tool call of its own shows its own row", async () => {
   await asked({ ...approval, request: "item_7", tool: "commandExecution", input: { command: "ls -la" } });
 
   expect(screen.getByRole("button", { name: "Ran ls -la" })).toBeTruthy();
-  expect(screen.getByRole("group", { name: "Claude Code wants to use commandExecution" })).toBeTruthy();
+  expect(within(approvalCard()).getByText("ls -la")).toBeTruthy();
 });
 
 test.each<[string, Reply, string]>([
   ["Approve", { type: "AllowOnce" }, "Approved"],
   ["Decline", { type: "Deny", message: null }, "Declined"],
-])("an approval's %s button sends its reply and the line becomes a record", async (button, reply, record) => {
+  ["Always allow this session", { type: "AllowForSession" }, "Approved for this session"],
+])("the approval card's %s button sends its reply and the card becomes a record", async (button, reply, record) => {
   const bridge = await asked(bashCall, approval);
 
-  fireEvent.click(within(approvalLine()).getByRole("button", { name: button }));
+  fireEvent.click(within(approvalCard()).getByRole("button", { name: button }));
   await settle();
 
   expect(bridge.answered).toEqual([{ session: "0", request: "toolu_01", reply }]);
-  expect(screen.queryByRole("group", { name: "Claude Code wants to use Bash" })).toBeNull();
+  expect(screen.queryByRole("group", { name: "Claude Code wants to run a command" })).toBeNull();
   expect(screen.getByText(record)).toBeTruthy();
+});
+
+test.each<[string, Reply]>([
+  ["y", { type: "AllowOnce" }],
+  ["Y", { type: "AllowOnce" }],
+  ["n", { type: "Deny", message: null }],
+])("while the approval card has focus, %s sends the same reply as its button", async (key, reply) => {
+  const bridge = await asked(bashCall, approval);
+
+  approvalCard().focus();
+  fireEvent.keyDown(document.activeElement!, { key });
+  await settle();
+
+  expect(bridge.answered).toEqual([{ session: "0", request: "toolu_01", reply }]);
+});
+
+test("the approval card's keys do nothing while focus is in the composer, or with a modifier", async () => {
+  const bridge = await asked(bashCall, approval);
+
+  composer().focus();
+  fireEvent.keyDown(composer(), { key: "y" });
+  fireEvent.keyDown(composer(), { key: "n" });
+  approvalCard().focus();
+  fireEvent.keyDown(approvalCard(), { key: "n", metaKey: true });
+  await settle();
+
+  expect(bridge.answered).toEqual([]);
+  expect(approvalCard()).toBeTruthy();
 });
 
 test("two approvals from one run each answer by button, one after the other", async () => {
   const lint: FakeMessage = { type: "ToolCall", id: "toolu_02", tool: "Bash", input: { command: "npm run lint" } };
   const bridge = await asked(bashCall, lint, approval);
-  fireEvent.click(within(approvalLine()).getByRole("button", { name: "Approve" }));
+  fireEvent.click(within(approvalCard()).getByRole("button", { name: "Approve" }));
   await settle();
 
   act(() =>
@@ -1198,7 +1272,7 @@ test("two approvals from one run each answer by button, one after the other", as
     ),
   );
   nextFrame();
-  const approve = within(approvalLine()).getByRole("button", { name: "Approve" }) as HTMLButtonElement;
+  const approve = within(approvalCard()).getByRole("button", { name: "Approve" }) as HTMLButtonElement;
   expect(approve.disabled).toBe(false);
   fireEvent.click(approve);
   await settle();
@@ -1235,17 +1309,6 @@ test("a declined call keeps its call's clock time", async () => {
   nextFrame();
 
   expect(document.querySelector(".tool.declined .tool-time")?.textContent).toBe(clock(at));
-});
-
-test("the approval's menu allows the tool for the rest of the session", async () => {
-  const bridge = await asked(bashCall, approval);
-
-  fireEvent.click(within(approvalLine()).getByRole("button", { name: "More approval options" }));
-  fireEvent.click(screen.getByRole("menuitem", { name: "Always allow this session" }));
-  await settle();
-
-  expect(bridge.answered).toEqual([{ session: "0", request: "toolu_01", reply: { type: "AllowForSession" } }]);
-  expect(screen.getByText("Approved for this session")).toBeTruthy();
 });
 
 test("an approval's buttons send once, even when pressed again before the answer is back", async () => {
@@ -1384,25 +1447,6 @@ test("a question the core no longer has pending shows as expired when answered",
   expect(screen.getByText("Expired: Which test runner?")).toBeTruthy();
 });
 
-test("a new approval scrolls into view, and its controls take keyboard focus in order", async () => {
-  const scrolled: Element[] = [];
-  Element.prototype.scrollIntoView = function (this: Element) {
-    scrolled.push(this);
-  };
-  await asked(bashCall, approval);
-
-  expect(scrolled).toContain(approvalLine());
-  const buttons = within(approvalLine()).getAllByRole("button");
-  expect(buttons.map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([
-    "Decline",
-    "Approve",
-    "More approval options",
-  ]);
-  buttons[0].focus();
-  expect(document.activeElement).toBe(buttons[0]);
-  expect(buttons.every((b) => b.tabIndex === 0)).toBe(true);
-});
-
 test("a request answered before the panel opened shows as its record", async () => {
   const bridge = await started();
   bridge.messages(
@@ -1426,6 +1470,7 @@ test("a focus request puts focus in the composer once the panel is shown, and on
   view.rerender(<Panel bridge={bridge} shown={false} focusRequest={1} />);
   expect(document.activeElement).toBe(document.body);
   view.rerender(<Panel bridge={bridge} shown focusRequest={1} />);
+  await act(async () => {});
   expect(document.activeElement).toBe(composer());
 
   // Shown again later with no new request, it leaves focus where the user put it.
@@ -1435,6 +1480,103 @@ test("a focus request puts focus in the composer once the panel is shown, and on
   expect(document.activeElement).toBe(document.body);
 
   view.rerender(<Panel bridge={bridge} shown focusRequest={2} />);
+  await act(async () => {});
+  expect(document.activeElement).toBe(composer());
+});
+
+test("a focus request puts focus on a waiting approval's card, where its keys answer it", async () => {
+  const waiting: AgentStateChanged = { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" };
+  const bridge = await started();
+  const view = await shownPanel(bridge, { state: waiting });
+  act(() => bridge.messages("0", { type: "TurnStarted" }, bashCall, approval));
+  nextFrame();
+
+  view.rerender(<Panel bridge={bridge} state={waiting} focusRequest={1} />);
+  expect(document.activeElement).toBe(approvalCard());
+  fireEvent.keyDown(document.activeElement!, { key: "y" });
+  await settle();
+
+  expect(bridge.answered).toEqual([{ session: "0", request: "toolu_01", reply: { type: "AllowOnce" } }]);
+});
+
+test("a panel opened by a focus request focuses the approval its history waits on", async () => {
+  const bridge = await started();
+  bridge.messages("0", { type: "TurnStarted" }, bashCall, approval);
+
+  await shownPanel(bridge, {
+    state: { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" },
+    focusRequest: 1,
+  });
+
+  expect(document.activeElement).toBe(approvalCard());
+});
+
+test("a focus request on a panel shown again focuses the approval that came while it was hidden", async () => {
+  const waiting: AgentStateChanged = { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" };
+  const bridge = await started();
+  const view = await shownPanel(bridge);
+  view.rerender(<Panel bridge={bridge} shown={false} />);
+  bridge.messages("0", { type: "TurnStarted" }, bashCall, approval);
+
+  view.rerender(<Panel bridge={bridge} shown state={waiting} focusRequest={1} />);
+  await act(async () => {});
+
+  expect(document.activeElement).toBe(approvalCard());
+});
+
+test("after an approval answered from its card, focus waits in the composer and moves to the next card", async () => {
+  const lint: FakeMessage = { type: "ToolCall", id: "toolu_02", tool: "Bash", input: { command: "npm run lint" } };
+  const bridge = await asked(bashCall, lint, approval);
+  approvalCard().focus();
+  fireEvent.keyDown(document.activeElement!, { key: "y" });
+  await settle();
+  expect(document.activeElement).toBe(composer());
+
+  act(() =>
+    bridge.messages("0", { type: "ApprovalRequested", request: "toolu_02", tool: "Bash", input: { command: "npm run lint" } }),
+  );
+  nextFrame();
+  expect(document.activeElement).toBe(approvalCard());
+  fireEvent.keyDown(document.activeElement!, { key: "n" });
+  await settle();
+
+  expect(bridge.answered.map((a) => a.reply.type)).toEqual(["AllowOnce", "Deny"]);
+  expect(document.activeElement).toBe(composer());
+});
+
+test("two approvals waiting at once answer one after the other by key", async () => {
+  const lint: FakeMessage = { type: "ToolCall", id: "toolu_02", tool: "Bash", input: { command: "npm run lint" } };
+  const lintApproval: FakeMessage = {
+    type: "ApprovalRequested",
+    request: "toolu_02",
+    tool: "Bash",
+    input: { command: "npm run lint" },
+  };
+  const bridge = await asked(bashCall, lint, approval, lintApproval);
+  approvalCard().focus();
+  fireEvent.keyDown(document.activeElement!, { key: "y" });
+  await settle();
+
+  expect(document.activeElement).toBe(approvalCard());
+  expect(within(approvalCard()).getByText("npm run lint")).toBeTruthy();
+  fireEvent.keyDown(document.activeElement!, { key: "y" });
+  await settle();
+
+  expect(bridge.answered.map((a) => a.request)).toEqual(["toolu_01", "toolu_02"]);
+});
+
+test("a draft in the composer keeps focus there when the next approval comes", async () => {
+  const bridge = await asked(bashCall, approval);
+  approvalCard().focus();
+  fireEvent.keyDown(document.activeElement!, { key: "y" });
+  await settle();
+  fireEvent.change(composer(), { target: { value: "also run lint" } });
+
+  act(() =>
+    bridge.messages("0", { type: "ApprovalRequested", request: "toolu_02", tool: "Bash", input: { command: "npm run lint" } }),
+  );
+  nextFrame();
+
   expect(document.activeElement).toBe(composer());
 });
 
