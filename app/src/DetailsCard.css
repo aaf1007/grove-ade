@@ -204,13 +204,11 @@ button.details-row:focus-visible,
   text-overflow: ellipsis;
 }
 
-/* The start gives way a thousand times faster, so the last folder shrinks only once it is gone. */
-.details-path-start {
-  flex: 0 1000 auto;
-}
-
+/* Cut in the middle: the start gives way, and the last folder, which names the worktree, keeps its
+   width unless it is wider than the row. */
 .details-path-end {
-  flex: 0 1 auto;
+  max-width: 100%;
+  flex: none;
 }
 
 .details-end > span {
