@@ -1472,6 +1472,26 @@ test("a request of several questions shows one at a time, then sends every answe
   expect(screen.getByText("Answered: Runner: vitest; Kinds: unit, integration")).toBeTruthy();
 });
 
+test("Previous question goes back to an earlier answer, which can change before the last one sends", async () => {
+  const bridge = await asked({ type: "QuestionAsked", request: "toolu_02", questions: [runner, kinds] });
+
+  const card = questionCard();
+  expect(within(card).queryByRole("button", { name: "Previous question" })).toBeNull();
+  fireEvent.click(within(card).getByRole("radio", { name: /vitest/ }));
+  fireEvent.click(within(card).getByRole("button", { name: "Next question" }));
+  fireEvent.click(within(card).getByRole("checkbox", { name: /unit/ }));
+
+  fireEvent.click(within(card).getByRole("button", { name: "Previous question" }));
+  expect((within(card).getByRole("radio", { name: /vitest/ }) as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(within(card).getByRole("radio", { name: /jest/ }));
+  fireEvent.click(within(card).getByRole("button", { name: "Next question" }));
+  expect((within(card).getByRole("checkbox", { name: /unit/ }) as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(within(card).getByRole("button", { name: "Submit answer" }));
+  await settle();
+
+  expect(bridge.answered.map((a) => a.reply)).toEqual([{ type: "Answers", answers: [["jest"], ["unit"]] }]);
+});
+
 test("a free-text answer sends the text in place of any option", async () => {
   const bridge = await asked({ type: "QuestionAsked", request: "toolu_02", questions: [runner] });
 

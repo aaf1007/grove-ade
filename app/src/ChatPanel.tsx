@@ -1470,7 +1470,7 @@ function whole(value: unknown): string | null {
 /**
  * A pending question, as a card above the composer. Each question of the request shows in turn,
  * with its options and a field for the user's own answer, which takes the place of any option
- * picked. The last one sends every answer, once.
+ * picked. Each answer can change until the last one sends every answer, once.
  */
 function QuestionCard({
   item,
@@ -1545,6 +1545,11 @@ function QuestionCard({
           />
         </fieldset>
         <div className="question-actions">
+          {at > 0 && (
+            <Button variant="ghost" size="sm" disabled={sending} onClick={() => setAt(at - 1)}>
+              Previous question
+            </Button>
+          )}
           <Button
             type="submit"
             variant="primary"
