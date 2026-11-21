@@ -328,11 +328,14 @@ test("closing a shell that already exited shows no error", async () => {
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
-// Picks `place` in the sidebar's New session picker.
-// The sidebar's New session, not a session row with no state yet, which its title "New session" names.
+// Picks `place` in the sidebar's New session picker. New session stays disabled until the projects
+// load, and a click on it before then does nothing, so wait for it to be enabled. It is looked up in
+// the sidebar's nav, since a session row with no state yet is named "New session" too.
 async function pickPlace(place: string) {
   const nav = await screen.findByRole("navigation", { name: "Sidebar" });
-  fireEvent.click(within(nav).getByRole("button", { name: "New session" }));
+  const newSession = within(nav).getByRole("button", { name: "New session" });
+  await waitFor(() => expect(newSession).toHaveProperty("disabled", false));
+  fireEvent.click(newSession);
   await act(async () => fireEvent.click(screen.getByRole("menuitem", { name: place })));
 }
 
