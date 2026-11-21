@@ -213,6 +213,8 @@ export type Warning =
       /** Why the login shell's environment could not be read, so sessions got the minimal one. */
       reason: string;
     }
+  /** Codex runs none of grove's hooks in this agent session, so its state comes from heuristics. The user approves them in Codex's `/hooks`. */
+  | { kind: "CodexHooksNotTrusted"; session: SessionId; worktree: string }
   /** A session that was running when grove quit could not start again, so it is gone with its panel. */
   | { kind: "SessionNotRestored"; worktree: string; reason: string }
   /** A worktree's watcher could not start, so its diff does not update live until `retryWatcher` starts it. */
