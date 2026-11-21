@@ -44,7 +44,10 @@ export function TitleBar({
   sidebarSwitch?: Ref<HTMLButtonElement>;
   onTogglePanels(): void;
   onToggleTerminal(): void;
-  /** Whether the details card is open. null while no worktree is selected. */
+  /**
+   * Whether the details card is open. null, which disables its button, while no worktree is
+   * selected or the chat area has no room for it.
+   */
   detailsOpen: boolean | null;
   onToggleDetails(): void;
   /** The agent and state of the one agent panel shown. null while none or several are. */

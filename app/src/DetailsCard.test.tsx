@@ -1,15 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { SlidersHorizontal } from "lucide-react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { DetailsCard, type FocusedSession } from "./DetailsCard";
 import { FAKE_MODELS, type FakeChange, fakeBridge } from "./fakeBridge";
-import { Menu } from "./ui/Menu";
 
 afterEach(() => {
   cleanup();
   localStorage.clear();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 const main = "/code/grove";
@@ -57,10 +56,11 @@ async function setup({ runSessions = RUN_SESSIONS } = {}) {
 }
 
 const claude: FocusedSession = {
+  session: "0",
   agent: "Claude",
   model: { model: FAKE_MODELS.Claude[1], effort: null },
   mode: "Chat",
-  source: "Protocol",
+  state: { session: "0", state: "Working", source: "Protocol" },
 };
 
 async function renderCard(
@@ -71,18 +71,13 @@ async function renderCard(
     onStartRun: vi.fn(),
     onOpenDiff: vi.fn(),
     onOpenProfile: vi.fn(),
-    onClose: vi.fn(),
-    onRoom: vi.fn(),
   };
-  // With no chat lane to measure, the card always has room. App.test.tsx covers hiding it.
   const card = (more: typeof props) => (
     <DetailsCard
       bridge={bridge}
       worktree={feature}
       runs={[]}
       session={claude}
-      lane={null}
-      hidden={false}
       {...handlers}
       {...props}
       {...more}
@@ -136,10 +131,20 @@ test("the worktree row shows its folder and reveals it in Finder", async () => {
   const bridge = await setup();
   await renderCard(bridge);
 
-  expect(within(row("Worktree")).getByText(feature)).toBeTruthy();
+  expect(within(row("Worktree")).getByTitle(feature)).toBeTruthy();
 
   await act(async () => fireEvent.click(within(row("Worktree")).getByRole("button", { name: "Reveal in Finder" })));
   expect(bridge.revealed).toEqual([feature]);
+});
+
+test("a long worktree path is cut in the middle: its start gives way, its last folder stays whole, the tooltip has it all", async () => {
+  const long = "/private/tmp/grove-verify.MTLB9xQ2/worktrees/feat-82-details-card-pin";
+  const bridge = await setup();
+  await renderCard(bridge, { worktree: long });
+
+  const path = within(row("Worktree")).getByTitle(long);
+  expect(within(path).getByText("/private/tmp/grove-verify.MTLB9xQ2/worktrees").className).toBe("details-path-start");
+  expect(within(path).getByText("/feat-82-details-card-pin").className).toBe("details-path-end");
 });
 
 test("Open in opens the worktree in the editor picked from its menu", async () => {
@@ -285,7 +290,104 @@ test("the servers row shows the port of each running run session that serves one
   expect(within(row("Servers")).getByText(":5173 dev")).toBeTruthy();
 });
 
-test("the session row shows the focused session's agent, model, effort and mode, and its state source on hover", async () => {
+// A time and a day as the card writes them, in the machine's locale.
+const clock = (at: Date) => at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+const day = (at: Date) => at.toLocaleDateString([], { month: "short", day: "numeric" });
+
+test("the session block shows the focused session's title, its state in words since when, and where the state came from", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 10, 20, 9, 30));
+  const bridge = await setup();
+  const session = await bridge.spawnAgent(feature, "Claude", null);
+  await bridge.sendMessage(session, "Fix the login bug\nthen run the tests");
+  vi.setSystemTime(new Date(2026, 10, 20, 14, 5));
+  const approval = { session, state: "NeedsInput", kind: "Approval", source: "Hook" } as const;
+  bridge.agentStateChanged(approval);
+  const { rerender } = await renderCard(bridge, { session: { ...claude, session, state: approval } });
+
+  const block = () => within(card()).getByRole("group", { name: "Agent session" });
+  // The title is cut to one line, and its tooltip holds it all.
+  expect(within(block()).getByRole("heading", { name: "Fix the login bug" }).title).toBe("Fix the login bug");
+  expect(within(block()).getByText("Approval")).toBeTruthy();
+  expect(within(block()).getByText(`since ${clock(new Date(2026, 10, 20, 14, 5))}`)).toBeTruthy();
+  expect(within(block()).getByText("State from Hook")).toBeTruthy();
+
+  vi.setSystemTime(new Date(2026, 10, 20, 14, 20));
+  const working = { session, state: "Working", source: "Protocol" } as const;
+  await act(async () => bridge.agentStateChanged(working));
+  await act(async () => rerender({ session: { ...claude, session, state: working } }));
+  expect(within(block()).getByText("Working")).toBeTruthy();
+  expect(within(block()).getByText(`since ${clock(new Date(2026, 10, 20, 14, 20))}`)).toBeTruthy();
+});
+
+test("before any new state reaches the window, the session block shows the state the core lists, without a source", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 10, 20, 14, 5));
+  const bridge = await setup();
+  const session = await bridge.spawnAgent(feature, "Claude", null);
+  bridge.agentStateChanged({ session, state: "Working", source: "Protocol" });
+  await renderCard(bridge, { session: { ...claude, session, state: undefined } });
+
+  const block = within(card()).getByRole("group", { name: "Agent session" });
+  expect(within(block).getByText("Working")).toBeTruthy();
+  expect(within(block).getByText(`since ${clock(new Date(2026, 10, 20, 14, 5))}`)).toBeTruthy();
+  expect(within(block).queryByText(/^State from/)).toBeNull();
+});
+
+test("a new state shows no since time until the core lists the time it was entered", async () => {
+  const bridge = await setup();
+  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const working = { session, state: "Working", source: "Protocol" } as const;
+  bridge.agentStateChanged(working);
+  const { rerender } = await renderCard(bridge, { session: { ...claude, session, state: working } });
+  const block = () => within(card()).getByRole("group", { name: "Agent session" });
+  expect(within(block()).getByText(/^since /)).toBeTruthy();
+
+  vi.spyOn(bridge, "agentSessions").mockReturnValue(new Promise(() => {}));
+  const approval = { session, state: "NeedsInput", kind: "Approval", source: "Protocol" } as const;
+  await act(async () => bridge.agentStateChanged(approval));
+  await act(async () => rerender({ session: { ...claude, session, state: approval } }));
+
+  expect(within(block()).getByText("Approval")).toBeTruthy();
+  expect(within(block()).queryByText(/^since /)).toBeNull();
+});
+
+test("a state entered on another day shows its date with its time", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 10, 19, 14, 5));
+  const bridge = await setup();
+  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const idle = { session, state: "Idle", source: "Protocol" } as const;
+  bridge.agentStateChanged(idle);
+  vi.setSystemTime(new Date(2026, 10, 20, 9, 30));
+  await renderCard(bridge, { session: { ...claude, session, state: idle } });
+
+  const block = within(card()).getByRole("group", { name: "Agent session" });
+  const entered = new Date(2026, 10, 19, 14, 5);
+  expect(within(block).getByText(`since ${day(entered)}, ${clock(entered)}`)).toBeTruthy();
+});
+
+test("a listing of the agent sessions that fails after a later one succeeded says nothing", async () => {
+  const bridge = await setup();
+  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const listings: { resolve: () => void; reject: () => void }[] = [];
+  const list = bridge.agentSessions.bind(bridge);
+  vi.spyOn(bridge, "agentSessions").mockImplementation(
+    () =>
+      new Promise((resolve, reject) =>
+        listings.push({ resolve: () => void list().then(resolve), reject: () => reject("the core is busy") }),
+      ),
+  );
+  await renderCard(bridge, { session: { ...claude, session } });
+  await act(async () => bridge.agentStateChanged({ session, state: "Working", source: "Protocol" }));
+
+  await act(async () => listings[1].resolve());
+  await act(async () => listings[0].reject());
+
+  expect(within(card()).queryByRole("alert")).toBeNull();
+});
+
+test("the session row shows the focused session's agent, model, effort and mode", async () => {
   const bridge = await setup();
   await renderCard(bridge, {
     session: {
@@ -296,66 +398,6 @@ test("the session row shows the focused session's agent, model, effort and mode,
 
   expect(within(row("Session")).getByText("Claude Code")).toBeTruthy();
   expect(within(row("Session")).getByText("Default (recommended) · max · Chat")).toBeTruthy();
-  expect(row("Session").title).toBe("State from Protocol");
-});
-
-test("Escape and a click outside close the card, a click inside does not", async () => {
-  const bridge = await setup();
-  const { onClose } = await renderCard(bridge);
-
-  fireEvent.pointerDown(row("Branch"));
-  expect(onClose).not.toHaveBeenCalled();
-
-  fireEvent.pointerDown(document.body);
-  expect(onClose).toHaveBeenCalledTimes(1);
-
-  fireEvent.keyDown(document.body, { key: "Escape" });
-  expect(onClose).toHaveBeenCalledTimes(2);
-});
-
-test("Escape in the branch menu or in the Change base dialog leaves the card open", async () => {
-  const bridge = await setup();
-  const { onClose } = await renderCard(bridge);
-
-  fireEvent.click(within(row("Branch")).getByRole("button", { name: "Branch" }));
-  fireEvent.keyDown(screen.getByRole("menuitem", { name: "Change base" }), {
-    key: "Escape",
-  });
-  expect(screen.queryByRole("menu")).toBeNull();
-
-  fireEvent.click(within(row("Branch")).getByRole("button", { name: "Branch" }));
-  fireEvent.click(screen.getByRole("menuitem", { name: "Change base" }));
-  const dialog = screen.getByRole("dialog", { name: "Change base branch" });
-  fireEvent.pointerDown(within(dialog).getByLabelText("Base branch"));
-  fireEvent.keyDown(within(dialog).getByLabelText("Base branch"), {
-    key: "Escape",
-  });
-
-  expect(screen.queryByRole("dialog")).toBeNull();
-  expect(onClose).not.toHaveBeenCalled();
-});
-
-test("Escape meant for another popup leaves the card open", async () => {
-  const bridge = await setup();
-  const { onClose } = await renderCard(bridge);
-  render(
-    <>
-      <Menu label="Other" icon={SlidersHorizontal} items={[{ key: "a", label: "A", onSelect: () => {} }]} />
-      <div role="dialog" aria-label="Send review batch" />
-    </>,
-  );
-
-  fireEvent.click(screen.getByRole("button", { name: "Other" }));
-  fireEvent.keyDown(screen.getByRole("menuitem", { name: "A" }), {
-    key: "Escape",
-  });
-  expect(screen.queryByRole("menu")).toBeNull();
-
-  fireEvent.keyDown(screen.getByRole("dialog", { name: "Send review batch" }), {
-    key: "Escape",
-  });
-
-  expect(onClose).not.toHaveBeenCalled();
 });
 
 test("a failed action says why in the card", async () => {

@@ -184,6 +184,25 @@ export type StateSource = "Protocol" | "Hook" | "Heuristic";
 /** An agent session's new state, as `AgentStateChanged` in `app/src-tauri/src/main.rs` sends it. */
 export type AgentStateChanged = AgentState & { session: SessionId; source: StateSource };
 
+/**
+ * An agent session, running or ended, as `AgentSession` in `app/src-tauri/src/main.rs` sends it. It
+ * has no state before its first one. Times are in milliseconds since the Unix epoch.
+ */
+export type AgentSessionRecord = {
+  session: SessionId;
+  worktree: string;
+  agent: Agent;
+  mode: Mode;
+  /** The agent session that spawned it as a subagent. null for one the user started. */
+  parent: SessionId | null;
+  /** The first line of its first user message, or "New session" before that. */
+  title: string;
+  createdUnixMs: number;
+  ended: boolean;
+  /** When it entered its state, or before its first state when it started. */
+  sinceUnixMs: number;
+} & (AgentState | { state?: undefined });
+
 /** The macOS notification of an agent session that the user clicked. */
 export type NotificationClicked = { session: SessionId; worktree: string };
 
@@ -444,6 +463,13 @@ export interface Bridge {
   onAccount(listener: (change: AccountChanged) => void): () => void;
   /** Calls `listener` each time an agent session's state changes. Returns the unsubscribe. */
   onAgentState(listener: (change: AgentStateChanged) => void): () => void;
+  /** Every agent session of every tracked worktree, ended ones too. */
+  agentSessions(): Promise<AgentSessionRecord[]>;
+  /**
+   * Called when what `agentSessions` lists changed: a session started, got its title, switched
+   * mode, ended, was resumed or was deleted. A new state comes through `onAgentState` alone.
+   */
+  onAgentSessionsChanged(listener: () => void): () => void;
   /**
    * Calls `listener` each time the user clicks an agent session's notification, after grove came
    * forward. Returns the unsubscribe.
@@ -651,6 +677,11 @@ export const tauriBridge: Bridge = {
   onAccount: (listener) => listenAndList("account", "accounts", listener),
   onAgentState(listener) {
     const unlisten = listen<AgentStateChanged>("agent-state", (event) => listener(event.payload));
+    return () => void unlisten.then((stop) => stop());
+  },
+  agentSessions: () => invoke("agent_sessions"),
+  onAgentSessionsChanged(listener) {
+    const unlisten = listen("agent-sessions-changed", () => listener());
     return () => void unlisten.then((stop) => stop());
   },
   onNotificationClicked(listener) {
