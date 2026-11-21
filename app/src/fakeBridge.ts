@@ -339,6 +339,8 @@ export function fakeBridge(
   const created = new Map<SessionId, number>();
   const sinces = new Map<SessionId, number>();
   const sessionsListeners = new Set<() => void>();
+  // As the core: what `agentSessions` lists changed.
+  const sessionsChanged = () => sessionsListeners.forEach((listener) => listener());
   // Attention queue (#53): each agent session's worktree, and when it entered its state, as a count.
   const agentWorktrees = new Map<SessionId, string>();
   const entered = new Map<SessionId, number>();
@@ -423,6 +425,7 @@ export function fakeBridge(
       stoppedRuns.push({ session, worktree: run.worktree, name: run.name, kept: true });
     }
     exitListeners.forEach((listener) => listener(session));
+    if (modes.has(session)) sessionsChanged();
   }
 
   function dropStoppedRun(worktree: string, name: string) {
@@ -531,7 +534,7 @@ export function fakeBridge(
     spawnedAgents.push({ session, worktree, agent });
     created.set(session, Date.now());
     sinces.set(session, Date.now());
-    sessionsListeners.forEach((listener) => listener());
+    sessionsChanged();
     return session;
   }
 
@@ -589,6 +592,7 @@ export function fakeBridge(
       const own = [...spawned, ...spawnedRuns].some((s) => s.session === session && s.worktree === worktree);
       if (own || agentWorktrees.get(session) === worktree) running.delete(session);
     }
+    sessionsChanged();
     tracked.splice(tracked.findIndex((w) => w.path === worktree), 1);
     workspaces.delete(worktree);
     stoppedRuns.splice(0, stoppedRuns.length, ...stoppedRuns.filter((s) => s.worktree !== worktree));
@@ -799,7 +803,7 @@ export function fakeBridge(
         .find((line) => line !== "");
       if (title && !titles.has(session)) {
         titles.set(session, title);
-        sessionsListeners.forEach((listener) => listener());
+        sessionsChanged();
       }
     },
     async interrupt(session) {
@@ -1260,6 +1264,7 @@ export function fakeBridge(
       lastSeq.delete(session);
       printed.set(session, new Uint8Array());
       running.add(session);
+      sessionsChanged();
     },
     modesSet,
     holdModeSwitches() {

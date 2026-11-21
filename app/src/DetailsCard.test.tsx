@@ -290,6 +290,10 @@ test("the servers row shows the port of each running run session that serves one
   expect(within(row("Servers")).getByText(":5173 dev")).toBeTruthy();
 });
 
+// A time and a day as the card writes them, in the machine's locale.
+const clock = (at: Date) => at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+const day = (at: Date) => at.toLocaleDateString([], { month: "short", day: "numeric" });
+
 test("the session block shows the focused session's title, its state in words since when, and where the state came from", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(2026, 10, 20, 9, 30));
@@ -302,9 +306,10 @@ test("the session block shows the focused session's title, its state in words si
   const { rerender } = await renderCard(bridge, { session: { ...claude, session, state: approval } });
 
   const block = () => within(card()).getByRole("group", { name: "Agent session" });
-  expect(within(block()).getByRole("heading", { name: "Fix the login bug" })).toBeTruthy();
+  // The title is cut to one line, and its tooltip holds it all.
+  expect(within(block()).getByRole("heading", { name: "Fix the login bug" }).title).toBe("Fix the login bug");
   expect(within(block()).getByText("Approval")).toBeTruthy();
-  expect(within(block()).getByText("since 14:05")).toBeTruthy();
+  expect(within(block()).getByText(`since ${clock(new Date(2026, 10, 20, 14, 5))}`)).toBeTruthy();
   expect(within(block()).getByText("State from Hook")).toBeTruthy();
 
   vi.setSystemTime(new Date(2026, 10, 20, 14, 20));
@@ -312,7 +317,39 @@ test("the session block shows the focused session's title, its state in words si
   await act(async () => bridge.agentStateChanged(working));
   await act(async () => rerender({ session: { ...claude, session, state: working } }));
   expect(within(block()).getByText("Working")).toBeTruthy();
-  expect(within(block()).getByText("since 14:20")).toBeTruthy();
+  expect(within(block()).getByText(`since ${clock(new Date(2026, 10, 20, 14, 20))}`)).toBeTruthy();
+});
+
+test("before any new state reaches the window, the session block shows the state the core lists, without a source", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 10, 20, 14, 5));
+  const bridge = await setup();
+  const session = await bridge.spawnAgent(feature, "Claude", null);
+  bridge.agentStateChanged({ session, state: "Working", source: "Protocol" });
+  await renderCard(bridge, { session: { ...claude, session, state: undefined } });
+
+  const block = within(card()).getByRole("group", { name: "Agent session" });
+  expect(within(block).getByText("Working")).toBeTruthy();
+  expect(within(block).getByText(`since ${clock(new Date(2026, 10, 20, 14, 5))}`)).toBeTruthy();
+  expect(within(block).queryByText(/^State from/)).toBeNull();
+});
+
+test("a new state shows no since time until the core lists the time it was entered", async () => {
+  const bridge = await setup();
+  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const working = { session, state: "Working", source: "Protocol" } as const;
+  bridge.agentStateChanged(working);
+  const { rerender } = await renderCard(bridge, { session: { ...claude, session, state: working } });
+  const block = () => within(card()).getByRole("group", { name: "Agent session" });
+  expect(within(block()).getByText(/^since /)).toBeTruthy();
+
+  vi.spyOn(bridge, "agentSessions").mockReturnValue(new Promise(() => {}));
+  const approval = { session, state: "NeedsInput", kind: "Approval", source: "Protocol" } as const;
+  await act(async () => bridge.agentStateChanged(approval));
+  await act(async () => rerender({ session: { ...claude, session, state: approval } }));
+
+  expect(within(block()).getByText("Approval")).toBeTruthy();
+  expect(within(block()).queryByText(/^since /)).toBeNull();
 });
 
 test("a state entered on another day shows its date with its time", async () => {
@@ -326,7 +363,8 @@ test("a state entered on another day shows its date with its time", async () => 
   await renderCard(bridge, { session: { ...claude, session, state: idle } });
 
   const block = within(card()).getByRole("group", { name: "Agent session" });
-  expect(within(block).getByText("since Nov 19, 14:05")).toBeTruthy();
+  const entered = new Date(2026, 10, 19, 14, 5);
+  expect(within(block).getByText(`since ${day(entered)}, ${clock(entered)}`)).toBeTruthy();
 });
 
 test("a listing of the agent sessions that fails after a later one succeeded says nothing", async () => {

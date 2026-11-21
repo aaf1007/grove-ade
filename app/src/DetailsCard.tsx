@@ -17,6 +17,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useState } from "react";
 import type {
   Agent,
   AgentSessionRecord,
+  AgentState as State,
   AgentStateChanged,
   Bridge,
   DiffBase,
@@ -230,24 +231,29 @@ export function DetailsCard({
   const diffError = changes && "error" in changes ? changes.error : null;
   const alert = error ?? diffError;
   const focusedRecord = record?.session === focused ? record : null;
+  // The newest state the window heard of, or before any the state the core lists. The time it was
+  // entered shows only once the core lists that same state, so a new state never shows an old time.
+  const listedState = focusedRecord?.state ? focusedRecord : undefined;
+  const shownState = session?.state ?? listedState;
+  const since = shownState && listedState && sameState(shownState, listedState) ? listedState.sinceUnixMs : null;
 
   return (
     <div className="details-holder">
       <section id={DETAILS_CARD_ID} className="details-card" aria-label="Details">
         {session && (
           <div role="group" aria-label="Agent session" className="details-session">
-            {focusedRecord && <h2 className="details-title">{focusedRecord.title}</h2>}
-            {session.state && (
-              <>
-                <p className="details-state">
-                  <AgentState state={session.state} />
-                  {focusedRecord?.state && (
-                    <span className="details-muted">since {clockTime(focusedRecord.sinceUnixMs)}</span>
-                  )}
-                </p>
-                <p className="details-meta">State from {session.state.source}</p>
-              </>
+            {focusedRecord && (
+              <h2 className="details-title" title={focusedRecord.title}>
+                {focusedRecord.title}
+              </h2>
             )}
+            {shownState && (
+              <p className="details-state">
+                <AgentState state={shownState} />
+                {since !== null && <span className="details-muted">since {clockTime(since)}</span>}
+              </p>
+            )}
+            {session.state && <p className="details-meta">State from {session.state.source}</p>}
           </div>
         )}
         <ul className="details-rows">
@@ -438,6 +444,12 @@ function RowContent({ icon: Icon, label, end }: { icon: LucideIcon; label: React
 
 function Chevron() {
   return <ChevronDown aria-hidden="true" className="details-chevron" />;
+}
+
+/** Whether two states are the same, NeedsInput of the same kind. */
+function sameState(a: State, b: State): boolean {
+  const kind = (state: State) => (state.state === "NeedsInput" ? state.kind : null);
+  return a.state === b.state && kind(a) === kind(b);
 }
 
 /** A time as "14:05" today, and as "Nov 19, 14:05" on another day. */
