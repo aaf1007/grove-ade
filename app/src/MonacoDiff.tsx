@@ -13,7 +13,8 @@ export interface DiffZone {
 }
 
 export interface MonacoDiffProps {
-  original: string;
+  /** null when the file has no old side, such as a new file: every line then shows as added. */
+  original: string | null;
   modified: string;
   /** The file's path, for its language. */
   path: string;
@@ -31,10 +32,37 @@ const SIDE_BY_SIDE_MIN_WIDTH = 900;
 // A zone's height before its box is measured.
 const UNMEASURED_ZONE_HEIGHT = 32;
 
-/** A read-only Monaco diff of two versions of a file, with boxes between its lines. */
+// The options both kinds of editor take: long lines wrap, and the editor is as tall as its lines, so
+// a wheel past its end scrolls the file list.
+const sectionOptions: monaco.editor.IEditorOptions = {
+  readOnly: true,
+  wordWrap: "on",
+  scrollBeyondLastLine: false,
+  automaticLayout: true,
+};
+
+// Every line of a file with no old side, marked as the diff marks an added line.
+const addedLine: monaco.editor.IModelDecorationOptions = {
+  isWholeLine: true,
+  className: "line-insert",
+  marginClassName: "gutter-insert",
+  linesDecorationsClassName: "insert-sign codicon codicon-diff-insert",
+};
+
+/** The diff, or for a file with no old side a plain editor, and the editor that holds the new text. */
+interface Editors {
+  diff: monaco.editor.IStandaloneDiffEditor | null;
+  modified: monaco.editor.ICodeEditor;
+}
+
+/**
+ * A read-only Monaco diff of two versions of a file, as tall as its lines and with boxes between
+ * them. A file with no old side shows only its new text, every line added.
+ */
 export function MonacoDiff({ original, modified, path, onCommentLines, zones }: MonacoDiffProps) {
   const host = useRef<HTMLDivElement>(null);
-  const editor = useRef<monaco.editor.IStandaloneDiffEditor | null>(null);
+  const editor = useRef<Editors | null>(null);
+  const hasOldSide = original !== null;
   const shownPath = useRef<string | null>(null);
   const onCommentLinesRef = useRef(onCommentLines);
   const zonesRef = useRef(zones);
@@ -51,19 +79,25 @@ export function MonacoDiff({ original, modified, path, onCommentLines, zones }: 
 
   useEffect(() => {
     const releaseTheme = holdCodeTheme();
-    const diff = monaco.editor.createDiffEditor(host.current!, {
-      ...editorOptions(),
-      readOnly: true,
-      originalEditable: false,
-      // Whitespace-only changes must show.
-      ignoreTrimWhitespace: false,
-      useInlineViewWhenSpaceIsLimited: true,
-      renderSideBySideInlineBreakpoint: SIDE_BY_SIDE_MIN_WIDTH,
-      // Its only action, Revert Block, needs an editable side. Left on, its menu throws after the diff is disposed.
-      renderGutterMenu: false,
-      automaticLayout: true,
+    const options = { ...editorOptions(), ...sectionOptions };
+    options.scrollbar = { ...options.scrollbar, alwaysConsumeMouseWheel: false };
+    const diff = hasOldSide
+      ? monaco.editor.createDiffEditor(host.current!, {
+          ...options,
+          originalEditable: false,
+          // Whitespace-only changes must show.
+          ignoreTrimWhitespace: false,
+          useInlineViewWhenSpaceIsLimited: true,
+          renderSideBySideInlineBreakpoint: SIDE_BY_SIDE_MIN_WIDTH,
+          // Its only action, Revert Block, needs an editable side. Left on, its menu throws after the diff is disposed.
+          renderGutterMenu: false,
+        })
+      : null;
+    const modifiedEditor = diff?.getModifiedEditor() ?? monaco.editor.create(host.current!, { ...options, model: null });
+    // As tall as its lines, comment boxes and removed lines included. The stylesheet caps it.
+    const fit = modifiedEditor.onDidContentSizeChange(({ contentHeight }) => {
+      host.current!.style.height = `${contentHeight}px`;
     });
-    const modifiedEditor = diff.getModifiedEditor();
     // A press on the line numbers selects lines, and the selection is final once the button is up,
     // wherever it is by then.
     let onLineNumbers = false;
@@ -81,49 +115,60 @@ export function MonacoDiff({ original, modified, path, onCommentLines, zones }: 
       onCommentLinesRef.current(start, end);
     }
     window.addEventListener("mouseup", up);
-    editor.current = diff;
+    const added = diff ? null : modifiedEditor.createDecorationsCollection();
+    editor.current = { diff, modified: modifiedEditor };
+    // Each new text in a plain editor marks all its lines again.
+    const marked = added && modifiedEditor.onDidChangeModelContent(() => markAdded(modifiedEditor, added));
+    const markedModel = added && modifiedEditor.onDidChangeModel(() => markAdded(modifiedEditor, added));
     return () => {
       window.removeEventListener("mouseup", up);
       down.dispose();
-      const models = diff.getModel();
-      diff.dispose();
-      models?.original.dispose();
-      models?.modified.dispose();
+      fit.dispose();
+      marked?.dispose();
+      markedModel?.dispose();
+      const models = [diff?.getModel()?.original, modifiedEditor.getModel()];
+      (diff ?? modifiedEditor).dispose();
+      models.forEach((model) => model?.dispose());
       editor.current = null;
       shownPath.current = null;
       releaseTheme();
     };
-  }, []);
+  }, [hasOldSide]);
 
   useEffect(() => {
-    const diff = editor.current;
-    if (!diff) return;
-    const models = diff.getModel();
+    if (!editor.current) return;
+    const { diff, modified: modifiedEditor } = editor.current;
+    const oldModel = diff ? diff.getModel()?.original : null;
+    const newModel = modifiedEditor.getModel();
     // The same file takes its new text in place, so scroll and cursor stay where they were.
-    if (models && shownPath.current === path) {
-      const view = diff.saveViewState();
-      if (models.original.getValue() !== original) models.original.setValue(original);
-      if (models.modified.getValue() !== modified) models.modified.setValue(modified);
-      diff.restoreViewState(view);
+    if (newModel && shownPath.current === path) {
+      const update = () => {
+        if (oldModel && original !== null && oldModel.getValue() !== original) oldModel.setValue(original);
+        if (newModel.getValue() !== modified) newModel.setValue(modified);
+      };
+      if (diff) keepingView(diff, update);
+      else keepingView(modifiedEditor, update);
       return;
     }
     const language = languageOf(path);
-    diff.setModel({
-      original: monaco.editor.createModel(original, language),
-      modified: monaco.editor.createModel(modified, language),
-    });
-    models?.original.dispose();
-    models?.modified.dispose();
+    const next = monaco.editor.createModel(modified, language);
+    if (diff) {
+      diff.setModel({ original: monaco.editor.createModel(original ?? "", language), modified: next });
+      const computed = diff.onDidUpdateDiff(() => {
+        computed.dispose();
+        diff.revealFirstDiff();
+      });
+    } else {
+      modifiedEditor.setModel(next);
+    }
+    oldModel?.dispose();
+    newModel?.dispose();
     shownPath.current = path;
-    const computed = diff.onDidUpdateDiff(() => {
-      computed.dispose();
-      diff.revealFirstDiff();
-    });
-  }, [original, modified, path]);
+  }, [original, modified, path, hasOldSide]);
 
   // A new model or new text drops or shifts the view zones, so they are all added again after it.
   useEffect(() => {
-    const modifiedEditor = editor.current?.getModifiedEditor();
+    const modifiedEditor = editor.current?.modified;
     if (!modifiedEditor) return;
     const added: { id: string; zone: monaco.editor.IViewZone; box: HTMLElement; key: string }[] = [];
     modifiedEditor.changeViewZones((zones) => {
@@ -154,7 +199,7 @@ export function MonacoDiff({ original, modified, path, onCommentLines, zones }: 
       sizes.disconnect();
       modifiedEditor.changeViewZones((zones) => added.forEach(({ id }) => zones.removeZone(id)));
     };
-  }, [placed, original, modified, path]);
+  }, [placed, original, modified, path, hasOldSide]);
 
   return (
     <div className="monaco-diff" ref={host}>
@@ -165,6 +210,24 @@ export function MonacoDiff({ original, modified, path, onCommentLines, zones }: 
       ))}
     </div>
   );
+}
+
+function keepingView<View>(
+  editorToKeepViewOf: { saveViewState(): View | null; restoreViewState(view: View | null): void },
+  update: () => void,
+) {
+  const view = editorToKeepViewOf.saveViewState();
+  update();
+  editorToKeepViewOf.restoreViewState(view);
+}
+
+function markAdded(editorToMark: monaco.editor.ICodeEditor, added: monaco.editor.IEditorDecorationsCollection) {
+  const model = editorToMark.getModel();
+  if (!model) return added.clear();
+  // The empty line after a final newline is not a line git counts.
+  const lineCount = model.getLineCount();
+  const last = lineCount > 1 && model.getLineLength(lineCount) === 0 ? lineCount - 1 : lineCount;
+  added.set([{ range: new monaco.Range(1, 1, last, 1), options: addedLine }]);
 }
 
 /** A zone's content, drawn into a node of its own that MonacoDiff hands to Monaco. */
