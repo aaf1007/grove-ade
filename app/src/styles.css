@@ -416,7 +416,8 @@ svg {
   list-style: none;
 }
 
-/* A repo: its name and a chevron that folds it, then a + that shows on hover. */
+/* A project: its name as a small muted label and a chevron that folds it, then a + that shows on
+   hover. */
 .repo-folder {
   display: flex;
   align-items: center;
@@ -437,10 +438,11 @@ svg {
   gap: var(--space-6);
   min-width: 0;
   height: 100%;
-  padding: 0 var(--space-10);
+  padding: 0 var(--space-8);
   border: 0;
   background: none;
-  font-weight: 500;
+  color: var(--muted);
+  font: var(--text-label);
   text-align: left;
 }
 
@@ -456,7 +458,7 @@ svg {
 
 /* Search keeps every repo open, so the toggle rests without looking greyed out. */
 .repo-toggle:disabled {
-  color: inherit;
+  color: var(--muted);
   cursor: default;
 }
 
@@ -469,15 +471,15 @@ svg {
   opacity: 1;
 }
 
-/* A session's or a worktree's row: its button, then its menu and its status dot. */
+/* A session's or a worktree's row, one 32px line. */
 .wt-row,
 .session-item {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  height: 34px;
+  height: var(--control-md);
   padding-right: var(--space-8);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
 }
 
 .wt-row:hover,
@@ -500,11 +502,12 @@ svg {
   display: flex;
   flex: 1;
   align-items: center;
+  gap: var(--space-8);
   min-width: 0;
   height: 100%;
-  padding: 0 var(--space-8) 0 var(--space-10);
+  padding: 0 var(--space-8);
   border: 0;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: none;
   text-align: left;
 }
@@ -515,32 +518,69 @@ svg {
   color: var(--muted);
 }
 
-/* The name is cut and fades out at the right edge. */
+/* The title takes the free width and is cut with an ellipsis. */
 .wt-title,
 .session-title {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
-  white-space: nowrap;
-  mask-image: linear-gradient(to right, var(--fg) 85%, transparent);
-}
-
-/* A session's branch, after its title, and the badge of a session in a worktree of its own. */
-.session-branch {
-  flex: none;
-  min-width: 0;
-  max-width: 33%;
-  margin-left: var(--space-8);
-  overflow: hidden;
-  color: var(--muted);
-  font-size: var(--text-meta-size);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* A session's state before its title: the Working spinner or a dot. Idle, Exited and an ended
+   session keep the slot empty, so the titles line up. */
+.session-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon);
+  height: var(--icon);
+}
+
+.mark-spinner {
+  color: var(--working);
+}
+
+.mark-spinner svg {
+  width: 14px;
+  height: 14px;
+  animation: session-spin var(--working-spin);
+}
+
+@keyframes session-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+.mark-accent::before,
+.mark-red::before {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  content: "";
+}
+
+.mark-accent::before {
+  background: var(--accent-text);
+}
+
+.mark-red::before {
+  background: var(--failed);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mark-spinner svg {
+    animation: none;
+  }
+}
+
+/* The badge of a session in a worktree of its own, then its age. */
 .session-badge {
   display: inline-flex;
   flex: none;
-  margin-left: var(--space-4);
   color: var(--muted);
 }
 
@@ -549,22 +589,48 @@ svg {
   height: 12px;
 }
 
-/* The menu shows on hover, on the selected row, and while it has focus. */
-.wt-row .ui-menu,
+/* As wide as the menu button that takes its place. */
+.session-age {
+  flex: none;
+  min-width: var(--control-xs);
+  color: var(--muted);
+  font: var(--text-meta);
+  text-align: right;
+}
+
+/* A session's menu sits over its age and shows on hover or focus, in the age's place. */
+.session-item {
+  position: relative;
+}
+
 .session-item .ui-menu {
+  position: absolute;
+  right: var(--space-8);
+  opacity: 0;
+}
+
+.session-item:hover .ui-menu,
+.session-item:focus-within .ui-menu {
+  opacity: 1;
+}
+
+.session-item:hover .session-age,
+.session-item:focus-within .session-age {
+  visibility: hidden;
+}
+
+/* A worktree's menu shows on hover, on the selected row, and while it has focus. */
+.wt-row .ui-menu {
   opacity: 0;
 }
 
 .wt-row:hover .ui-menu,
 .wt-row.selected .ui-menu,
-.wt-row .ui-menu:focus-within,
-.session-item:hover .ui-menu,
-.session-item.selected .ui-menu,
-.session-item .ui-menu:focus-within {
+.wt-row .ui-menu:focus-within {
   opacity: 1;
 }
 
-/* The most urgent state as a 7px dot. Working pulses as the Working icon does. */
+/* A worktree row's dot, while its setup script runs. It pulses as the Working icon does. */
 .status-dot {
   flex: none;
   width: 7px;
@@ -578,66 +644,15 @@ svg {
   animation: ui-agent-state-pulse var(--working-pulse);
 }
 
-.status-approval {
-  background: var(--needs);
-}
-
-.status-question {
-  background: var(--question);
-}
-
-.status-failed {
-  background: var(--failed);
-}
-
-.status-done {
-  background: var(--done);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .status-working {
     animation: none;
   }
 }
 
-/* A subagent session nests under the session that spawned it, with a tree line that runs down
-   from that row and turns into the subagent's row with a rounded corner. Its row starts right of
-   the line, so the line never crosses its ring. */
-.agent-sessions .session-item {
-  position: relative;
-  margin-left: calc(var(--space-32) - var(--space-2));
-}
-
-/* It starts at the row above's bottom edge, so it never crosses that row's ring either. */
-.agent-sessions .session-item::before {
-  position: absolute;
-  top: 0;
-  bottom: 50%;
-  left: calc(18px - var(--space-32) + var(--space-2));
-  width: 12px;
-  border-bottom: 1.5px solid var(--line);
-  border-left: 1.5px solid var(--line);
-  border-bottom-left-radius: var(--radius-lg);
-  content: "";
-}
-
-/* A subagent's own subagents sit one step further in. */
-.agent-sessions .agent-sessions {
-  margin-left: calc(var(--space-32) - var(--space-2));
-}
-
-/* The line runs on past a row to the next one, past that row's own subagents too. */
-.agent-sessions > li {
-  position: relative;
-}
-
-.agent-sessions > li:not(:last-child)::after {
-  position: absolute;
-  top: 17px;
-  bottom: 0;
-  left: 18px;
-  border-left: 1.5px solid var(--line);
-  content: "";
+/* A subagent session sits one step in, its mark under its parent's title. */
+.sidebar .agent-sessions {
+  margin-left: calc(var(--icon) + var(--space-8));
 }
 
 .wt-setup {
