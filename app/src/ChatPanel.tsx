@@ -1,8 +1,9 @@
-import { ArrowUp, Columns2, Ellipsis, GitBranch, Shield, SlidersHorizontal, Square, X } from "lucide-react";
+import { ArrowUp, Columns2, GitBranch, Shield, SlidersHorizontal, Square, X } from "lucide-react";
 import {
   type Dispatch,
   type KeyboardEvent,
   type ReactNode,
+  type Ref,
   type SetStateAction,
   useCallback,
   useEffect,
@@ -32,11 +33,10 @@ import "./ChatPanel.css";
 import { AgentMark, type ModelChoice, Picker, useModelChoice } from "./Picker";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { TerminalPanel } from "./TerminalPanel";
-import { DeclinedCall, type ToolCall, ToolCalls } from "./ToolCalls";
+import { DeclinedCall, relative, type ToolCall, ToolCalls } from "./ToolCalls";
 import { AgentState } from "./ui/AgentState";
 import { Button } from "./ui/Button";
 import { IconButton } from "./ui/IconButton";
-import { Menu } from "./ui/Menu";
 import { Segmented } from "./ui/Segmented";
 
 // How close to the bottom, in pixels, the message list counts as following the conversation.
@@ -574,6 +574,8 @@ function ChatView({
   onModelChoice?: (choice: ModelChoice | null) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Whether the history has come. Before it does, the panel cannot tell whether an approval waits.
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   // A switch ends this session once the new one starts, so nothing may be sent to it meanwhile.
   const [changingAgent, setChangingAgent] = useState(false);
   // What the user sent that the core has not echoed back yet, oldest first.
@@ -585,6 +587,7 @@ function ChatView({
   const resumedAt = useRef<number | null>(null);
   const list = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
+  const approvalCard = useRef<HTMLDivElement>(null);
   // Sends on their way, oldest first. The failed ones go back into the draft together once all
   // have settled, so they come back in the order they were sent.
   const sending = useRef<{ text: string; settled: boolean; failed: boolean }[]>([]);
@@ -631,10 +634,15 @@ function ChatView({
           const all: ChatMessage[] = [...history, ...early!];
           if (resumedAt.current !== null) all.splice(resumedAt.current, 0, RESUMED);
           setMessages(all);
+          setHistoryLoaded(true);
           setUnechoed([]);
           early = null;
         },
-        (e: unknown) => current && setError(String(e)),
+        (e: unknown) => {
+          if (!current) return;
+          setError(String(e));
+          setHistoryLoaded(true);
+        },
       );
     return () => {
       current = false;
@@ -650,11 +658,12 @@ function ChatView({
     if (el && following.current) el.scrollTop = el.scrollHeight;
   }, [items, unechoed]);
 
+  // A jump lands on the approval that waits, else in the composer.
   useEffect(() => {
-    if (!shown || focusRequest === 0 || focusRequest === focusedRequest.current) return;
+    if (!shown || !historyLoaded || focusRequest === 0 || focusRequest === focusedRequest.current) return;
     focusedRequest.current = focusRequest;
-    composer.current!.focus();
-  }, [focusRequest, shown]);
+    (approvalCard.current ?? composer.current!).focus();
+  }, [focusRequest, shown, historyLoaded]);
 
   // The composer grows with the draft up to its CSS max-height, then scrolls. A hidden panel
   // has no size, so it measures again once shown, and again when its width changes the wrapping.
@@ -792,7 +801,6 @@ function ChatView({
               refused={refused}
               changes={changes}
               onOpenDiff={onOpenDiff}
-              onAnswer={answer}
               onOpenLink={openLink}
             />
           ))}
@@ -810,6 +818,16 @@ function ChatView({
           </p>
         )}
         {notice}
+        {declining && (
+          <ApprovalCard
+            key={declining.request}
+            item={declining}
+            agentName={name}
+            worktree={worktree}
+            onAnswer={answer}
+            ref={approvalCard}
+          />
+        )}
         {question && <QuestionCard key={question.request} item={question} agentName={name} onAnswer={answer} />}
         <div className="composer">
           <textarea
@@ -891,7 +909,16 @@ type RequestItem = {
   reply: Reply | null;
   /** Its turn ended with no reply. */
   expired: boolean;
-} & ({ kind: "approval"; call: ToolCall; turn: Turn } | { kind: "question"; questions: Question[] });
+} & (
+  | {
+      kind: "approval";
+      call: ToolCall;
+      /** The input the approval came with. A Codex approval's says why, and its call's says what. */
+      asked: unknown;
+      turn: Turn;
+    }
+  | { kind: "question"; questions: Question[] }
+);
 
 type ApprovalItem = Extract<RequestItem, { kind: "approval" }>;
 type QuestionItem = Extract<RequestItem, { kind: "question" }>;
@@ -978,7 +1005,7 @@ function thread(messages: ChatMessage[]): ThreadItem[] {
         const call = takeCall(request) ?? { id: request, tool, input };
         calls.set(request, call);
         workStarts();
-        const item: RequestItem = { kind: "approval", request, call, turn, reply: null, expired: false };
+        const item: RequestItem = { kind: "approval", request, call, asked: input, turn, reply: null, expired: false };
         requests.set(request, item);
         items.push(keyed(item));
         break;
@@ -1064,7 +1091,6 @@ function Item({
   refused,
   changes,
   onOpenDiff,
-  onAnswer,
   onOpenLink,
 }: {
   item: ThreadItem;
@@ -1077,7 +1103,6 @@ function Item({
   /** The worktree's changed files. null until known. */
   changes: FileDiff[] | null;
   onOpenDiff(path?: string): void;
-  onAnswer(request: string, reply: Reply): Promise<void>;
   onOpenLink(link: string): void;
 }) {
   switch (item.kind) {
@@ -1089,11 +1114,9 @@ function Item({
       return (
         <Approval
           item={item}
-          agentName={agentName}
           worktree={worktree}
           live={turnRunning && !item.turn.ended}
           pending={isPending(item, refused)}
-          onAnswer={onAnswer}
         />
       );
     case "question":
@@ -1232,40 +1255,18 @@ function placeOf({ path, startLine, endLine }: BatchComment): string {
   return startLine === endLine ? `${path}:${startLine}` : `${path}:${startLine}-${endLine}`;
 }
 
-/**
- * An approval: the call's row, and under it what the user can do while it waits, or what they did.
- * A pending one scrolls into view when it comes, and answers once.
- */
+/** An approval: the call's row, and under it what the user did. Pending, its card is above the composer. */
 function Approval({
   item,
-  agentName,
   worktree,
   live,
   pending,
-  onAnswer,
 }: {
   item: ApprovalItem;
-  agentName: string;
   worktree: string;
   live: boolean;
   pending: boolean;
-  onAnswer(request: string, reply: Reply): Promise<void>;
 }) {
-  const [sending, setSending] = useState(false);
-  const line = useRef<HTMLDivElement>(null);
-
-  useLayoutEffect(() => {
-    if (pending) line.current!.scrollIntoView({ block: "nearest" });
-  }, [pending]);
-
-  function answer(reply: Reply) {
-    if (sending) return;
-    setSending(true);
-    // The line becomes a record when the core's `Answered` comes. A refused answer is reported
-    // through `pending`.
-    onAnswer(item.request, reply).catch(() => {});
-  }
-
   return (
     <div className="approval">
       {item.reply?.type === "Deny" ? (
@@ -1275,51 +1276,134 @@ function Approval({
       )}
       {item.reply ? (
         <div className="approval-line record">{describeApproval(item.reply)}</div>
-      ) : !pending ? (
-        <div className="approval-line record expired">Expired</div>
       ) : (
-        <div
-          className="approval-line"
-          role="group"
-          aria-label={`${agentName} wants to use ${item.call.tool}`}
-          ref={line}
-        >
-          <span className="approval-waiting">
-            <Shield aria-hidden="true" />
-            Waiting for approval
-          </span>
-          <span aria-hidden="true">·</span>
-          <button
-            type="button"
-            className="approval-action"
-            disabled={sending}
-            onClick={() => answer({ type: "Deny", message: null })}
-          >
-            Decline
-          </button>
-          <button
-            type="button"
-            className="approval-action approve"
-            disabled={sending}
-            onClick={() => answer({ type: "AllowOnce" })}
-          >
-            Approve
-          </button>
-          <Menu
-            label="More approval options"
-            icon={Ellipsis}
-            items={[
-              {
-                key: "session",
-                label: "Always allow this session",
-                onSelect: () => answer({ type: "AllowForSession" }),
-              },
-            ]}
-          />
-        </div>
+        !pending && <div className="approval-line record expired">Expired</div>
       )}
     </div>
   );
+}
+
+/**
+ * A pending approval, as a card above the composer: what the agent wants to do, and the choices.
+ * While the card has focus, Y approves and N declines. It answers once.
+ */
+function ApprovalCard({
+  item,
+  agentName,
+  worktree,
+  onAnswer,
+  ref,
+}: {
+  item: ApprovalItem;
+  agentName: string;
+  worktree: string;
+  onAnswer(request: string, reply: Reply): Promise<void>;
+  ref: Ref<HTMLDivElement>;
+}) {
+  const [sending, setSending] = useState(false);
+  const { action, target, why } = askedFor(item, worktree);
+
+  function answer(reply: Reply) {
+    if (sending) return;
+    setSending(true);
+    // The card goes when the core's `Answered` comes. A refused answer expires it.
+    onAnswer(item.request, reply).catch(() => {});
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const reply = APPROVAL_KEYS[event.key.toLowerCase()];
+    if (!reply) return;
+    event.preventDefault();
+    answer(reply);
+  }
+
+  return (
+    <div
+      ref={ref}
+      className="approval-card"
+      role="group"
+      aria-label={`${agentName} wants to ${action}`}
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+    >
+      <div className="approval-head">
+        <Shield aria-hidden="true" />
+        <span>
+          {agentName} wants to {action}
+        </span>
+      </div>
+      {target && (
+        <pre className="approval-target">
+          <code>{target}</code>
+        </pre>
+      )}
+      {why && <p className="approval-why">{why}</p>}
+      <div className="approval-actions">
+        <Button variant="ghost" size="sm" disabled={sending} onClick={() => answer({ type: "Deny", message: null })}>
+          Decline
+          <kbd aria-hidden="true">N</kbd>
+        </Button>
+        <Button size="sm" disabled={sending} onClick={() => answer({ type: "AllowForSession" })}>
+          Always allow this session
+        </Button>
+        <Button variant="primary" size="sm" disabled={sending} onClick={() => answer({ type: "AllowOnce" })}>
+          Approve
+          <kbd aria-hidden="true">Y</kbd>
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** The replies the approval card's keys send. */
+const APPROVAL_KEYS: Record<string, Reply> = {
+  y: { type: "AllowOnce" },
+  n: { type: "Deny", message: null },
+};
+
+interface AskedFor {
+  action: string;
+  target: string | null;
+  why: string | null;
+}
+
+/**
+ * What an approval asks for: the action as the card's headline says it, the command or files it
+ * acts on, and why, when the agent says. A tool the panel does not know is named as is.
+ */
+function askedFor(item: ApprovalItem, worktree: string): AskedFor {
+  const asked = (item.asked ?? {}) as Record<string, unknown>;
+  const call = (item.call.input ?? {}) as Record<string, unknown>;
+  const text = (name: string) =>
+    [asked[name], call[name]].find((value): value is string => typeof value === "string" && value !== "") ?? null;
+  // Claude Code says what a command is for as its description, Codex as its reason.
+  const why = text("description") ?? text("reason");
+  switch (item.call.tool) {
+    case "Bash":
+    case "commandExecution":
+      return { action: "run a command", target: text("command"), why };
+    case "Write":
+    case "Edit":
+    case "MultiEdit":
+    case "NotebookEdit": {
+      const path = text("file_path") ?? text("notebook_path");
+      if (!path) break;
+      const action = item.call.tool === "Write" ? "write a file" : "edit a file";
+      return { action, target: relative(path, worktree), why };
+    }
+    case "fileChange": {
+      const changes = Array.isArray(call.changes) ? (call.changes as { path?: unknown }[]) : [];
+      const paths = changes.map((change) => change?.path).filter((path): path is string => typeof path === "string");
+      if (paths.length === 0) return { action: "edit files", target: null, why };
+      const action = paths.length === 1 ? "edit a file" : `edit ${paths.length} files`;
+      return { action, target: paths.map((path) => relative(path, worktree)).join("\n"), why };
+    }
+    // Codex asks for wider sandbox access.
+    case "permissions":
+      return { action: "change its permissions", target: null, why };
+  }
+  return { action: `use ${item.call.tool}`, target: null, why };
 }
 
 /**
