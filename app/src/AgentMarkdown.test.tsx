@@ -190,6 +190,16 @@ test.each(["`", "``", "  ``"])(
   },
 );
 
+test("indented code that holds backticks keeps them, shown and copied", async () => {
+  const writeText = stubClipboard();
+  const container = shown('Before.\n\n    const marker = "```";\n    ``');
+
+  const code = 'const marker = "```";\n``\n';
+  expect(container.querySelector("pre > code")?.textContent).toBe(code);
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy code" })));
+  expect(writeText).toHaveBeenCalledWith(code);
+});
+
 test("a block is colored once its closing fence arrives, not while it streams", async () => {
   const { container, rerender } = render(<AgentMarkdown text={"```ts\nconst a = 1;\n``"} onOpenLink={() => {}} />);
   await act(async () => {});

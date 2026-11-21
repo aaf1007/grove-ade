@@ -896,7 +896,7 @@ svg {
 
 .msg-user {
   align-self: flex-end;
-  max-width: 80%;
+  max-width: min(80%, var(--text-transcript-measure));
   padding: var(--space-12);
   border-radius: var(--radius-2xl);
   background: var(--message);
@@ -911,8 +911,9 @@ svg {
   overflow-wrap: anywhere;
 }
 
-/* Prose keeps a readable line length. Code and tables may use the whole lane. */
-.msg-agent > :not(.code-block, table) {
+/* Prose keeps a readable line length. Code and tables may use the whole lane, in a list or quote too. */
+.msg-agent :is(p, h1, h2, h3, h4, h5, h6),
+.msg-agent :is(ul, ol, blockquote):not(:has(.code-block, table)) {
   max-width: var(--text-transcript-measure);
 }
 

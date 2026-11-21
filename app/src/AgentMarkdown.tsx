@@ -91,7 +91,8 @@ function markOpenFences() {
       // list item ends is closed by it.
       if (markdown.slice(node.position?.end.offset).trim()) return;
       const source = markdown.slice(node.position?.start.offset, node.position?.end.offset).split("\n");
-      const fence = /(`{3,}|~{3,})/.exec(source[0])?.[1];
+      // A fenced block starts with its fence. Indented code holds no fence, whatever it contains.
+      const fence = /^(`{3,}|~{3,})/.exec(source[0])?.[1];
       if (!fence) return;
       const closing = new RegExp(`^[\\s>]*${fence[0]}{${fence.length},}\\s*$`);
       if (source.length > 1 && closing.test(source.at(-1)!)) return;
