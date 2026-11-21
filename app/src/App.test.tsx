@@ -195,10 +195,11 @@ async function select(branch: string) {
   await act(async () => fireEvent.click(row));
 }
 
-// The sidebar row of the `nth` agent session on `branch`, in the order they started.
+// The sidebar row of the `nth` agent session on `branch`, in the order they started. Its tooltip
+// names the branch, after the state.
 function sessionRow(branch: string, nth = 0): HTMLElement | undefined {
   return [...document.querySelectorAll<HTMLElement>(".session-row")].filter(
-    (row) => row.querySelector(".session-branch")?.textContent === branch,
+    (row) => row.title.split("\n")[1]?.split(" · ").pop() === branch,
   )[nth];
 }
 
@@ -208,10 +209,12 @@ async function findSessionRow(branch: string, nth = 0): Promise<HTMLElement> {
   return sessionRow(branch, nth)!;
 }
 
-// The state the status dot on a session's row names. null when it has none, as for Idle.
+// The state a session's row shows with a mark before its title, as its name says it. null when it
+// shows none, as for Idle.
 function rowState(branch: string, nth = 0) {
-  const row = sessionRow(branch, nth)?.closest(".session-item");
-  return row?.querySelector(".status-dot")?.getAttribute("aria-label") ?? null;
+  const row = sessionRow(branch, nth);
+  if (!row?.querySelector(".session-mark[class*='mark-']")) return null;
+  return row.getAttribute("aria-label")!.split(", ").pop()!;
 }
 
 // The selected worktree's name, as the title bar shows it.
@@ -326,8 +329,10 @@ test("closing a shell that already exited shows no error", async () => {
 });
 
 // Picks `place` in the sidebar's New session picker.
+// The sidebar's New session, not a session row with no state yet, which its title "New session" names.
 async function pickPlace(place: string) {
-  fireEvent.click(await screen.findByRole("button", { name: "New session" }));
+  const nav = await screen.findByRole("navigation", { name: "Sidebar" });
+  fireEvent.click(within(nav).getByRole("button", { name: "New session" }));
   await act(async () => fireEvent.click(screen.getByRole("menuitem", { name: place })));
 }
 

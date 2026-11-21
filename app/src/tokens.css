@@ -153,7 +153,7 @@
   --line-soft: #2b2b2b;
   --input: #3c3c3c;
   --fg: #cccccc;
-  --muted: #9d9d9d;
+  --muted: #a1a1a1;
   --faint: #848d98;
   --accent: #0078d4;
   --accent-fg: #ffffff;
@@ -200,7 +200,7 @@
   --line-soft: #e5e5e5;
   --input: #cecece;
   --fg: #3b3b3b;
-  --muted: #6b6b6b;
+  --muted: #666666;
   --faint: #666c74;
   --accent: #005fb8;
   --accent-fg: #ffffff;
@@ -249,6 +249,9 @@
   --radius-xl: 12px;
   --radius-2xl: 16px;
   --radius-full: 999px;
+
+  /* How the sidebar's Working spinner turns: eight steps a turn, with `session-spin`. */
+  --working-spin: 1s steps(8) infinite;
 
   /* How Working pulses, wherever it shows: with `ui-agent-state-pulse`. */
   --working-pulse: 2s steps(6) infinite;

@@ -28,6 +28,11 @@ export function stateWord(state: State): string {
   return LOOKS[lookOf(state)].word;
 }
 
+/** Whether two states are the same, NeedsInput of the same kind. */
+export function sameState(a: State, b: State): boolean {
+  return lookOf(a) === lookOf(b);
+}
+
 function lookOf(state: State): keyof typeof LOOKS {
   return state.state === "NeedsInput" ? state.kind : state.state;
 }
