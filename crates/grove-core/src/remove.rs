@@ -10,8 +10,9 @@ use crate::watch::{self, Watch};
 use crate::worktree::{find_start, git, has_ref, run, stderr, untrack};
 use crate::{Core, CoreError, CoreEvent, Result, SessionId, WorktreeInfo};
 
-// How long removing a worktree waits for its killed sessions to exit.
-const EXIT_WAIT: Duration = Duration::from_secs(5);
+// How long removing a worktree or deleting an agent session waits for its killed sessions to
+// exit.
+pub(crate) const EXIT_WAIT: Duration = Duration::from_secs(5);
 
 /// How `Core::remove_worktree` removes a worktree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,12 +123,13 @@ impl Core {
         self.end_sessions(vec![path.clone()]).await?;
         // The task owns the rest and the mark, so dropping this future cannot leave the worktree
         // removed from disk but still tracked and unmarked.
-        let (tracked, settings, workspaces, watches, comments, events, state_file) = (
+        let (tracked, settings, workspaces, watches, comments, agents, events, state_file) = (
             self.worktrees.clone(),
             self.repo_settings.clone(),
             self.workspaces.clone(),
             self.watches.clone(),
             self.comments.clone(),
+            self.agents.clone(),
             self.events.clone(),
             self.state_file.clone(),
         );
@@ -169,6 +171,12 @@ impl Core {
             };
             // Before it leaves the list, so a worktree added at the same path keeps its own.
             comments.drop_worktree(&folder);
+            let sessions = agents.drop_records_in(std::slice::from_ref(&folder));
+            // The worktree is gone by now, so a folder that stays is only left behind.
+            let _ = agents.remove_session_folders(&sessions);
+            if !sessions.is_empty() {
+                let _ = events.send(CoreEvent::AgentSessionsChanged);
+            }
             untrack(&mut lock(&tracked), |path| path == folder);
             lock(&workspaces).remove(&folder);
             let outcome = match branch {
@@ -290,6 +298,7 @@ impl Core {
             self.drop_panels_in(path);
             self.comments.drop_worktree(path);
         }
+        let sessions = self.agents.drop_records_in(&paths);
         untrack(&mut self.tracked(), |path| paths.iter().any(|p| p == path));
         // Settings are keyed by main worktree, so this drops those of a forgotten repo.
         self.settings().retain(|repo, _| !paths.contains(repo));
@@ -301,14 +310,20 @@ impl Core {
         };
         // Dropping a watch joins its thread, so do it off this tokio worker.
         let first = paths.first().cloned().unwrap_or_default();
-        let (state_file, tracked, settings, workspaces) = (
+        let (state_file, tracked, settings, workspaces, agents) = (
             self.state_file.clone(),
             self.worktrees.clone(),
             self.repo_settings.clone(),
             self.workspaces.clone(),
+            self.agents.clone(),
         );
+        if !sessions.is_empty() {
+            let _ = self.events.send(CoreEvent::AgentSessionsChanged);
+        }
         self.blocking(&first, move || {
             drop(stopped);
+            // The worktrees are forgotten by now, so a folder that stays is only left behind.
+            let _ = agents.remove_session_folders(&sessions);
             state_file.save(&tracked, &settings, &workspaces)
         })
         .await
@@ -379,7 +394,7 @@ pub(crate) fn repo_of(tracked: &[WorktreeInfo], worktree: &Path) -> Option<PathB
 
 // Whether every session in `left` sent `SessionExited` within `within`. A receiver that fell
 // behind may have missed some, so it then stops waiting for those `running` says have ended.
-async fn wait_for_exits(
+pub(crate) async fn wait_for_exits(
     mut exits: broadcast::Receiver<CoreEvent>,
     mut left: HashSet<SessionId>,
     running: impl Fn(SessionId) -> bool,

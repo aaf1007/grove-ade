@@ -83,6 +83,11 @@ impl Core {
     pub async fn models(&self, s: SessionId) -> Result<Vec<ModelInfo>>; // the agent's own list, with each model's efforts
     pub async fn set_mode(&self, s: SessionId, mode: Mode) -> Result<()>; // ends one process, resumes the conversation in the other
 
+    // agent session records
+    pub fn agent_sessions(&self) -> Vec<AgentSessionInfo>; // every agent session of every tracked worktree, ended ones too: worktree, agent, mode, parent, title, created time, ended, agent state and since when
+    pub async fn delete_agent_session(&self, s: SessionId) -> Result<()>; // ends it and the subagent sessions below it, drops their records, agent panels and folders in ~/.grovecode/sessions/
+    pub fn resume_agent_session(&self, s: SessionId) -> Result<()>; // an ended session: a new process under the same session id that resumes its conversation, in the agent panel it had, or in a new one after the last when the workspace no longer has that panel
+
     // files
     pub async fn list_files(&self, wt: WorktreeId) -> Result<Vec<FileEntry>>; // respects .gitignore
     pub async fn read_file(&self, wt: WorktreeId, path: &Path) -> Result<Vec<u8>>;
@@ -122,11 +127,12 @@ impl Core {
 pub enum CoreEvent {
     SessionExited { session: SessionId, code: Option<i32> },
     AgentState { session: SessionId, state: AgentState, source: StateSource },
+    AgentSessionsChanged, // agent_sessions lists something new: a session started, got its title, switched mode, ended, was resumed or was deleted
     DiffChanged { worktree: WorktreeId, paths: Vec<PathBuf> },
     CommentsChanged { worktree: PathBuf },
     PanelRequested { parent: Option<SessionId>, panel: PanelSpec },
     PanelClosed { panel: SessionId }, // its agent session closed it, or its worktree was removed
-    WorkspaceChanged { worktree: WorktreeId, by: Option<SessionId> }, // by Some: show the notice with Undo; None for the user, an undo, or spawn_agent placing a session
+    WorkspaceChanged { worktree: WorktreeId, by: Option<SessionId> }, // by Some: show the notice with Undo; None for the user, an undo, spawn_agent placing a session, resume_agent_session showing its panel again, or delete_agent_session dropping one
     ProfilesChanged { by: Option<SessionId> }, // by Some: show the notice with Undo
     RepoSettingsChanged { repo: PathBuf, by: Option<SessionId> }, // a repo's profile pick or overrides changed
     Setup { worktree: PathBuf, setup: Setup }, // a worktree's setup started or ended
@@ -326,7 +332,7 @@ These apply to terminal panels, which include agent sessions in terminal mode.
 - Target: 8 streaming sessions without UI stalls, in chat mode or terminal mode.
 - The Claude sidecar and `codex app-server` run as child processes. Their stdio is read on std threads and forwarded through channels, like PTY output.
 - Scrollback: 5,000 lines per xterm.js panel, 1,000 lines in the headless parser. Checked against the M4 performance run.
-- State persisted to a JSON file under `~/.grovecode/` for MVP (worktrees, sessions to restore, comments), written atomically (temp file, then rename) with a schema version. Schema version 2 adds per-repo run sessions and launch args; once profiles land they move into the repo's overrides of its profile (repo settings). Version 5 adds each worktree's sessions to restore and review comments, and the session in each agent panel. Version 6 adds the parent of each subagent. Revisit SQLite if it grows.
+- State persisted to a JSON file under `~/.grovecode/` for MVP (worktrees, sessions to restore, comments), written atomically (temp file, then rename) with a schema version. Schema version 2 adds per-repo run sessions and launch args; once profiles land they move into the repo's overrides of its profile (repo settings). Version 5 adds each worktree's sessions to restore and review comments, and the session in each agent panel. Version 6 adds the parent of each subagent. Version 9 keeps each agent session until the user deletes it, with its title, its created time and whether its process had ended. Revisit SQLite if it grows.
 - Changes that no call waits to save, such as a session ending or a comment moving, ask a background task to save. It writes on a blocking thread, off the tokio workers. Quitting saves once more before it ends the sessions and saves nothing after, so the sessions it ends still restore. After a crash, the last save restores.
 - Names (ADR 0011): the home folder, the CLI command, and the app bundle id use `grovecode`. Everything else says grove.
 - Login shell environment: at startup the core runs `$SHELL -ilc` once to print `env -0` between two marker lines, with a 5 second timeout, and uses that environment for every PTY. The shell starts from a clean base (`env -i` plus `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, and a minimal `PATH`), so variables from whatever launched grove (for example `CLAUDECODE` from a Claude Code terminal) never reach PTYs. grove then sets `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=grove`, and `LANG` when it is missing. If the read fails, grove uses the minimal environment and shows a warning. A Dock launch otherwise gets a minimal `PATH` and cannot find `claude` or `codex`.
@@ -344,8 +350,9 @@ These apply to terminal panels, which include agent sessions in terminal mode.
 ## Quit and restore
 - Cmd-Q asks for confirmation when any agent session is `Working` or `NeedsInput`.
 - grove stops a session by killing its whole process group, so tools the agent started do not keep the PTY open. Each child is waited on in its own thread, and exit comes from that wait, not from the reader reaching end of file. Sessions grove stops become `Exited`.
-- On launch: agent sessions resume their conversation in the mode they were in (chat mode through the sidecar's `resume` or `thread/resume`; terminal mode with `claude --resume <id>` or `codex resume <id>`), with the same integration as a first launch. Workspaces come back as they were. Shell sessions start a fresh shell in the same worktree, run sessions show as stopped. No scrollback restore in MVP.
-- `Core::start` restores before it returns. Each session keeps its session id, so its integration files and its panel need no change. New sessions get ids above the restored ones. A session that cannot start again is left out with a `SessionNotRestored` warning, and a panel whose session did not come back is dropped. Review comments come back with their states, and grove places them again at once, since files may have changed while it was closed.
+- An agent session is a record that lasts until the user deletes it. Its title is the first line of its first user message, "New session" before that. A session whose process ended stays listed as ended, and `resume_agent_session` starts it again. `delete_agent_session` and removing its worktree drop the record with its folder in `~/.grovecode/sessions/`.
+- On launch: agent sessions that had not ended resume their conversation in the mode they were in (chat mode through the sidecar's `resume` or `thread/resume`; terminal mode with `claude --resume <id>` or `codex resume <id>`), with the same integration as a first launch. An agent session that had ended comes back ended, as `Exited`, and no process starts for it. Workspaces come back as they were. Shell sessions start a fresh shell in the same worktree, run sessions show as stopped. No scrollback restore in MVP.
+- `Core::start` restores before it returns. Each session keeps its session id, so its integration files and its panel need no change. New sessions get ids above the restored ones, ended agent sessions included. A session that cannot start again is left out with a `SessionNotRestored` warning, and a panel whose session did not come back is dropped. Review comments come back with their states, and grove places them again at once, since files may have changed while it was closed.
 
 ## Notifications (M5)
 - When grove is not the focused app, a session entering a state its profile lists sends a macOS notification. Clicking it focuses that session. The default list is `NeedsInput` and `Failed`; `Done` is off.
