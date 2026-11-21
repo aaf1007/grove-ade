@@ -1206,6 +1206,15 @@ test("Codex's request for more permissions says so, with its reason", async () =
 
   const card = approvalCard("change its permissions");
   expect(within(card).getByText("fetch")).toBeTruthy();
+  expect(JSON.parse(card.querySelector("code")!.textContent!)).toEqual(permissions);
+});
+
+test("an approval for a tool the panel does not know shows its whole input", async () => {
+  const input = { server: "docs", query: "rm -rf build\nthen deploy" };
+  await asked({ type: "ApprovalRequested", request: "toolu_09", tool: "mcp__docs__search", input });
+
+  const card = approvalCard("use mcp__docs__search");
+  expect(JSON.parse(card.querySelector("code")!.textContent!)).toEqual(input);
 });
 
 test("an approval with no tool call of its own shows its own row", async () => {

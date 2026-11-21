@@ -1406,7 +1406,8 @@ interface AskedFor {
 
 /**
  * What an approval asks for: the action as the card's headline says it, the command or files it
- * acts on, and why, when the agent says. A tool the panel does not know is named as is.
+ * acts on, and why, when the agent says. Requested permissions, and the input of a tool the panel
+ * does not know, show whole, since approving grants all of it.
  */
 function askedFor(item: ApprovalItem, worktree: string): AskedFor {
   const asked = (item.asked ?? {}) as Record<string, unknown>;
@@ -1437,9 +1438,16 @@ function askedFor(item: ApprovalItem, worktree: string): AskedFor {
     }
     // Codex asks for wider sandbox access.
     case "permissions":
-      return { action: "change its permissions", target: null, why };
+      return { action: "change its permissions", target: whole(asked.permissions), why };
   }
-  return { action: `use ${item.call.tool}`, target: null, why };
+  return { action: `use ${item.call.tool}`, target: whole(item.asked), why };
+}
+
+/** `value` as indented JSON. null when it has nothing to show. */
+function whole(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "object" && Object.keys(value).length === 0) return null;
+  return JSON.stringify(value, null, 2);
 }
 
 /**
