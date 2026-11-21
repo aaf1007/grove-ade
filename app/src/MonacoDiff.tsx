@@ -213,16 +213,16 @@ export function MonacoDiff({ original, modified, path, onCommentLines, zones }: 
 }
 
 function keepingView<View>(
-  ed: { saveViewState(): View | null; restoreViewState(view: View | null): void },
+  editorToKeepViewOf: { saveViewState(): View | null; restoreViewState(view: View | null): void },
   update: () => void,
 ) {
-  const view = ed.saveViewState();
+  const view = editorToKeepViewOf.saveViewState();
   update();
-  ed.restoreViewState(view);
+  editorToKeepViewOf.restoreViewState(view);
 }
 
-function markAdded(ed: monaco.editor.ICodeEditor, added: monaco.editor.IEditorDecorationsCollection) {
-  const model = ed.getModel();
+function markAdded(editorToMark: monaco.editor.ICodeEditor, added: monaco.editor.IEditorDecorationsCollection) {
+  const model = editorToMark.getModel();
   if (!model) return added.clear();
   // The empty line after a final newline is not a line git counts.
   const lineCount = model.getLineCount();

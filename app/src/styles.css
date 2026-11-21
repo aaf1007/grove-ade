@@ -1480,6 +1480,12 @@ svg {
   padding: var(--space-12);
 }
 
+/* An open section not read yet holds about an editor's room, so only the sections near the view
+   count as near and read their file. */
+.diff-view .file:empty:not([hidden]) {
+  min-height: 20vh;
+}
+
 /* MonacoDiff sets the height to fit every line. Past this cap the diff scrolls inside. */
 .monaco-diff {
   width: 100%;

@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, expect, onTestFinished, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 
 import type { AgentState, AgentStateChanged, FileDiff, SessionId } from "./bridge";
 import { DiffView } from "./DiffView";
@@ -7,9 +7,8 @@ import { type FakeBridge, fakeBridge, type FakeChange, type FakeDiffs } from "./
 import type { MonacoDiffProps } from "./MonacoDiff";
 
 // Monaco needs a real browser. The stub shows exactly what the diff view hands it: both texts (no
-// original for a file with no old side),
-// each box under its line, and which file each editor was created for. `commentLines` clicks the
-// modified side's line numbers.
+// original for a file with no old side), each box under its line, and which file each editor was
+// created for. `commentLines` clicks the modified side's line numbers.
 const editors = vi.hoisted(() => ({
   created: [] as string[],
   commentLines: undefined as ((start: number, end: number) => void) | undefined,
@@ -39,10 +38,73 @@ vi.mock("./MonacoDiff", async () => {
   };
 });
 
+// jsdom lays nothing out, so it has no IntersectionObserver or ResizeObserver. The fakes say every
+// file's section is near the view unless its path is in `farFromView`, and `scrollNear` and `grow`
+// report what scrolling and a section taking its height would.
+const layout = {
+  farFromView: new Set<string>(),
+  near: [] as { target: Element; callback: IntersectionObserverCallback }[],
+  resized: [] as ResizeObserverCallback[],
+};
+
+class FakeIntersectionObserver {
+  private readonly callback: IntersectionObserverCallback;
+  constructor(callback: IntersectionObserverCallback) {
+    this.callback = callback;
+  }
+  observe(target: Element) {
+    layout.near.push({ target, callback: this.callback });
+    const isIntersecting = !layout.farFromView.has(target.getAttribute("aria-label") ?? "");
+    this.callback([{ target, isIntersecting } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+  }
+  disconnect() {
+    layout.near = layout.near.filter(({ callback }) => callback !== this.callback);
+  }
+}
+
+class FakeResizeObserver {
+  private readonly callback: ResizeObserverCallback;
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+  }
+  observe() {
+    layout.resized.push(this.callback);
+  }
+  disconnect() {
+    layout.resized = layout.resized.filter((callback) => callback !== this.callback);
+  }
+}
+
+/** Scrolls the section of `path` near the view. */
+function scrollNear(path: string) {
+  layout.farFromView.delete(path);
+  act(() =>
+    layout.near
+      .filter(({ target }) => target.getAttribute("aria-label") === path)
+      .forEach(({ target, callback }) =>
+        callback([{ target, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver),
+      ),
+  );
+}
+
+/** Says the file list changed height, as it does when an editor in it takes its height. */
+function grow() {
+  act(() => layout.resized.forEach((callback) => callback([], {} as ResizeObserver)));
+}
+
+beforeEach(() => {
+  vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+  vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+});
+
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   editors.created = [];
   editors.commentLines = undefined;
+  layout.farFromView.clear();
+  layout.near = [];
+  layout.resized = [];
 });
 
 const worktree = "/code/grove-wt/feat-40";
@@ -153,14 +215,7 @@ test("a file asked for from outside opens on the HEAD base, expanded and scrolle
   const bridge = fakeBridge(repos, diffs);
   await bridge.addRepo(worktree);
   const onRevealed = vi.fn();
-  // jsdom lays nothing out, so it has no scrollIntoView.
-  const scrolledTo: Element[] = [];
-  Element.prototype.scrollIntoView = function (this: Element) {
-    scrolledTo.push(this);
-  };
-  onTestFinished(() => {
-    delete (Element.prototype as Partial<Element>).scrollIntoView;
-  });
+  const scrolledTo = watchScrolls();
   const props = { bridge, worktree, agentStates: {}, onSent: () => {}, onRevealed };
   const view = render(<DiffView {...props} reveal={null} />);
   await screen.findByText("new b");
@@ -176,6 +231,65 @@ test("a file asked for from outside opens on the HEAD base, expanded and scrolle
   expect(within(section("b.rs")).getByRole("button", { name: /b\.rs/ }).getAttribute("aria-expanded")).toBe("true");
   expect(scrolledTo).toEqual([section("b.rs")]);
   expect(onRevealed).toHaveBeenCalledOnce();
+});
+
+/** Each element scrolled into view from here on. jsdom lays nothing out, so it has no scrollIntoView. */
+function watchScrolls(): Element[] {
+  const scrolledTo: Element[] = [];
+  Element.prototype.scrollIntoView = function (this: Element) {
+    scrolledTo.push(this);
+  };
+  onTestFinished(() => {
+    delete (Element.prototype as Partial<Element>).scrollIntoView;
+  });
+  return scrolledTo;
+}
+
+/** The diff view of `worktree` with `a.rs` and `b.rs` changed, and a rerender that asks to reveal a file. */
+async function revealable(diffs: FakeDiffs) {
+  const bridge = fakeBridge(repos, diffs);
+  await bridge.addRepo(worktree);
+  const props = { bridge, worktree, agentStates: {}, onSent: () => {} };
+  const view = render(<DiffView {...props} reveal={null} />);
+  await screen.findByRole("listitem", { name: "a.rs" });
+  return { bridge, reveal: (path: string) => view.rerender(<DiffView {...props} reveal={path} />) };
+}
+
+const twoFiles = (): FakeDiffs => ({
+  [worktree]: {
+    Head: [
+      change({ newPath: "a.rs", added: 1 }, "", "a\n"),
+      change({ newPath: "b.rs", added: 1 }, "", "b\n"),
+    ],
+  },
+});
+
+test("a revealed file stays in view while the sections above it take their height, until the user scrolls", async () => {
+  const scrolledTo = watchScrolls();
+  const { reveal } = await revealable(twoFiles());
+
+  reveal("b.rs");
+  expect(scrolledTo).toEqual([section("b.rs")]);
+
+  grow();
+  expect(scrolledTo).toEqual([section("b.rs"), section("b.rs")]);
+
+  fireEvent.wheel(screen.getByRole("list", { name: "Changed files" }));
+  grow();
+  expect(scrolledTo).toHaveLength(2);
+});
+
+test("a revealed file that is not in the HEAD diff is dropped, so it does not scroll the view when it shows up later", async () => {
+  const scrolledTo = watchScrolls();
+  const diffs = twoFiles();
+  const { bridge, reveal } = await revealable(diffs);
+
+  reveal("committed.rs");
+  diffs[worktree] = { Head: [...twoFiles()[worktree].Head!, change({ newPath: "committed.rs", added: 1 }, "", "c\n")] };
+  act(() => bridge.diffChanged(worktree));
+
+  await screen.findByRole("listitem", { name: "committed.rs" });
+  expect(scrolledTo).toEqual([]);
 });
 
 test("the Diff opens on the base it is asked for, and a new ask switches to it again", async () => {
@@ -297,8 +411,64 @@ test("DiffChanged for this worktree refreshes the file list and the editor", asy
   await screen.findByText(/two/);
   expect(listed()).toEqual(["a.rs +2 -0", "b.rs +1 -0"]);
   expect(editorShows("a.rs").modified).toBe("one\ntwo\n");
+  await within(section("b.rs")).findByText("new");
   // The same editor takes the new versions, so its scroll and cursor survive the refresh.
   expect(editors.created).toEqual(["a.rs", "b.rs"]);
+});
+
+test("a file is read only while its section is open and near the view, and a refresh reads only those again", async () => {
+  const diffs: FakeDiffs = {
+    [worktree]: {
+      Head: [
+        change({ newPath: "a.rs", added: 1 }, "", "a\n"),
+        change({ newPath: "b.rs", added: 1 }, "", "b\n"),
+        change({ newPath: "c.rs", added: 1 }, "", "c\n"),
+      ],
+    },
+  };
+  const bridge = fakeBridge(repos, diffs);
+  const read = vi.spyOn(bridge, "fileVersions");
+  const reads = () => read.mock.calls.map(([, , file]) => file.newPath);
+  layout.farFromView.add("c.rs");
+  await renderDiff(bridge);
+  await screen.findByText("b");
+  expect(reads()).toEqual(["a.rs", "b.rs"]);
+  expect(within(section("c.rs")).queryByLabelText("Modified")).toBeNull();
+
+  fireEvent.click(within(section("b.rs")).getByRole("button", { name: /b\.rs/ }));
+  scrollNear("c.rs");
+  await within(section("c.rs")).findByText("c");
+  expect(reads()).toEqual(["a.rs", "b.rs", "c.rs"]);
+
+  act(() => bridge.diffChanged(worktree));
+  await waitFor(() => expect(reads()).toHaveLength(5));
+  expect(reads().slice(3).sort()).toEqual(["a.rs", "c.rs"]);
+
+  // Opened again after the refresh, it reads its file again.
+  fireEvent.click(within(section("b.rs")).getByRole("button", { name: /b\.rs/ }));
+  await waitFor(() => expect(reads()).toHaveLength(6));
+  expect(reads()[5]).toBe("b.rs");
+});
+
+test("each file shows as soon as its own read lands, whatever the others take", async () => {
+  const diffs: FakeDiffs = {
+    [worktree]: {
+      Head: [
+        change({ newPath: "slow.lock", added: 1 }, "", "slow\n"),
+        change({ newPath: "fast.rs", added: 1 }, "", "fast\n"),
+      ],
+    },
+  };
+  const bridge = fakeBridge(repos, diffs);
+  const read = bridge.fileVersions.bind(bridge);
+  vi.spyOn(bridge, "fileVersions").mockImplementation((tree, base, file) =>
+    file.newPath === "slow.lock" ? new Promise(() => {}) : read(tree, base, file),
+  );
+
+  await renderDiff(bridge);
+
+  expect(await within(await screen.findByRole("listitem", { name: "fast.rs" })).findByText("fast")).toBeTruthy();
+  expect(within(section("slow.lock")).queryByLabelText("Modified")).toBeNull();
 });
 
 test("a file with no old side gets only added lines, with no removed one", async () => {

@@ -41,11 +41,14 @@ export function DiffView({
     setAppliedRequest(opened.request);
     setBase(opened.base);
   }
-  // The files keep the base they came from, so their versions come from that same base.
-  const [diff, setDiff] = useState<{ base: DiffBase; files: FileDiff[]; error?: string }>({
+  // The files keep the base they came from, so their versions come from that same base. Each load
+  // counts up `generation`, which tells a file's versions read from this load from older ones.
+  const [diff, setDiff] = useState<{ base: DiffBase; files: FileDiff[]; generation: number; error?: string }>({
     base,
     files: [],
+    generation: 0,
   });
+  const loads = useRef(0);
   // Bumped on each DiffChanged for this worktree, to load the diff again.
   const [changes, setChanges] = useState(0);
   // Paths whose sections are collapsed. A collapsed section stays mounted, so its comment boxes
@@ -60,18 +63,27 @@ export function DiffView({
       if (collapsed.has(reveal)) setCollapsed(toggled(collapsed, reveal));
     }
   }
-  // Each file's section by path, and the revealed file to scroll to once its section is there.
+  // Each file's section by path. A revealed file waits for a HEAD diff to look for it in, then stays
+  // pinned in view while the sections around it take their height, until the user scrolls.
   const sections = useRef(new Map<string, HTMLElement>());
-  const scrollTo = useRef<string | null>(null);
+  const revealWaiting = useRef<string | null>(null);
+  const pinned = useRef<string | null>(null);
   const revealed = useEffectEvent(() => onRevealed?.());
   useEffect(() => {
     if (reveal === null) return;
-    scrollTo.current = reveal;
+    revealWaiting.current = reveal;
+    pinned.current = null;
     revealed();
   }, [reveal]);
   // Each text file's last versions loaded, by path. They stay on screen until the next ones arrive,
   // so a refresh never empties an editor.
   const [shown, setShown] = useState<Record<string, Shown>>({});
+  // The paths whose sections are near the view, and the load each file is being read for.
+  const [near, setNear] = useState<ReadonlySet<string>>(new Set());
+  const reading = useRef(new Map<string, number>());
+  // The scrolling box, and the list in it, which grows as its sections take their height.
+  const fileList = useRef<HTMLDivElement>(null);
+  const sectionList = useRef<HTMLUListElement>(null);
   const { comments, error: commentsError } = useComments(bridge, worktree);
   // The comment being typed: the lines picked in its file, and their text then, which it
   // follows as the agent edits the file.
@@ -80,12 +92,28 @@ export function DiffView({
   const [picking, setPicking] = useState(false);
   const [resolveError, setResolveError] = useState<string | null>(null);
 
+  // A file not in the HEAD diff is dropped, so it never scrolls the view when it shows up later.
   useEffect(() => {
-    const section = scrollTo.current === null ? undefined : sections.current.get(scrollTo.current);
-    if (!section) return;
-    section.scrollIntoView({ block: "start" });
-    scrollTo.current = null;
+    const path = revealWaiting.current;
+    if (path === null || diff.base !== "Head") return;
+    revealWaiting.current = null;
+    if (!diff.files.some((f) => f.newPath === path)) return;
+    pinned.current = path;
+    sections.current.get(path)?.scrollIntoView({ block: "start" });
   }, [reveal, diff]);
+
+  // WKWebView does not anchor scrolling, so a section above the pinned one that takes its height
+  // would push it down.
+  useEffect(() => {
+    const observer = new ResizeObserver(() => {
+      if (pinned.current !== null) sections.current.get(pinned.current)?.scrollIntoView({ block: "start" });
+    });
+    observer.observe(sectionList.current!);
+    return () => observer.disconnect();
+  }, []);
+  const unpin = () => {
+    pinned.current = null;
+  };
 
   useEffect(
     () =>
@@ -99,8 +127,8 @@ export function DiffView({
     // A later request replaces this one, so this one drops its answer.
     let current = true;
     bridge.diff(worktree, base).then(
-      (files) => current && setDiff({ base, files }),
-      (e: unknown) => current && setDiff({ base, files: [], error: String(e) }),
+      (files) => current && setDiff({ base, files, generation: ++loads.current }),
+      (e: unknown) => current && setDiff({ base, files: [], generation: ++loads.current, error: String(e) }),
     );
     return () => {
       current = false;
@@ -108,21 +136,44 @@ export function DiffView({
   }, [bridge, worktree, base, changes]);
 
   useEffect(() => {
-    // git already calls these binary, so reading one would load the whole file only to hide it.
-    const texts = diff.files.filter((f) => !f.binary);
-    let current = true;
-    void Promise.all(
-      texts.map((f) =>
-        bridge.fileVersions(worktree, diff.base, f).then(
-          (versions): Shown => ({ versions }),
-          (e: unknown): Shown => ({ error: String(e) }),
-        ),
-      ),
-    ).then((loaded) => current && setShown(Object.fromEntries(texts.map((f, i) => [f.newPath, loaded[i]]))));
-    return () => {
-      current = false;
-    };
-  }, [bridge, worktree, diff]);
+    const observer = new IntersectionObserver(
+      (entries) =>
+        setNear((before) => {
+          const after = new Set(before);
+          for (const { target, isIntersecting } of entries) {
+            const path = (target as HTMLElement).dataset.path!;
+            if (isIntersecting) after.add(path);
+            else after.delete(path);
+          }
+          return after.size === before.size && [...after].every((path) => before.has(path)) ? before : after;
+        }),
+      { root: fileList.current, rootMargin: NEAR_VIEW_MARGIN },
+    );
+    sections.current.forEach((section) => observer.observe(section));
+    return () => observer.disconnect();
+  }, [diff.files]);
+
+  // Only open sections near the view read their file, each once per load of the diff. The rest read
+  // theirs when they open or come near. git already calls a binary file binary, so reading one would
+  // load the whole file only to hide it.
+  useEffect(() => {
+    const { base: from, generation } = diff;
+    for (const file of diff.files) {
+      const path = file.newPath;
+      if (file.binary || collapsed.has(path) || !near.has(path)) continue;
+      if (shown[path]?.generation === generation || reading.current.get(path) === generation) continue;
+      reading.current.set(path, generation);
+      // Each file shows as its own read lands. A read from an older load never replaces a newer one.
+      const land = (loaded: Shown) =>
+        setShown((before) =>
+          (before[path]?.generation ?? 0) > generation ? before : { ...before, [path]: loaded },
+        );
+      bridge.fileVersions(worktree, from, file).then(
+        (versions) => land({ generation, versions }),
+        (e: unknown) => land({ generation, error: String(e) }),
+      );
+    }
+  }, [bridge, worktree, diff, collapsed, near, shown]);
 
   const openCount = comments.filter((c) => c.state === "Open").length;
   // The picker closes with the button, so the next open comment does not bring it back unasked.
@@ -217,7 +268,14 @@ export function DiffView({
           </div>
         )}
       </div>
-      <div className="diff-files">
+      <div
+        className="diff-files"
+        ref={fileList}
+        onWheel={unpin}
+        onPointerDown={unpin}
+        onKeyDown={unpin}
+        onTouchStart={unpin}
+      >
         {diff.error && <p role="alert">{diff.error}</p>}
         {(commentsError ?? resolveError) && <p role="alert">{commentsError ?? resolveError}</p>}
         {unshown.length > 0 && (
@@ -234,11 +292,12 @@ export function DiffView({
             ))}
           </div>
         )}
-        <ul aria-label="Changed files">
+        <ul aria-label="Changed files" ref={sectionList}>
           {diff.files.map((f) => (
             <li
               key={f.newPath}
               aria-label={f.newPath}
+              data-path={f.newPath}
               ref={(section) => {
                 if (!section) return;
                 sections.current.set(f.newPath, section);
@@ -285,7 +344,11 @@ export function DiffView({
   );
 }
 
-type Shown = { versions: FileVersions } | { error: string };
+/** A file's versions, or why they could not be read, from the diff load `generation`. */
+type Shown = { generation: number } & ({ versions: FileVersions } | { error: string });
+
+// How far past the visible list, above and below, a section counts as near the view.
+const NEAR_VIEW_MARGIN = "100% 0px";
 
 /** A comment being typed. `draft` tells it from the one before, so a new pick starts afresh. */
 /** An ask to show the Diff on `base`. A new `request` number asks again. */
