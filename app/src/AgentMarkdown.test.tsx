@@ -83,15 +83,28 @@ function codeOfLength(length: number) {
   return lines + "/".repeat(length - lines.length - 1) + "\n";
 }
 
+// How long the colored 20,000-character block may take to show. It is about 3,600 spans, which
+// jsdom draws in 100 to 400 ms on an idle machine and in seconds on a loaded runner that runs test
+// files side by side. Blocks color in order, so the short block after it shows once the long one
+// is decided, colored or left plain.
+const MOST_MS_TO_SHOW_A_LONG_BLOCK = 10_000;
+
 test.each([
   [20_000, true],
   [20_001, false],
-])("a block of %i characters is colored: %s", async (length, colored) => {
-  const container = shown("```ts\n" + codeOfLength(length) + "```\n\n```ts\nconst ready = true;\n```");
-  await screen.findByText("const");
+])(
+  "a block of %i characters is colored: %s",
+  async (length, colored) => {
+    const container = shown("```ts\n" + codeOfLength(length) + "```\n\n```ts\nconst ready = true;\n```");
+    const [long, short] = container.querySelectorAll("pre > code");
 
-  expect(container.querySelectorAll("pre > code")[0].querySelector("span") !== null).toBe(colored);
-});
+    // Ask the short block, not the page: a search of the page reads every span, on every change.
+    await waitFor(() => expect(short.querySelector("span")).not.toBeNull(), { timeout: MOST_MS_TO_SHOW_A_LONG_BLOCK });
+
+    expect(long.querySelector("span") !== null).toBe(colored);
+  },
+  MOST_MS_TO_SHOW_A_LONG_BLOCK + 5_000,
+);
 
 test("a block shown again is not colored again, and shows its colors at once", async () => {
   const tokenize = vi.spyOn(monaco.editor, "tokenize");
