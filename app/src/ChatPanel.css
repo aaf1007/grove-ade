@@ -134,6 +134,18 @@ button.tool:hover {
   white-space: nowrap;
 }
 
+/* An opened summary's rows, under its label. */
+.tool-rows {
+  display: flex;
+  flex-direction: column;
+  margin-left: calc(var(--icon) + var(--space-10));
+}
+
+/* The whole command over its output. */
+.tool-command {
+  color: var(--fg);
+}
+
 /* An approval's record, under its call's label. */
 .approval-line {
   margin-left: calc(var(--icon) + var(--space-10));
