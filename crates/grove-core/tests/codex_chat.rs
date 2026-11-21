@@ -11,11 +11,11 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{now_unix_ms, times, untimed};
+use common::{conversation_only, now_unix_ms, times, untimed};
 use grove_core::{
     AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, Core, CoreConfig, CoreEvent,
-    InputKind, Mode, ModelInfo, Question, QuestionOption, Reply, RequestId, SessionId, StateSource,
-    TurnOutcome,
+    InputKind, Mode, ModelInfo, Question, QuestionOption, Reply, RequestId, SessionId,
+    SlashCommand, StateSource, TurnOutcome,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -40,6 +40,8 @@ struct Setup {
     events: broadcast::Receiver<CoreEvent>,
     worktree: PathBuf,
     log: PathBuf,
+    /// What the fake's `skills/list` returns. Missing: its own list.
+    skills: PathBuf,
 }
 
 fn ann() -> Value {
@@ -71,15 +73,17 @@ fn setup_with_account(steps: Value, account: Value) -> Setup {
     fs::write(&scenario, json!({ "steps": steps }).to_string()).unwrap();
     let log = dir.path().join("fake.log");
     let account_file = dir.path().join("account.json");
+    let skills = dir.path().join("skills.json");
     fs::write(&account_file, account.to_string()).unwrap();
     let wrapper = dir.path().join("codex");
     let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/fake-agents/codex");
     let script = format!(
-        "#!/bin/sh\nexport FAKE_CODEX_SCENARIO='{0}' FAKE_CODEX_APP_SERVER_SCENARIO='{0}' FAKE_CODEX_LOG='{1}' FAKE_CODEX_ACCOUNT=\"$(cat '{2}')\"\nexec '{3}' \"$@\"\n",
+        "#!/bin/sh\nexport FAKE_CODEX_SCENARIO='{0}' FAKE_CODEX_APP_SERVER_SCENARIO='{0}' FAKE_CODEX_LOG='{1}' FAKE_CODEX_ACCOUNT=\"$(cat '{2}')\" FAKE_CODEX_SKILLS='{4}'\nexec '{3}' \"$@\"\n",
         scenario.display(),
         log.display(),
         account_file.display(),
         fake.display(),
+        skills.display(),
     );
     fs::write(&wrapper, script).unwrap();
     {
@@ -97,6 +101,7 @@ fn setup_with_account(steps: Value, account: Value) -> Setup {
         events,
         worktree,
         log,
+        skills,
     }
 }
 
@@ -370,7 +375,7 @@ fn a_message_starts_a_turn_on_the_thread_its_deltas_arrive_in_order_and_the_turn
     s.state(session, AgentState::Working);
     assert_eq!(frames.until_turn_end(), TurnOutcome::Completed);
     assert_eq!(
-        untimed(frames.messages),
+        untimed(conversation_only(frames.messages)),
         [
             AgentMessage::User { text: "hi".into() },
             started(),
@@ -406,6 +411,7 @@ fn the_handshake_comes_first_and_a_first_prompt_waits_for_the_thread() {
             "account/read",
             "thread/start",
             "model/list",
+            "skills/list",
             "turn/start"
         ]
     );
@@ -671,7 +677,7 @@ fn not_delivered(text: &str) -> AgentMessage {
 }
 
 fn conversation(core: &Core, session: SessionId) -> Vec<AgentMessage> {
-    core.subscribe(session, unbounded_channel().0).unwrap()
+    conversation_only(core.subscribe(session, unbounded_channel().0).unwrap())
 }
 
 #[test]
@@ -1068,4 +1074,46 @@ fn a_tool_call_and_its_turn_from_the_app_server_carry_the_times_the_core_got_the
             "{time} is not in {before}..={after}"
         );
     }
+}
+
+#[test]
+fn codexs_enabled_skills_reach_the_panel_as_commands_and_the_list_after_a_skills_change_replaces_them()
+ {
+    let changed = json!({"send": {"method": "skills/changed", "params": {}}});
+    let mut steps = turn(&["ok"]);
+    steps.push(changed);
+    let s = setup(json!(steps));
+    let session = s.spawn(None);
+    let mut frames = Frames::subscribe(&s.core, session);
+    let is_list = |m: &AgentMessage| matches!(m, AgentMessage::Commands { .. });
+
+    let first = frames.until("the skills", is_list);
+    // Read by the fake at its next skills/list, which the change below asks for.
+    let plan = json!([{"name": "plan", "description": "Plan the change", "enabled": true,
+        "path": "/skills/plan/SKILL.md", "scope": "repo"}]);
+    fs::write(&s.skills, plan.to_string()).unwrap();
+    s.core.send_message(session, "go").unwrap();
+    let second = frames.until("the skills after the change", is_list);
+
+    let skill = |name: &str, description: &str| SlashCommand {
+        name: name.into(),
+        description: description.into(),
+        argument_hint: String::new(),
+        invocation: format!("${name}"),
+    };
+    assert_eq!(
+        first,
+        AgentMessage::Commands {
+            commands: vec![skill("review", "Review the diff")]
+        }
+    );
+    assert_eq!(
+        second,
+        AgentMessage::Commands {
+            commands: vec![skill("plan", "Plan the change")]
+        }
+    );
+    // A panel that attaches now gets the new list, after the conversation.
+    let late = s.core.subscribe(session, unbounded_channel().0).unwrap();
+    assert_eq!(late.last(), Some(&second));
 }

@@ -51,7 +51,7 @@ fn main() -> Result<(), Failure> {
     cfg.claude_command = run.join("bin/claude");
     cfg.codex_command = run.join("bin/codex");
     cfg.claude_sidecar_command = run.join("bin/claude-sidecar");
-    cfg.mcp_server = target.join("grove-mcp");
+    cfg.mcp_server = Some(target.join("grove-mcp"));
     cfg.hook_relay_source = Some(target.join("grove-hook"));
     // The fakes need no login PATH, and skipping the read keeps every run the same.
     cfg.login_shell = None;

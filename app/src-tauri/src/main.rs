@@ -512,6 +512,30 @@ enum Message {
     NotDelivered {
         text: String,
     },
+    Commands {
+        commands: Vec<SlashCommand>,
+    },
+}
+
+/// Mirrors `SlashCommand` in `app/src/bridge.ts`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SlashCommand {
+    name: String,
+    description: String,
+    argument_hint: String,
+    invocation: String,
+}
+
+impl From<grove_core::SlashCommand> for SlashCommand {
+    fn from(c: grove_core::SlashCommand) -> Self {
+        SlashCommand {
+            name: c.name,
+            description: c.description,
+            argument_hint: c.argument_hint,
+            invocation: c.invocation,
+        }
+    }
 }
 
 /// Mirrors `BatchComment` in `app/src/bridge.ts`.
@@ -653,6 +677,9 @@ impl From<AgentMessage> for Message {
                 comments: comments.into_iter().map(BatchComment::from).collect(),
             },
             AgentMessage::NotDelivered { text } => Message::NotDelivered { text },
+            AgentMessage::Commands { commands } => Message::Commands {
+                commands: commands.into_iter().map(SlashCommand::from).collect(),
+            },
         }
     }
 }
@@ -2250,33 +2277,26 @@ fn show_window(app: &tauri::AppHandle) {
     }
 }
 
+/// The file `name` in the folder of this executable, when it is there.
+fn next_to_this_executable(name: &str) -> Option<PathBuf> {
+    let path = std::env::current_exe().ok()?.parent()?.join(name);
+    path.exists().then_some(path)
+}
+
 fn main() -> anyhow::Result<()> {
     let mut cfg = CoreConfig::for_user().context("could not find the home folder")?;
     // grove-hook sits next to this executable: in target/<profile>/ after a workspace build,
     // and in Contents/MacOS/ in the .app that `npm run bundle` makes. Without it the core skips
     // the copy, so the app still starts but agents get no hook status.
-    cfg.hook_relay_source = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join("grove-hook")))
-        .filter(|relay| relay.exists());
+    cfg.hook_relay_source = next_to_this_executable("grove-hook");
     // The Claude sidecar sits next to it in the .app. Elsewhere the core runs `claude-sidecar`
     // from PATH, so chat mode fails to start unless one is there.
-    if let Some(sidecar) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join("claude-sidecar")))
-        .filter(|sidecar| sidecar.exists())
-    {
+    if let Some(sidecar) = next_to_this_executable("claude-sidecar") {
         cfg.claude_sidecar_command = sidecar;
     }
-    // grove-mcp sits next to this executable, as grove-hook does. Elsewhere the core runs
-    // `grove-mcp` from PATH, so agents cannot spawn subagents unless one is there.
-    if let Some(mcp_server) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join("grove-mcp")))
-        .filter(|mcp_server| mcp_server.exists())
-    {
-        cfg.mcp_server = mcp_server;
-    }
+    // grove-mcp sits next to this executable, as grove-hook does. Without it grove adds no MCP
+    // server of its own to agent sessions, so they cannot open panels or spawn subagents.
+    cfg.mcp_server = next_to_this_executable("grove-mcp");
     let (core, mut events) = Core::start(cfg)?;
 
     tauri::Builder::default()
@@ -2504,6 +2524,15 @@ mod tests {
             kind,
             text: b"x\n".to_vec(),
         }
+    }
+
+    #[test]
+    fn a_file_next_to_this_executable_is_found_and_a_missing_one_is_none() {
+        let exe = std::env::current_exe().unwrap();
+        let name = exe.file_name().unwrap().to_str().unwrap();
+
+        assert_eq!(next_to_this_executable(name), Some(exe.clone()));
+        assert_eq!(next_to_this_executable("grove-no-such-binary"), None);
     }
 
     #[test]
@@ -3100,6 +3129,17 @@ mod tests {
                 text: "add a test".into()
             }),
             r#"[{"type":"NotDelivered","text":"add a test"}]"#
+        );
+        assert_eq!(
+            message(AgentMessage::Commands {
+                commands: vec![grove_core::SlashCommand {
+                    name: "review".into(),
+                    description: "Review a pull request".into(),
+                    argument_hint: "<pr>".into(),
+                    invocation: "/review".into(),
+                }]
+            }),
+            r#"[{"type":"Commands","commands":[{"name":"review","description":"Review a pull request","argumentHint":"<pr>","invocation":"/review"}]}]"#
         );
     }
 

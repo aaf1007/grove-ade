@@ -32,6 +32,11 @@ test("the gallery shows every component, every agent state, and switches between
   const ended = await screen.findByText("Spike the port router", { selector: ".session-title" });
   expect(ended.closest(".session-item")!.classList.contains("dimmed")).toBe(true);
 
+  // The pane's composer lists the session's commands.
+  const composer = await screen.findByRole("textbox", { name: "Message" });
+  fireEvent.change(composer, { target: { value: "/" } });
+  expect(within(screen.getByRole("listbox", { name: "Commands" })).getAllByRole("option")).toHaveLength(5);
+
   fireEvent.click(within(screen.getByRole("group", { name: "Theme" })).getByRole("button", { name: "Light" }));
 
   expect(document.documentElement.dataset.theme).toBe("light");

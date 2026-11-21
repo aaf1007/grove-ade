@@ -19,7 +19,7 @@ use tokio::sync::broadcast::{self, error::TryRecvError};
 use tokio::sync::mpsc::unbounded_channel;
 
 mod common;
-use common::grove_hook;
+use common::{conversation_only, grove_hook};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -180,7 +180,7 @@ impl Setup {
     /// The session's conversation so far.
     fn conversation(&self, session: SessionId) -> Vec<AgentMessage> {
         let (sink, _messages) = unbounded_channel();
-        self.core.subscribe(session, sink).unwrap()
+        conversation_only(self.core.subscribe(session, sink).unwrap())
     }
 
     /// The whole JSON lines the session's fake has read so far.

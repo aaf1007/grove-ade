@@ -99,6 +99,18 @@ pub fn untimed(
         .collect()
 }
 
+/// `messages` without the agent's command list, which a subscribe returns after the
+/// conversation.
+#[allow(dead_code)]
+pub fn conversation_only(
+    messages: impl IntoIterator<Item = grove_core::AgentMessage>,
+) -> Vec<grove_core::AgentMessage> {
+    messages
+        .into_iter()
+        .filter(|m| !matches!(m, grove_core::AgentMessage::Commands { .. }))
+        .collect()
+}
+
 /// The times of the messages in `messages` that have one: turn starts, tool calls and turn ends.
 #[allow(dead_code)]
 pub fn times(messages: &[grove_core::AgentMessage]) -> Vec<Option<u64>> {

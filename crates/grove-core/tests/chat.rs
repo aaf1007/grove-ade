@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use grove_core::{
     AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, Core, CoreConfig, CoreError,
     CoreEvent, InputKind, Mode, ModelInfo, Question, QuestionOption, RemoveOpts, Reply, RequestId,
-    SessionId, SpawnSpec, StateSource, TurnOutcome,
+    SessionId, SlashCommand, SpawnSpec, StateSource, TurnOutcome,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -1926,4 +1926,105 @@ fn set_model_without_an_effort_leaves_the_effort_out() {
         s.wait_sent("set_model", 1),
         [json!({"type": "set_model", "model": "haiku"})]
     );
+}
+
+fn commands_line(names: &[&str]) -> Value {
+    let commands: Vec<Value> = names
+        .iter()
+        .map(|name| json!({"name": name, "description": format!("Runs {name}"), "argument_hint": "<arg>"}))
+        .collect();
+    send(json!({"type": "commands", "commands": commands}))
+}
+
+fn commands(names: &[&str]) -> AgentMessage {
+    AgentMessage::Commands {
+        commands: names
+            .iter()
+            .map(|name| SlashCommand {
+                name: (*name).into(),
+                description: format!("Runs {name}"),
+                argument_hint: "<arg>".into(),
+                invocation: format!("/{name}"),
+            })
+            .collect(),
+    }
+}
+
+/// The messages of `messages` that are a command list.
+fn command_lists(messages: &[AgentMessage]) -> Vec<AgentMessage> {
+    messages
+        .iter()
+        .filter(|m| matches!(m, AgentMessage::Commands { .. }))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn the_command_list_reaches_the_panel_a_later_one_replaces_it_and_a_late_panel_gets_the_latest() {
+    let mut steps = turn(&["ok"]);
+    steps.insert(2, commands_line(&["review", "init"]));
+    steps.push(json!({"wait_message": "user_message"}));
+    steps.push(commands_line(&["review"]));
+    let s = setup(then_wait(steps));
+    let session = s.spawn(None);
+    let (history, mut frames) = Frames::subscribe(&s.core, session);
+    assert_eq!(history, []);
+
+    s.core.send_message(session, "one").unwrap();
+    frames.until_turn_end();
+
+    assert_eq!(
+        frames.messages(),
+        [
+            user("one"),
+            started(),
+            commands(&["review", "init"]),
+            delta("ok"),
+            ended()
+        ]
+    );
+    // A panel that attaches later gets the list after the conversation, which never holds it.
+    let (late, _) = Frames::subscribe(&s.core, session);
+    assert_eq!(
+        late,
+        [
+            user("one"),
+            started(),
+            delta("ok"),
+            ended(),
+            commands(&["review", "init"])
+        ]
+    );
+
+    let (_, mut frames) = Frames::subscribe(&s.core, session);
+    s.core.send_message(session, "two").unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while command_lists(&frames.messages()).is_empty() {
+        frames.next_frame(deadline, "the second list");
+    }
+    assert_eq!(command_lists(&frames.messages()), [commands(&["review"])]);
+    let (late, _) = Frames::subscribe(&s.core, session);
+    assert_eq!(command_lists(&late), [commands(&["review"])]);
+    assert_eq!(late.last(), Some(&commands(&["review"])));
+}
+
+#[test]
+fn a_command_list_alone_sets_no_state_and_starts_no_turn_for_a_waiting_message() {
+    let mut s = setup(then_wait(vec![
+        json!({"wait_message": "user_message"}),
+        commands_line(&["review"]),
+    ]));
+    let session = s.spawn(Some("go"));
+    let (history, mut frames) = Frames::subscribe(&s.core, session);
+    let deadline = Instant::now() + TIMEOUT;
+    while command_lists(&[history.clone(), frames.messages()].concat()).is_empty() {
+        frames.next_frame(deadline, "the list");
+    }
+
+    s.no_state_for(Duration::from_millis(100));
+    // The message still waits for its turn, so the sidecar's exit makes it not delivered.
+    s.core.kill(session).unwrap();
+    while !frames.messages().contains(&not_delivered("go")) {
+        frames.next_frame(deadline, "the not delivered message");
+    }
 }

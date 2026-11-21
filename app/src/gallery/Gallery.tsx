@@ -1,7 +1,7 @@
 import { Copy, Ellipsis, Plus } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 
-import type { AgentState as State, Workspace } from "../bridge";
+import type { SlashCommand, AgentState as State, Workspace } from "../bridge";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { ChatPanel } from "../ChatPanel";
 import type { FakeBridge, FakeWorktree } from "../fakeBridge";
@@ -52,6 +52,15 @@ const MARKDOWN_SAMPLE = [
   "| cargo clippy | pass |",
   "| vitest run | pass |",
 ].join("\n");
+
+/** The slash commands and skills the gallery's Claude session lists. */
+const GALLERY_COMMANDS: SlashCommand[] = [
+  { name: "review", description: "Review a pull request", argumentHint: "<pr>", invocation: "/review" },
+  { name: "init", description: "Write a CLAUDE.md for this codebase", argumentHint: "", invocation: "/init" },
+  { name: "compact", description: "Summarize the conversation so far", argumentHint: "[instructions]", invocation: "/compact" },
+  { name: "pr-comments", description: "Read the comments on a pull request", argumentHint: "<pr>", invocation: "/pr-comments" },
+  { name: "security-review", description: "Review the branch for security issues", argumentHint: "", invocation: "/security-review" },
+];
 
 const STATES: State[] = [
   { state: "Working" },
@@ -119,6 +128,8 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
     bridge.spawnAgent(FEATURE, "Claude").then((session) => {
       if (!current) return;
       bridge.agentStateChanged({ session, state: "Working", source: "Protocol" });
+      // A / in its composer opens the command menu.
+      bridge.messages(session, { type: "Commands", commands: GALLERY_COMMANDS });
       setPane(session);
     });
     return () => {

@@ -109,7 +109,7 @@ pub fn setup_with(steps: Value, configure: impl FnOnce(&mut CoreConfig)) -> Setu
     cfg.claude_command = wrap("claude", &format!("{env} FAKE_CLAUDE"));
     cfg.codex_command = wrap("codex", &format!("{env} FAKE_CODEX"));
     cfg.claude_sidecar_command = wrap("claude-sidecar", &format!("{env} FAKE_CLAUDE_SIDECAR"));
-    cfg.mcp_server = grove_mcp().to_path_buf();
+    cfg.mcp_server = Some(grove_mcp().to_path_buf());
     // No hooks run here, so no relay is needed.
     cfg.hook_relay = "/usr/bin/true".into();
     configure(&mut cfg);

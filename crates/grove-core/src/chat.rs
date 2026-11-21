@@ -83,6 +83,31 @@ pub enum AgentMessage {
     /// started a turn on it. `text` is what the agent would have got. A review batch's comments
     /// are open again.
     NotDelivered { text: String },
+    /// The commands and skills the agent offers now, in place of any list before. Never part
+    /// of the conversation: a panel gets the latest list after it, and live as it changes.
+    Commands { commands: Vec<SlashCommand> },
+}
+
+/// A slash command or skill the agent offers, as it lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlashCommand {
+    pub name: String,
+    pub description: String,
+    /// What the command takes, such as `<pr>`. Empty when it takes nothing or the agent does
+    /// not say.
+    pub argument_hint: String,
+    /// What the user types to run it: `/review` for Claude, `$review` for a Codex skill.
+    pub invocation: String,
+}
+
+/// A command as the sidecar's `commands` line lists it.
+#[derive(Deserialize)]
+struct ListedCommand {
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    argument_hint: String,
 }
 
 /// A model an agent offers, as the agent lists it.
@@ -214,6 +239,8 @@ struct ChatState {
     app_server: Option<codex::AppServer>,
     // The session's saved choice, which the process gets before anything else.
     first_model: Option<ModelChoice>,
+    // The agent's latest command list, kept apart from the history.
+    commands: Option<Vec<SlashCommand>>,
 }
 
 /// A message sent that no turn has started on yet.
@@ -297,22 +324,36 @@ impl Chat {
 
     fn push_locked(&self, s: &mut ChatState, message: AgentMessage) {
         if s.sink.is_some() {
-            s.batch.push(message.clone());
-            if s.batch.len() == 1 {
-                self.arrived.notify_one();
-            }
+            self.push_live_locked(s, message.clone());
         }
         s.history.push(message);
     }
 
+    /// Sends `message` to the sink only, so it never joins the history.
+    fn push_live_locked(&self, s: &mut ChatState, message: AgentMessage) {
+        if s.sink.is_some() {
+            s.batch.push(message);
+            if s.batch.len() == 1 {
+                self.arrived.notify_one();
+            }
+        }
+    }
+
     /// Sends the messages from now on to `sink`, in place of any earlier sink, and returns the
-    /// ones before. Under one lock, so each message is in one of the two exactly once.
+    /// ones before, then the latest command list. Under one lock, so each message is in one of
+    /// the two exactly once.
     fn subscribe(&self, sink: MessageSink) -> Vec<AgentMessage> {
         let mut s = self.state();
-        // The history has the batch, which was for the earlier sink.
+        // The history and the command list have the batch, which was for the earlier sink.
         s.batch.clear();
         s.sink = Some(sink);
-        s.history.clone()
+        let mut before = s.history.clone();
+        if let Some(commands) = &s.commands {
+            before.push(AgentMessage::Commands {
+                commands: commands.clone(),
+            });
+        }
+        before
     }
 
     /// Queues the user's message for the agent and adds `text` to the conversation, before any
@@ -434,6 +475,14 @@ enum FromAgent {
     },
     Models {
         models: Vec<ModelInfo>,
+    },
+    Commands {
+        commands: Vec<ListedCommand>,
+    },
+    /// Codex's skills, which it runs by `$name`.
+    #[serde(skip)]
+    Skills {
+        commands: Vec<SlashCommand>,
     },
     /// `time_unix_ms` is set only in a `history`, from the agent's record. Live, the core
     /// stamps the time it got the message.
@@ -802,6 +851,23 @@ fn apply(
             chat.models.send_replace(Listing::Listed(models));
             return;
         }
+        FromAgent::Commands { commands } => {
+            let commands = commands
+                .into_iter()
+                .map(|c| SlashCommand {
+                    invocation: format!("/{}", c.name),
+                    name: c.name,
+                    description: c.description,
+                    argument_hint: c.argument_hint,
+                })
+                .collect();
+            set_commands(chat, s, commands);
+            return;
+        }
+        FromAgent::Skills { commands } => {
+            set_commands(chat, s, commands);
+            return;
+        }
         // The record sets no state: the session stays as it was when it switched.
         FromAgent::History { messages } => {
             for message in messages {
@@ -904,6 +970,12 @@ fn apply(
     if let Some(state) = state {
         agents.on_protocol(session, state, events);
     }
+}
+
+/// Keeps `commands` as the latest list and sends it to the panel.
+fn set_commands(chat: &Chat, s: &mut ChatState, commands: Vec<SlashCommand>) {
+    s.commands = Some(commands.clone());
+    chat.push_live_locked(s, AgentMessage::Commands { commands });
 }
 
 /// The time now, in milliseconds since the Unix epoch. None only on a clock set before it.
