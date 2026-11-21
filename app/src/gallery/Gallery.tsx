@@ -1,7 +1,7 @@
 import { Copy, Ellipsis, Plus } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 
-import type { AgentState as State, AgentStateChanged, StateSource, Workspace } from "../bridge";
+import type { AgentState as State, AgentStateChanged, Workspace } from "../bridge";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { ChatPanel } from "../ChatPanel";
 import type { FakeBridge, FakeWorktree } from "../fakeBridge";
@@ -62,8 +62,6 @@ const STATES: State[] = [
   { state: "Idle" },
   { state: "Exited" },
 ];
-
-const SOURCES: StateSource[] = ["Protocol", "Hook", "Heuristic"];
 
 const WORKSPACE: Workspace = {
   chat: [],
@@ -174,13 +172,6 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
             <AgentState key={JSON.stringify(state)} state={state} />
           ))}
         </Row>
-        {SOURCES.map((source) => (
-          <Row key={source}>
-            {STATES.map((state) => (
-              <AgentState key={JSON.stringify(state)} state={state} source={source} />
-            ))}
-          </Row>
-        ))}
       </Section>
 
       <Section title="Segmented">

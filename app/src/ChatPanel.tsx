@@ -60,15 +60,17 @@ interface ModeSwitch {
 }
 
 /**
- * An agent panel in the chat area: its header, then the session's conversation in chat mode or the
- * agent's own TUI in terminal mode, then a strip with the branch, the profile and the Chat/Terminal
- * switch. A switch resumes the same conversation under the same session id.
+ * An agent panel in the chat area: its header unless the title bar holds it, then the session's
+ * conversation in chat mode or the agent's own TUI in terminal mode, then a strip with the branch,
+ * the profile and the Chat/Terminal switch. A switch resumes the same conversation under the same
+ * session id.
  */
 export function ChatPanel({
   bridge,
   session,
   agent,
   sessionName,
+  showHeader = true,
   worktree,
   shown,
   order,
@@ -88,6 +90,8 @@ export function ChatPanel({
   agent: Agent;
   /** What the session is called, as its row in the sidebar says. The agent's name without it. */
   sessionName?: string;
+  /** Whether the panel draws its header. With one agent panel shown, the title bar holds it instead. */
+  showHeader?: boolean;
   worktree: string;
   shown: boolean;
   /** Where the panel sits among the agent panels shown beside it. */
@@ -212,27 +216,29 @@ export function ChatPanel({
       onFocus={onFocus}
       onBlur={onBlur}
     >
-      <div className="pane-head">
-        <b>{sessionName ?? name}</b>
-        {state && <AgentState state={state} source={state.source} />}
-        <span className="spacer" />
-        {onSplit && (
-          <IconButton
-            icon={Columns2}
-            label="Split"
-            title="Start another agent session beside this one"
-            onClick={onSplit}
-          />
-        )}
-        {onHide && (
-          <IconButton
-            icon={X}
-            label="Hide panel"
-            title="Hide this panel. The agent session keeps running."
-            onClick={onHide}
-          />
-        )}
-      </div>
+      {showHeader && (
+        <div className="pane-head">
+          <b>{sessionName ?? name}</b>
+          {state && <AgentState state={state} source={state.source} />}
+          <span className="spacer" />
+          {onSplit && (
+            <IconButton
+              icon={Columns2}
+              label="Split"
+              title="Start another agent session beside this one"
+              onClick={onSplit}
+            />
+          )}
+          {onHide && (
+            <IconButton
+              icon={X}
+              label="Hide panel"
+              title="Hide this panel. The agent session keeps running."
+              onClick={onHide}
+            />
+          )}
+        </div>
+      )}
       {modeSwitch.error && (
         <p role="alert" className="chat-error">
           {modeSwitch.error}
