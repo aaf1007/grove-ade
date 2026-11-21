@@ -227,7 +227,7 @@ button.tool:hover {
 }
 
 /* Focus lands here on a jump to the session, and Y or N answers. */
-.approval-card:focus {
+.approval-card:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }

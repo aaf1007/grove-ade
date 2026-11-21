@@ -588,6 +588,8 @@ function ChatView({
   const list = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const approvalCard = useRef<HTMLDivElement>(null);
+  // Set when the user answers an approval with focus in its card, until focus moves to the next.
+  const focusFollowsApproval = useRef(false);
   // Sends on their way, oldest first. The failed ones go back into the draft together once all
   // have settled, so they come back in the order they were sent.
   const sending = useRef<{ text: string; settled: boolean; failed: boolean }[]>([]);
@@ -647,6 +649,8 @@ function ChatView({
     return () => {
       current = false;
       if (frame) cancelAnimationFrame(frame);
+      // The next subscribe brings the history again, and a jump waits for it.
+      setHistoryLoaded(false);
     };
   }, [bridge, session, shown, resumed]);
 
@@ -690,6 +694,23 @@ function ChatView({
   // A message sent while an approval waits declines it, and tells the agent what to do instead.
   const declining = waiting.find((item): item is ApprovalItem => item.kind === "approval");
   const question = waiting.find((item): item is QuestionItem => item.kind === "question");
+  // After an approval answered from its card, the next approval's card takes focus. Until one
+  // comes, focus waits in the composer, and stays there once the user types.
+  useEffect(() => {
+    if (!focusFollowsApproval.current) return;
+    const card = approvalCard.current;
+    const at = document.activeElement;
+    const waitingInComposer = at === composer.current && composer.current!.value === "";
+    if (card) {
+      if (at === document.body || waitingInComposer) card.focus();
+      focusFollowsApproval.current = false;
+    } else if (at === document.body) {
+      composer.current!.focus();
+    } else if (!waitingInComposer) {
+      focusFollowsApproval.current = false;
+    }
+  }, [declining?.request]);
+
   // The first message waits for the model it runs with.
   const canSend =
     draft.trim() !== "" &&
@@ -755,6 +776,11 @@ function ChatView({
       setRefused((known) => [...known, request]);
       throw e;
     });
+  }
+
+  function answerApproval(request: string, reply: Reply) {
+    focusFollowsApproval.current = approvalCard.current?.contains(document.activeElement) ?? false;
+    return answer(request, reply);
   }
 
   // The message comes back to the composer if the core refuses it.
@@ -824,7 +850,7 @@ function ChatView({
             item={declining}
             agentName={name}
             worktree={worktree}
-            onAnswer={answer}
+            onAnswer={answerApproval}
             ref={approvalCard}
           />
         )}

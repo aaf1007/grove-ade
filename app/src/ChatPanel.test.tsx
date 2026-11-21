@@ -1480,6 +1480,7 @@ test("a focus request puts focus in the composer once the panel is shown, and on
   expect(document.activeElement).toBe(document.body);
 
   view.rerender(<Panel bridge={bridge} shown focusRequest={2} />);
+  await act(async () => {});
   expect(document.activeElement).toBe(composer());
 });
 
@@ -1508,6 +1509,75 @@ test("a panel opened by a focus request focuses the approval its history waits o
   });
 
   expect(document.activeElement).toBe(approvalCard());
+});
+
+test("a focus request on a panel shown again focuses the approval that came while it was hidden", async () => {
+  const waiting: AgentStateChanged = { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" };
+  const bridge = await started();
+  const view = await shownPanel(bridge);
+  view.rerender(<Panel bridge={bridge} shown={false} />);
+  bridge.messages("0", { type: "TurnStarted" }, bashCall, approval);
+
+  view.rerender(<Panel bridge={bridge} shown state={waiting} focusRequest={1} />);
+  await act(async () => {});
+
+  expect(document.activeElement).toBe(approvalCard());
+});
+
+test("after an approval answered from its card, focus waits in the composer and moves to the next card", async () => {
+  const lint: FakeMessage = { type: "ToolCall", id: "toolu_02", tool: "Bash", input: { command: "npm run lint" } };
+  const bridge = await asked(bashCall, lint, approval);
+  approvalCard().focus();
+  fireEvent.keyDown(document.activeElement!, { key: "y" });
+  await settle();
+  expect(document.activeElement).toBe(composer());
+
+  act(() =>
+    bridge.messages("0", { type: "ApprovalRequested", request: "toolu_02", tool: "Bash", input: { command: "npm run lint" } }),
+  );
+  nextFrame();
+  expect(document.activeElement).toBe(approvalCard());
+  fireEvent.keyDown(document.activeElement!, { key: "n" });
+  await settle();
+
+  expect(bridge.answered.map((a) => a.reply.type)).toEqual(["AllowOnce", "Deny"]);
+  expect(document.activeElement).toBe(composer());
+});
+
+test("two approvals waiting at once answer one after the other by key", async () => {
+  const lint: FakeMessage = { type: "ToolCall", id: "toolu_02", tool: "Bash", input: { command: "npm run lint" } };
+  const lintApproval: FakeMessage = {
+    type: "ApprovalRequested",
+    request: "toolu_02",
+    tool: "Bash",
+    input: { command: "npm run lint" },
+  };
+  const bridge = await asked(bashCall, lint, approval, lintApproval);
+  approvalCard().focus();
+  fireEvent.keyDown(document.activeElement!, { key: "y" });
+  await settle();
+
+  expect(document.activeElement).toBe(approvalCard());
+  expect(within(approvalCard()).getByText("npm run lint")).toBeTruthy();
+  fireEvent.keyDown(document.activeElement!, { key: "y" });
+  await settle();
+
+  expect(bridge.answered.map((a) => a.request)).toEqual(["toolu_01", "toolu_02"]);
+});
+
+test("a draft in the composer keeps focus there when the next approval comes", async () => {
+  const bridge = await asked(bashCall, approval);
+  approvalCard().focus();
+  fireEvent.keyDown(document.activeElement!, { key: "y" });
+  await settle();
+  fireEvent.change(composer(), { target: { value: "also run lint" } });
+
+  act(() =>
+    bridge.messages("0", { type: "ApprovalRequested", request: "toolu_02", tool: "Bash", input: { command: "npm run lint" } }),
+  );
+  nextFrame();
+
+  expect(document.activeElement).toBe(composer());
 });
 
 function modeButton(name: "Chat" | "Terminal") {
