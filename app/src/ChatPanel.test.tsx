@@ -2041,3 +2041,32 @@ test("an unanswered notice stays through a switch to terminal mode and back", as
   await act(async () => fireEvent.click(within(notice()!).getByRole("button", { name: "Undo" })));
   expect(bridge.undone).toEqual(["0"]);
 });
+
+test("a subagent's panel shows the notice for its change to its parent's workspace, and Undo restores that one", async () => {
+  const bridge = await started();
+  const subagent = bridge.spawnSubagent(worktree, "Codex", "0");
+  const before = await bridge.workspace("0");
+  render(
+    <ChatPanel
+      bridge={bridge}
+      session={subagent}
+      agent="Codex"
+      worktree={worktree}
+      workspaceSession="0"
+      shown
+      state={undefined}
+      focusRequest={0}
+      onOpenDiff={() => {}}
+    />,
+  );
+  await act(async () => {});
+
+  await agentOpensLogs(bridge, subagent);
+
+  expect(notice()!.textContent).toContain("Codex changed this workspace:");
+  expect(notice()!.textContent).toContain("opened the Logs panel");
+  await act(async () => fireEvent.click(within(notice()!).getByRole("button", { name: "Undo" })));
+  expect(bridge.undone).toEqual(["0"]);
+  expect(await bridge.workspace("0")).toEqual(before);
+  expect(notice()).toBeNull();
+});
