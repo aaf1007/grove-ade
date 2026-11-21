@@ -102,6 +102,12 @@ test.each([
   ".a { animation-duration: 2s; }",
   ".a { animation: pulse var(--duration-slow) steps(6) infinite; }",
   ".a { transition-timing-function: ease; }",
+  ".a { transition: opacity var(--missing, 150ms) var(--ease-out); }",
+  ".a { animation: pulse var(--duration-base, 0.2s) var(--ease-out); }",
+  ".a { -webkit-transition: opacity var(--duration-fast) ease-out; }",
+  ".a { -webkit-animation: pulse 1s infinite; }",
+  ".a { animation-timing-function: step-start; }",
+  ".a { transition: visibility var(--duration-fast) step-end; }",
 ])("the raw motion check rejects %s", (source) => {
   expect(rawMotion(source)).toHaveLength(1);
 });
@@ -125,10 +131,11 @@ test("reduced motion sets every duration to zero", () => {
 
 // Each transition or animation declaration that sets a duration or a curve of its own.
 function rawMotion(css: string): string[] {
-  return [...withoutComments(css).matchAll(/(?<![\w-])(transition|animation)(-[a-z]+)*\s*:([^;}]+)/g)]
-    .filter(([, , , value]) =>
-      /(?<![\w-])(\d*\.?\d+m?s|ease(-in)?(-out)?|linear|cubic-bezier|steps)(?![\w-])/.test(
-        value.replace(/var\([^)]*\)/g, ""),
+  // A var() with no fallback is a token. A fallback stays in the value and is checked.
+  return [...withoutComments(css).matchAll(/(?<![\w-])(-[a-z]+-)?(transition|animation)(-[a-z]+)*\s*:([^;}]+)/g)]
+    .filter(([, , , , value]) =>
+      /(?<![\w-])(\d*\.?\d+m?s|ease(-in)?(-out)?|linear|cubic-bezier|steps|step-start|step-end)(?![\w-])/.test(
+        value.replace(/var\(--[\w-]+\)/g, ""),
       ),
     )
     .map(([declaration]) => declaration.trim());

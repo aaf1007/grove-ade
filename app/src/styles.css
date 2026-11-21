@@ -1229,9 +1229,10 @@ svg {
   font-size: var(--text-meta-size);
 }
 
-/* A row held for a model on its way. */
-.opt-waiting {
-  color: var(--faint);
+/* Opened while the models load: one height until it closes, rows from the top (Picker.tsx). */
+.picker-pop-held {
+  height: min(60vh, 400px);
+  align-content: start;
 }
 
 .opt {

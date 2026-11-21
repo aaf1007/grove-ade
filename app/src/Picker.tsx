@@ -82,17 +82,6 @@ function describeChoice(models: Model[] | null, choice: ModelChoice | null): { n
   return { name: choice.model.name, effort: choice.effort };
 }
 
-/** The rows a model list takes: whether each model has a second line, and the efforts it shows. */
-interface ListShape {
-  hints: boolean[];
-  efforts: string[];
-}
-
-// The shape each agent's list took when it last loaded, so a picker waiting for the same agent's
-// models holds their room and its rows stay put when they arrive. Before the first load, one row.
-const lastListed = new Map<Agent, ListShape>();
-const UNKNOWN_LIST: ListShape = { hints: [false], efforts: [] };
-
 const MARKS: Record<Agent, typeof Asterisk> = { Claude: Asterisk, Codex: Hexagon };
 
 /** The agent's mark, in the agent's color. Its title names the agent. */
@@ -127,6 +116,9 @@ export function Picker({
 }) {
   const [open, setOpen] = useState(false);
   const [entering, setEntering] = useState(false);
+  // Opened while the models load, it keeps one height until it closes, so they fill in below the
+  // rows already shown and no row moves under the pointer.
+  const [held, setHeld] = useState(false);
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -143,21 +135,12 @@ export function Picker({
     };
   }, [open]);
 
-  useEffect(() => {
-    if (!models) return;
-    lastListed.set(agent, {
-      hints: models.map((model) => Boolean(model.description)),
-      efforts: choice?.model.efforts ?? [],
-    });
-  }, [agent, models, choice]);
-
   function pickAgent(picked: Agent) {
     setOpen(false);
     if (picked !== agent && !agentLocked) onAgent(picked);
   }
 
   const { name, effort } = describeChoice(models, choice);
-  const waitingFor = models === null ? (lastListed.get(agent) ?? UNKNOWN_LIST) : null;
 
   function pickModel(model: Model) {
     setOpen(false);
@@ -173,6 +156,7 @@ export function Picker({
         aria-expanded={open}
         onClick={() => {
           setEntering(!open && openedByPointer());
+          setHeld(!open && models === null);
           setOpen(!open);
         }}
       >
@@ -187,7 +171,9 @@ export function Picker({
       </button>
       {open && (
         <div
-          className={entering ? "pop picker-pop popover-enter" : "pop picker-pop"}
+          className={["pop picker-pop", entering && "popover-enter", held && "picker-pop-held"]
+            .filter(Boolean)
+            .join(" ")}
           role="dialog"
           aria-label="Agent and model"
         >
@@ -205,15 +191,11 @@ export function Picker({
             </button>
           ))}
           <h4>Model</h4>
-          {/* Rows shaped like the ones on their way, the first saying they are loading. */}
-          {waitingFor?.hints.map((hint, index) => (
-            <div key={index} className="opt opt-waiting">
-              <span className="grow">
-                {index === 0 ? "Loading models" : "\u00a0"}
-                {hint && <span className="why">{"\u00a0"}</span>}
-              </span>
-            </div>
-          ))}
+          {models === null && (
+            <p className="note" role="status">
+              Loading models
+            </p>
+          )}
           {models?.length === 0 && (
             <p className="note">{AGENT_NAMES[agent]} listed no models, so it uses its own default.</p>
           )}
@@ -230,18 +212,6 @@ export function Picker({
               </span>
             </button>
           ))}
-          {waitingFor && waitingFor.efforts.length > 0 && (
-            <>
-              <h4>Effort</h4>
-              <Segmented
-                label="Effort"
-                options={waitingFor.efforts.map((effort) => [effort, effort] as const)}
-                value={null}
-                disabled
-                onChange={() => {}}
-              />
-            </>
-          )}
           {choice && choice.model.efforts.length > 0 && (
             <>
               <h4>Effort</h4>

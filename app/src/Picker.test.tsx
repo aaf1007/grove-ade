@@ -15,31 +15,60 @@ function popover() {
   return screen.getByRole("dialog", { name: "Agent and model" });
 }
 
-// What sets each row's height, top to bottom: a heading, a row with or without a second line, or
-// the effort switch with its options.
-function rows(popover: HTMLElement): string[] {
-  return [...popover.children].map((row) => {
-    if (row.tagName === "H4") return `heading ${row.textContent}`;
-    if (row.classList.contains("opt")) return row.querySelector(".why") ? "row with hint" : "row";
-    if (row.classList.contains("ui-segmented")) return `switch ${row.textContent}`;
-    return row.className;
-  });
+function openPicker() {
+  fireEvent.click(screen.getByRole("button", { name: "Agent and model" }));
 }
 
-test("the picker's rows do not move between loading and loaded", () => {
-  // A session before this one listed Claude's models, so the picker knows the room they take.
-  render(<Picker {...fixedProps} {...loaded} />);
+// A popover opened while the models load keeps its height until it closes, so the models fill in
+// below the rows already shown and no row moves. The height itself is the stylesheet's.
+const held = () => popover().classList.contains("picker-pop-held");
+
+const fiveModels = [0, 1, 2, 3, 4].map((index) => ({ ...claude[1], id: `model-${index}`, name: `Model ${index}` }));
+
+// The picker remembers nothing between loads, so the first load and any later count behave alike.
+test.each([
+  ["two models", claude],
+  ["five models", fiveModels],
+  ["one model", claude.slice(0, 1)],
+])("the picker's rows do not move when a list of %s arrives", (_, models) => {
+  const { rerender } = render(<Picker {...fixedProps} {...loading} />);
+  openPicker();
+  expect(held()).toBe(true);
+
+  rerender(<Picker {...fixedProps} models={models} choice={{ model: models[0], effort: null }} />);
+
+  expect(held()).toBe(true);
+  expect(screen.getByRole("button", { name: (name) => name.startsWith(models.at(-1)!.name) })).toBeTruthy();
+});
+
+test("a picker opened once the models are in takes the height of its rows", () => {
+  const { rerender } = render(<Picker {...fixedProps} {...loading} />);
+  openPicker();
+  rerender(<Picker {...fixedProps} {...loaded} />);
+  openPicker();
+
+  openPicker();
+
+  expect(held()).toBe(false);
+});
+
+test("while the models load, the list has one loading status and nothing else", () => {
+  render(<Picker {...fixedProps} {...loading} />);
+  openPicker();
+
+  expect(screen.getByRole("status").textContent).toBe("Loading models");
+  expect(screen.queryByRole("group", { name: "Effort" })).toBeNull();
+  expect(screen.queryByText("Effort")).toBeNull();
+});
+
+test("after an agent listed no models, its next load still says it is loading", () => {
+  render(<Picker {...fixedProps} models={[]} choice={null} />);
   cleanup();
 
-  const { rerender } = render(<Picker {...fixedProps} {...loading} />);
-  fireEvent.click(screen.getByRole("button", { name: "Agent and model" }));
-  const whileLoading = rows(popover());
-  expect(popover().textContent).toContain("Loading models");
+  render(<Picker {...fixedProps} {...loading} />);
+  openPicker();
 
-  rerender(<Picker {...fixedProps} {...loaded} />);
-
-  expect(rows(popover())).toEqual(whileLoading);
-  expect(whileLoading).toContain("heading Effort");
+  expect(screen.getByRole("status").textContent).toBe("Loading models");
 });
 
 test("the picker opened by a pointer plays its enter transition, and by a key it does not", () => {
