@@ -132,8 +132,21 @@ const defaultThemes = {
   light: { ...defaultDark, ...declarations(tokens, ':root[data-theme="light"]') },
 };
 
+// Modern sets only some tokens. The rest come from the default palette in the same theme.
+const modern = declarations(tokens, ':root[data-palette="modern"]');
+const everyTheme = {
+  "default dark": defaultThemes.dark,
+  "default light": defaultThemes.light,
+  "modern dark": { ...defaultThemes.dark, ...modern },
+  "modern light": {
+    ...defaultThemes.light,
+    ...modern,
+    ...declarations(tokens, ':root[data-palette="modern"][data-theme="light"]'),
+  },
+};
+
 test.each(
-  Object.entries(defaultThemes).flatMap(([theme, values]) =>
+  Object.entries(everyTheme).flatMap(([theme, values]) =>
     textOnGrounds.flatMap(([text, grounds]) =>
       grounds.map((ground) => ({ theme, text, ground, values })),
     ),
@@ -141,6 +154,50 @@ test.each(
 )("$text on $ground has 4.5:1 contrast in $theme", ({ text, ground, values }) => {
   expect(contrast(resolve(values, text), resolve(values, ground))).toBeGreaterThanOrEqual(4.5);
 });
+
+// The four surface steps: sidebar, chat area, raised (the panel area, dialogs and menus) and code.
+// Each must read as its own region, so sorted by lightness each step sits a set distance from the next.
+const surfaces = ["sidebar", "bg", "panel", "code-bg"];
+const minimumLightnessStep = 3;
+
+// --syn-fn is set by the default light block and by neither Modern block.
+test("Modern light takes the default light value of a token Modern does not set", () => {
+  expect(everyTheme["modern light"]["--syn-fn"]).toBe(defaultThemes.light["--syn-fn"]);
+});
+
+test.each(Object.entries(everyTheme))("the surface steps of %s are far enough apart", (_, values) => {
+  expect(surfacesTooClose(values)).toEqual([]);
+});
+
+test("the surface step check names the pair that is too close", () => {
+  const values = { "--sidebar": "#000000", "--bg": "#202020", "--panel": "#404040", "--code-bg": "#424242" };
+  expect(surfacesTooClose(values)).toEqual(["panel and code-bg"]);
+});
+
+// Each pair of neighbouring surfaces, sorted by lightness, that sits closer than the minimum step.
+function surfacesTooClose(values: Record<string, string>): string[] {
+  const steps = surfaces
+    .map((surface) => ({ surface, lightness: lightness(resolve(values, surface)) }))
+    .sort((first, second) => first.lightness - second.lightness);
+  return steps
+    .slice(1)
+    .map((upper, index) => ({ lower: steps[index], upper }))
+    .filter(({ lower, upper }) => upper.lightness - lower.lightness < minimumLightnessStep)
+    .map(({ lower, upper }) => `${lower.surface} and ${upper.surface}`);
+}
+
+test("the chat area is the darkest surface in the default dark theme", () => {
+  const chat = lightness(resolve(defaultDark, "bg"));
+  for (const surface of surfaces.filter((name) => name !== "bg")) {
+    expect(lightness(resolve(defaultDark, surface)), surface).toBeGreaterThan(chat);
+  }
+});
+
+// CIE L*, from 0 for black to 100 for white, in steps that look even to the eye.
+function lightness(hex: string): number {
+  const relative = luminance(hex);
+  return relative > 216 / 24389 ? 116 * Math.cbrt(relative) - 16 : (relative * 24389) / 27;
+}
 
 // A token's value with var() references followed, as a solid #rrggbb color.
 function resolve(values: Record<string, string>, token: string): string {
