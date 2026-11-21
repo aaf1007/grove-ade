@@ -4,6 +4,7 @@ import {
   ChevronRight,
   FileText,
   Globe,
+  ListChecks,
   ListTodo,
   type LucideIcon,
   Pencil,
@@ -12,7 +13,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useId, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 
 /** One tool call of the agent, with its result once it has one. */
 export interface ToolCall {
@@ -27,20 +28,57 @@ export interface ToolCall {
 /**
  * A run of tool calls as quiet rows. Calls of the same kind in a row fold into one row with a
  * count, which opens to list them. A failed call has a row of its own, with its error under it.
- * While `live`, a call with no result yet shimmers.
+ * While `live`, a call with no result yet shimmers. Once the run is done, its rows fold into one
+ * line that counts them by kind, unless a call failed.
  */
 export function ToolCalls({ calls, worktree, live }: { calls: ToolCall[]; worktree: string; live: boolean }) {
-  return (
-    <div className="tools">
-      {fold(calls).map((run) =>
-        run.length === 1 ? (
-          <ToolRow key={run[0].id} call={run[0]} worktree={worktree} live={live} />
-        ) : (
-          <FoldedRow key={run[0].id} calls={run} worktree={worktree} live={live} />
-        ),
-      )}
-    </div>
+  const runs = fold(calls);
+  const rows = runs.map((run) =>
+    run.length === 1 ? (
+      <ToolRow key={run[0].id} call={run[0]} worktree={worktree} live={live} />
+    ) : (
+      <FoldedRow key={run[0].id} calls={run} worktree={worktree} live={live} />
+    ),
   );
+  const done = !live && runs.length > 1 && !calls.some((call) => call.result?.isError);
+  return <div className="tools">{done ? <Summary label={summarize(calls, worktree)}>{rows}</Summary> : rows}</div>;
+}
+
+/** Finished work as one line, "Ran 3 commands, edited 2 files", which opens to its rows. */
+function Summary({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button className="tool" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <ListChecks aria-hidden="true" />
+        <span className="tool-label">{label}</span>
+        <ChevronRight aria-hidden="true" className="chevron" />
+      </button>
+      {open && (
+        <div className="tool-rows" role="group" aria-label={label}>
+          {children}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** How many calls of each kind `calls` made, in the order the kinds came: "Read 2 files, ran 1 command". */
+function summarize(calls: ToolCall[], worktree: string): string {
+  const byKind = new Map<Kind | null, string[]>();
+  for (const call of calls) {
+    const found = folds(call) ? targets(call)!.map((target) => relative(target, worktree)) : null;
+    const kind = found ? KINDS[call.tool] : null;
+    if (!byKind.has(kind)) byKind.set(kind, []);
+    // A call of another kind counts once.
+    byKind.get(kind)!.push(...(found ?? [call.id]));
+  }
+  const parts = [...byKind].map(([kind, all], i) => {
+    const count = kind?.unique ? new Set(all).size : all.length;
+    const { verb, noun, nouns } = kind ?? OTHER;
+    return `${i === 0 ? verb : verb.toLowerCase()} ${count} ${count === 1 ? noun : nouns}`;
+  });
+  return parts.join(", ");
 }
 
 /**
@@ -62,6 +100,8 @@ function ToolRow({ call, worktree, live }: { call: ToolCall; worktree: string; l
   const [open, setOpen] = useState(false);
   const timeId = useId();
   const { label, icon: Icon } = describe(call, worktree);
+  const command = wholeCommand(call);
+  const ran = command && <span className="tool-command">{`${command}\n`}</span>;
   if (call.result?.isError) {
     return (
       <>
@@ -70,7 +110,10 @@ function ToolRow({ call, worktree, live }: { call: ToolCall; worktree: string; l
           <span className="tool-label">{label}</span>
           <Clock time={call.time} />
         </div>
-        <pre className="tool-output failed">{call.result.output}</pre>
+        <pre className="tool-output failed">
+          {ran}
+          {call.result.output}
+        </pre>
       </>
     );
   }
@@ -87,7 +130,12 @@ function ToolRow({ call, worktree, live }: { call: ToolCall; worktree: string; l
         <Clock time={call.time} id={timeId} />
         <ChevronRight aria-hidden="true" className="chevron" />
       </button>
-      {open && <pre className="tool-output">{call.result ? call.result.output : "Running"}</pre>}
+      {open && (
+        <pre className="tool-output">
+          {ran}
+          {call.result ? call.result.output : "Running"}
+        </pre>
+      )}
     </>
   );
 }
@@ -102,7 +150,7 @@ function FoldedRow({ calls, worktree, live }: { calls: ToolCall[]; worktree: str
   // A file read or edited twice is one file. A command run twice ran twice.
   const listed = kind.unique ? [...new Set(all)] : all;
   const label =
-    listed.length === 1 ? describe(calls[0], worktree).label : `${kind.verb} ${listed.length} ${kind.noun}`;
+    listed.length === 1 ? describe(calls[0], worktree).label : `${kind.verb} ${listed.length} ${kind.nouns}`;
   return (
     <>
       <button
@@ -119,7 +167,10 @@ function FoldedRow({ calls, worktree, live }: { calls: ToolCall[]; worktree: str
       {open && (
         <ul className="tool-calls" aria-label={label}>
           {listed.map((target, i) => (
-            <li key={i}>{target}</li>
+            // A command has one target, so it lists at its own index.
+            <li key={i} title={(kind === COMMAND && wholeCommand(calls[i])) || undefined}>
+              {target}
+            </li>
           ))}
         </ul>
       )}
@@ -160,13 +211,16 @@ function Label({ text, running }: { text: string; running: boolean }) {
 interface Kind {
   verb: string;
   noun: string;
+  nouns: string;
   /** Count each target once. */
   unique: boolean;
   icon: LucideIcon;
 }
-const READ: Kind = { verb: "Read", noun: "files", unique: true, icon: FileText };
-const EDIT: Kind = { verb: "Edited", noun: "files", unique: true, icon: Pencil };
-const COMMAND: Kind = { verb: "Ran", noun: "commands", unique: false, icon: SquareTerminal };
+const READ: Kind = { verb: "Read", noun: "file", nouns: "files", unique: true, icon: FileText };
+const EDIT: Kind = { verb: "Edited", noun: "file", nouns: "files", unique: true, icon: Pencil };
+const COMMAND: Kind = { verb: "Ran", noun: "command", nouns: "commands", unique: false, icon: SquareTerminal };
+/** In a summary, the calls of every kind that does not fold. */
+const OTHER = { verb: "Used", noun: "other tool", nouns: "other tools" };
 const KINDS: Record<string, Kind> = {
   Read: READ,
   Edit: EDIT,
@@ -206,13 +260,39 @@ function targets({ tool, input }: ToolCall): string[] | null {
   const field = SENTENCES[tool]?.field;
   const target = field ? (input as Record<string, unknown> | null)?.[field] : undefined;
   if (typeof target !== "string" || target === "") return null;
-  return [KINDS[tool] === COMMAND ? target.split("\n")[0] : target];
+  return [KINDS[tool] === COMMAND ? shortCommand(target) : target];
+}
+
+/** A command call's whole command, when its label shows less of it. null otherwise. */
+function wholeCommand({ tool, input }: ToolCall): string | null {
+  const command = (input as { command?: unknown } | null)?.command;
+  if (KINDS[tool] !== COMMAND || typeof command !== "string") return null;
+  return shortCommand(command) === command ? null : command;
+}
+
+/** What a command reads as: its first line, from inside the shell that wraps it, if one does. */
+function shortCommand(command: string): string {
+  return unwrapped(command).split("\n")[0];
+}
+
+/**
+ * `command` without a leading shell wrapper such as `/bin/zsh -lc '...'` or `bash -lc "..."`, as
+ * Codex sends its commands. As is when no shell wraps it.
+ */
+function unwrapped(command: string): string {
+  const inner = /^(?:\/(?:usr\/)?bin\/)?(?:zsh|bash|sh) -l?c (.+)$/s.exec(command)?.[1];
+  if (inner === undefined) return command;
+  const quoted = /^'(.*)'$/s.exec(inner)?.[1];
+  if (quoted !== undefined) return quoted.replaceAll("'\\''", "'");
+  const doubleQuoted = /^"(.*)"$/s.exec(inner)?.[1];
+  if (doubleQuoted !== undefined) return doubleQuoted.replace(/\\(["\\$`])/g, "$1");
+  return inner;
 }
 
 /** How each tool's call reads: the input field it acts on, the sentence, and the icon. */
 const SENTENCES: Record<string, { field?: string; say(target: string): string; icon: LucideIcon }> = {
-  Bash: { field: "command", say: (command) => `Ran ${command.split("\n")[0]}`, icon: SquareTerminal },
-  commandExecution: { field: "command", say: (command) => `Ran ${command.split("\n")[0]}`, icon: SquareTerminal },
+  Bash: { field: "command", say: (command) => `Ran ${shortCommand(command)}`, icon: SquareTerminal },
+  commandExecution: { field: "command", say: (command) => `Ran ${shortCommand(command)}`, icon: SquareTerminal },
   Read: { field: "file_path", say: (path) => `Read ${path}`, icon: FileText },
   Write: { field: "file_path", say: (path) => `Wrote ${path}`, icon: Pencil },
   Edit: { field: "file_path", say: (path) => `Edited ${path}`, icon: Pencil },

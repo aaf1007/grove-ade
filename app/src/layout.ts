@@ -21,7 +21,7 @@ const DEFAULT_LAYOUT: Layout = {
   sidebarOpen: true,
   panelsOpen: true,
   sidebarWidth: 256,
-  panelsWidth: 400,
+  panelsWidth: 720,
 };
 
 const isBoolean = (value: unknown) => typeof value === "boolean";

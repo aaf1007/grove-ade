@@ -94,11 +94,13 @@ async function startClaudeCode() {
   await click(screen.getByRole("menuitem", { name: "Start Claude Code" }));
 }
 
-// Starts Claude Code in feat-36, then splits its panel, which starts Codex beside it.
+// Starts Claude Code in feat-36, then splits its panel from the title bar, which starts Codex
+// beside it.
 async function twoPanels(bridge: FakeBridge) {
   await select("feat-36");
   await startClaudeCode();
-  await click(within(panel("0")).getByRole("button", { name: "Split" }));
+  await screen.findByRole("region", { name: "Panel 0" });
+  await click(within(screen.getByRole("banner")).getByRole("button", { name: "Split" }));
   await screen.findByRole("region", { name: "Panel 1" });
   expect(bridge.spawnedAgents.map((s) => s.agent)).toEqual(["Claude", "Codex"]);
 }
@@ -122,6 +124,37 @@ function openMenu() {
   return click(screen.getByRole("button", { name: "Open a panel" }));
 }
 
+test("with one agent panel the title bar names its agent and state, and the panel draws no header row", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  await startClaudeCode();
+  await screen.findByRole("region", { name: "Panel 0" });
+
+  act(() => bridge.agentStateChanged({ session: "0", state: "Working", source: "Protocol" }));
+
+  const titleBar = screen.getByRole("banner");
+  expect(within(titleBar).getByText("Claude Code")).toBeTruthy();
+  const state = titleBar.querySelector<HTMLElement>(".ui-agent-state")!;
+  expect(state.textContent).toBe("Working");
+  expect(state.title).toBe("State from Protocol");
+  expect(panel("0").querySelector(".pane-head")).toBeNull();
+});
+
+test("with one agent panel, Split sits in the title bar before Details, and the panel has none", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  await startClaudeCode();
+  await screen.findByRole("region", { name: "Panel 0" });
+
+  const switches = within(screen.getByRole("banner"))
+    .getAllByRole("button")
+    .map((button) => button.getAttribute("aria-label"));
+  expect(switches.indexOf("Split")).toBe(switches.indexOf("Details") - 1);
+  expect(within(panel("0")).queryByRole("button", { name: "Split" })).toBeNull();
+});
+
 test("splitting a panel starts the other agent beside it and saves both in the workspace", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
@@ -130,10 +163,35 @@ test("splitting a panel starts the other agent beside it and saves both in the w
 
   expect(shownPanels()).toEqual(["Panel 0", "Panel 1"]);
   expect(agentName(panel("1"))).toBe("Codex");
+  // With two panels, each splits from its own header.
+  expect(within(screen.getByRole("banner")).queryByRole("button", { name: "Split" })).toBeNull();
+  expect(within(panel("0")).getByRole("button", { name: "Split" })).toBeTruthy();
   expect((await bridge.workspace(feature)).chat).toEqual([
     { agent: "Claude", session: "0", shown: true },
     { agent: "Codex", session: "1", shown: true },
   ]);
+});
+
+test("with two agent panels, each draws a header with its agent and state, and the title bar names neither", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await twoPanels(bridge);
+
+  act(() => {
+    bridge.agentStateChanged({ session: "0", state: "Working", source: "Protocol" });
+    bridge.agentStateChanged({ session: "1", state: "NeedsInput", kind: "Approval", source: "Protocol" });
+  });
+
+  for (const [session, agent, state] of [
+    ["0", "Claude Code", "Working"],
+    ["1", "Codex", "Approval"],
+  ]) {
+    const head = panel(session).querySelector<HTMLElement>(".pane-head")!;
+    expect(agentName(panel(session))).toBe(agent);
+    expect(head.querySelector(".ui-agent-state")!.textContent).toBe(state);
+    expect(head.textContent).not.toContain("Protocol");
+  }
+  expect(screen.getByRole("banner").querySelector(".titlebar-agent")).toBeNull();
 });
 
 test("a third panel can be split off, but no fourth", async () => {
@@ -282,6 +340,10 @@ test("an unstarted panel starts its own agent", async () => {
   });
   render(<App bridge={bridge} />);
   await select("feat-36");
+
+  // Alone, it draws no header: the title bar names its agent.
+  expect(within(screen.getByRole("banner")).getByText("Codex")).toBeTruthy();
+  expect(screen.getByRole("main").querySelector(".pane-head")).toBeNull();
 
   await click(screen.getByRole("button", { name: "Start session" }));
 

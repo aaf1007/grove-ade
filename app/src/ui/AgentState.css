@@ -13,11 +13,6 @@
   stroke-width: 1.75;
 }
 
-.ui-agent-state-source {
-  color: var(--faint);
-  font-weight: 400;
-}
-
 .ui-agent-state-working {
   color: var(--working);
 }
