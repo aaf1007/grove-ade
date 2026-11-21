@@ -19,10 +19,12 @@
 
 .ui-menu-list-start {
   left: 0;
+  transform-origin: top left;
 }
 
 .ui-menu-list-end {
   right: 0;
+  transform-origin: top right;
 }
 
 .ui-menu-heading {
