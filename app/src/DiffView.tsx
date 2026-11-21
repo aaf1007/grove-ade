@@ -1,3 +1,4 @@
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { fileLines, findLines } from "./anchor";
@@ -8,9 +9,9 @@ import { Button } from "./ui/Button";
 import { Segmented } from "./ui/Segmented";
 
 /**
- * One worktree's changed files, beside a Monaco diff of the selected one with its review comments
- * under their lines. Clicking line numbers adds a comment, and Send review batch sends the open
- * ones to an agent session.
+ * One worktree's changed files, each in a section with a Monaco diff and its review comments under
+ * their lines. Clicking line numbers adds a comment, and Send review batch sends the open ones to an
+ * agent session.
  */
 export function DiffView({
   bridge,
@@ -40,37 +41,79 @@ export function DiffView({
     setAppliedRequest(opened.request);
     setBase(opened.base);
   }
-  // The files keep the base they came from, so their versions come from that same base.
-  const [diff, setDiff] = useState<{ base: DiffBase; files: FileDiff[]; error?: string }>({
+  // The files keep the base they came from, so their versions come from that same base. Each load
+  // counts up `generation`, which tells a file's versions read from this load from older ones.
+  const [diff, setDiff] = useState<{ base: DiffBase; files: FileDiff[]; generation: number; error?: string }>({
     base,
     files: [],
+    generation: 0,
   });
+  const loads = useRef(0);
   // Bumped on each DiffChanged for this worktree, to load the diff again.
   const [changes, setChanges] = useState(0);
-  const [selected, setSelected] = useState<string | null>(null);
+  // Paths whose sections are collapsed. A collapsed section stays mounted, so its comment boxes
+  // keep what was typed in them.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   // The reveal taken so far. It follows the prop during render, as state that follows a prop does.
   const [taken, setTaken] = useState<string | null>(null);
   if (reveal !== taken) {
     setTaken(reveal);
     if (reveal !== null) {
       setBase("Head");
-      setSelected(reveal);
+      if (collapsed.has(reveal)) setCollapsed(toggled(collapsed, reveal));
     }
   }
+  // Each file's section by path. A revealed file waits for a HEAD diff to look for it in, then stays
+  // pinned in view while the sections around it take their height, until the user scrolls.
+  const sections = useRef(new Map<string, HTMLElement>());
+  const revealWaiting = useRef<string | null>(null);
+  const pinned = useRef<string | null>(null);
   const revealed = useEffectEvent(() => onRevealed?.());
   useEffect(() => {
-    if (reveal !== null) revealed();
+    if (reveal === null) return;
+    revealWaiting.current = reveal;
+    pinned.current = null;
+    revealed();
   }, [reveal]);
-  // The last versions loaded. They stay on screen until the next ones arrive, so a refresh
-  // never empties the editor.
-  const [shown, setShown] = useState<Shown | null>(null);
+  // Each text file's last versions loaded, by path. They stay on screen until the next ones arrive,
+  // so a refresh never empties an editor.
+  const [shown, setShown] = useState<Record<string, Shown>>({});
+  // The paths whose sections are near the view, and the load each file is being read for.
+  const [near, setNear] = useState<ReadonlySet<string>>(new Set());
+  const reading = useRef(new Map<string, number>());
+  // The scrolling box, and the list in it, which grows as its sections take their height.
+  const fileList = useRef<HTMLDivElement>(null);
+  const sectionList = useRef<HTMLUListElement>(null);
   const { comments, error: commentsError } = useComments(bridge, worktree);
-  // The comment being typed: the lines picked in the shown file, and their text then, which it
+  // The comment being typed: the lines picked in its file, and their text then, which it
   // follows as the agent edits the file.
   const [composing, setComposing] = useState<Draft | null>(null);
   const drafts = useRef(0);
   const [picking, setPicking] = useState(false);
   const [resolveError, setResolveError] = useState<string | null>(null);
+
+  // A file not in the HEAD diff is dropped, so it never scrolls the view when it shows up later.
+  useEffect(() => {
+    const path = revealWaiting.current;
+    if (path === null || diff.base !== "Head") return;
+    revealWaiting.current = null;
+    if (!diff.files.some((f) => f.newPath === path)) return;
+    pinned.current = path;
+    sections.current.get(path)?.scrollIntoView({ block: "start" });
+  }, [reveal, diff]);
+
+  // WKWebView does not anchor scrolling, so a section above the pinned one that takes its height
+  // would push it down.
+  useEffect(() => {
+    const observer = new ResizeObserver(() => {
+      if (pinned.current !== null) sections.current.get(pinned.current)?.scrollIntoView({ block: "start" });
+    });
+    observer.observe(sectionList.current!);
+    return () => observer.disconnect();
+  }, []);
+  const unpin = () => {
+    pinned.current = null;
+  };
 
   useEffect(
     () =>
@@ -84,28 +127,53 @@ export function DiffView({
     // A later request replaces this one, so this one drops its answer.
     let current = true;
     bridge.diff(worktree, base).then(
-      (files) => current && setDiff({ base, files }),
-      (e: unknown) => current && setDiff({ base, files: [], error: String(e) }),
+      (files) => current && setDiff({ base, files, generation: ++loads.current }),
+      (e: unknown) => current && setDiff({ base, files: [], generation: ++loads.current, error: String(e) }),
     );
     return () => {
       current = false;
     };
   }, [bridge, worktree, base, changes]);
 
-  const file = diff.files.find((f) => f.newPath === selected) ?? diff.files[0];
-
   useEffect(() => {
-    // git already calls it binary, so reading it would load the whole file only to hide it.
-    if (!file || file.binary) return;
-    let current = true;
-    bridge.fileVersions(worktree, diff.base, file).then(
-      (versions) => current && setShown({ path: file.newPath, versions }),
-      (e: unknown) => current && setShown({ path: file.newPath, error: String(e) }),
+    const observer = new IntersectionObserver(
+      (entries) =>
+        setNear((before) => {
+          const after = new Set(before);
+          for (const { target, isIntersecting } of entries) {
+            const path = (target as HTMLElement).dataset.path!;
+            if (isIntersecting) after.add(path);
+            else after.delete(path);
+          }
+          return after.size === before.size && [...after].every((path) => before.has(path)) ? before : after;
+        }),
+      { root: fileList.current, rootMargin: NEAR_VIEW_MARGIN },
     );
-    return () => {
-      current = false;
-    };
-  }, [bridge, worktree, diff.base, file]);
+    sections.current.forEach((section) => observer.observe(section));
+    return () => observer.disconnect();
+  }, [diff.files]);
+
+  // Only open sections near the view read their file, each once per load of the diff. The rest read
+  // theirs when they open or come near. git already calls a binary file binary, so reading one would
+  // load the whole file only to hide it.
+  useEffect(() => {
+    const { base: from, generation } = diff;
+    for (const file of diff.files) {
+      const path = file.newPath;
+      if (file.binary || collapsed.has(path) || !near.has(path)) continue;
+      if (shown[path]?.generation === generation || reading.current.get(path) === generation) continue;
+      reading.current.set(path, generation);
+      // Each file shows as its own read lands. A read from an older load never replaces a newer one.
+      const land = (loaded: Shown) =>
+        setShown((before) =>
+          (before[path]?.generation ?? 0) > generation ? before : { ...before, [path]: loaded },
+        );
+      bridge.fileVersions(worktree, from, file).then(
+        (versions) => land({ generation, versions }),
+        (e: unknown) => land({ generation, error: String(e) }),
+      );
+    }
+  }, [bridge, worktree, diff, collapsed, near, shown]);
 
   const openCount = comments.filter((c) => c.state === "Open").length;
   // The picker closes with the button, so the next open comment does not bring it back unasked.
@@ -113,11 +181,13 @@ export function DiffView({
   // On files not in the diff, or that it shows only as binary.
   const unshown = comments.filter((c) => {
     const changed = diff.files.find((f) => f.newPath === c.path);
-    return !changed || changed.binary || (shown?.path === c.path && "versions" in shown && shown.versions.binary);
+    const loaded = shown[c.path];
+    return !changed || changed.binary || (loaded && "versions" in loaded && loaded.versions.binary);
   });
   // Where the comment being typed is now. null once the agent changed its lines.
+  const composingIn = composing && shown[composing.path];
   const placed =
-    composing && shown?.path === composing.path && "versions" in shown ? placeDraft(composing, shown.versions) : null;
+    composing && composingIn && "versions" in composingIn ? placeDraft(composing, composingIn.versions) : null;
 
   // Fails only when the comment is already gone, which the next load shows.
   function resolve(id: number) {
@@ -127,11 +197,12 @@ export function DiffView({
     );
   }
 
-  function startComment(startLine: number, endLine: number) {
-    if (!shown || !("versions" in shown)) return;
-    const text = fileLines(shown.versions.new ?? "").slice(startLine - 1, endLine).join("\n");
+  function startComment(path: string, startLine: number, endLine: number) {
+    const loaded = shown[path];
+    if (!loaded || !("versions" in loaded)) return;
+    const text = fileLines(loaded.versions.new ?? "").slice(startLine - 1, endLine).join("\n");
     drafts.current += 1;
-    setComposing({ draft: drafts.current, path: shown.path, startLine, endLine, text });
+    setComposing({ draft: drafts.current, path, startLine, endLine, text });
   }
 
   async function addComment(body: string) {
@@ -140,7 +211,7 @@ export function DiffView({
     setComposing(null);
   }
 
-  // The shown file's comments under their last line, and the box for a new one under its lines.
+  // A file's comments under their last line, and the box for a new one under its lines.
   function zonesOf(path: string): DiffZone[] {
     const zones: DiffZone[] = comments
       .filter((c) => c.path === path)
@@ -178,7 +249,15 @@ export function DiffView({
   return (
     <section className="diff-view">
       <div className="toolbar">
-        <Segmented<DiffBase> label="Diff base" options={bases} value={base} onChange={setBase} />
+        <Segmented<DiffBase>
+          label="Diff base"
+          options={bases}
+          value={base}
+          onChange={(next) => {
+            unpin();
+            setBase(next);
+          }}
+        />
         {openCount > 0 && (
           <div className="review">
             <Button variant="primary" size="xs" onClick={() => setPicking(!picking)}>
@@ -197,60 +276,87 @@ export function DiffView({
           </div>
         )}
       </div>
-      <ul aria-label="Changed files">
-        {diff.files.map((f) => (
-          <li key={f.newPath}>
-            <button
-              aria-current={f === file}
-              title={f.newPath}
-              onClick={() => setSelected(f.newPath)}
-            >
-              {f.newPath}{" "}
-              {f.binary ? (
-                <span>binary</span>
-              ) : (
-                <>
-                  <span className="added">+{f.added}</span>{" "}
-                  <span className="removed">-{f.removed}</span>
-                </>
-              )}
-            </button>
-          </li>
-        ))}
-      </ul>
-      {unshown.length > 0 && (
-        // Not a ul, which would take the file list's styles.
-        <div className="elsewhere" role="list" aria-label="Comments the diff cannot show">
-          {unshown.map((c) => (
-            <div key={c.id} role="listitem">
-              <CommentBox
-                comment={c}
-                label={`Comment on ${c.path} ${describeLines(c.startLine, c.endLine)}`}
-                onResolve={() => resolve(c.id)}
-              />
-            </div>
-          ))}
-        </div>
-      )}
-      <div className="file">
+      <div
+        className="diff-files"
+        ref={fileList}
+        onWheel={unpin}
+        onPointerDown={unpin}
+        onKeyDown={unpin}
+        onTouchStart={unpin}
+      >
         {diff.error && <p role="alert">{diff.error}</p>}
         {(commentsError ?? resolveError) && <p role="alert">{commentsError ?? resolveError}</p>}
-        {file &&
-          (file.binary
-            ? binaryNotice
-            : shown && (
-                <Versions
-                  shown={shown}
-                  zones={zonesOf(shown.path)}
-                  onCommentLines={startComment}
+        {unshown.length > 0 && (
+          // Not a ul, which would take the file list's styles.
+          <div className="elsewhere" role="list" aria-label="Comments the diff cannot show">
+            {unshown.map((c) => (
+              <div key={c.id} role="listitem">
+                <CommentBox
+                  comment={c}
+                  label={`Comment on ${c.path} ${describeLines(c.startLine, c.endLine)}`}
+                  onResolve={() => resolve(c.id)}
                 />
-              ))}
+              </div>
+            ))}
+          </div>
+        )}
+        <ul aria-label="Changed files" ref={sectionList}>
+          {diff.files.map((f) => (
+            <li
+              key={f.newPath}
+              aria-label={f.newPath}
+              data-path={f.newPath}
+              ref={(section) => {
+                if (!section) return;
+                sections.current.set(f.newPath, section);
+                return () => {
+                  sections.current.delete(f.newPath);
+                };
+              }}
+            >
+              <h3>
+                <button
+                  aria-expanded={!collapsed.has(f.newPath)}
+                  title={f.newPath}
+                  onClick={() => setCollapsed(toggled(collapsed, f.newPath))}
+                >
+                  {collapsed.has(f.newPath) ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
+                  <span className="path">{f.newPath}</span>{" "}
+                  {f.binary ? (
+                    <span>binary</span>
+                  ) : (
+                    <>
+                      <span className="added">+{f.added}</span>{" "}
+                      <span className="removed">-{f.removed}</span>
+                    </>
+                  )}
+                </button>
+              </h3>
+              <div className="file" hidden={collapsed.has(f.newPath)}>
+                {f.binary
+                  ? binaryNotice
+                  : shown[f.newPath] && (
+                      <Versions
+                        path={f.newPath}
+                        shown={shown[f.newPath]}
+                        zones={zonesOf(f.newPath)}
+                        onCommentLines={(startLine, endLine) => startComment(f.newPath, startLine, endLine)}
+                      />
+                    )}
+              </div>
+            </li>
+          ))}
+        </ul>
       </div>
     </section>
   );
 }
 
-type Shown = { path: string } & ({ versions: FileVersions } | { error: string });
+/** A file's versions, or why they could not be read, from the diff load `generation`. */
+type Shown = { generation: number } & ({ versions: FileVersions } | { error: string });
+
+// How far past the visible list, above and below, a section counts as near the view.
+const NEAR_VIEW_MARGIN = "100% 0px";
 
 /** A comment being typed. `draft` tells it from the one before, so a new pick starts afresh. */
 /** An ask to show the Diff on `base`. A new `request` number asks again. */
@@ -276,10 +382,12 @@ function placeDraft(draft: Draft, versions: FileVersions): { startLine: number; 
 }
 
 function Versions({
+  path,
   shown,
   zones,
   onCommentLines,
 }: {
+  path: string;
   shown: Shown;
   zones: DiffZone[];
   onCommentLines(startLine: number, endLine: number): void;
@@ -288,13 +396,20 @@ function Versions({
   if (shown.versions.binary) return binaryNotice;
   return (
     <MonacoDiff
-      original={visibleCarriageReturns(shown.versions.old)}
+      original={shown.versions.old === null ? null : visibleCarriageReturns(shown.versions.old)}
       modified={visibleCarriageReturns(shown.versions.new)}
-      path={shown.path}
+      path={path}
       onCommentLines={onCommentLines}
       zones={zones}
     />
   );
+}
+
+/** `set` with `path` taken out if it was in, or put in if it was not. */
+function toggled(set: ReadonlySet<string>, path: string): ReadonlySet<string> {
+  const next = new Set(set);
+  if (!next.delete(path)) next.add(path);
+  return next;
 }
 
 const binaryNotice = <p>Binary file, not shown.</p>;

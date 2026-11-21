@@ -597,7 +597,17 @@ test("collapsed regions stay collapsed after a reload", async () => {
   expect(pressed("Panel area")).toBe("false");
 });
 
+/** Makes the window `width` pixels wide until the test ends. */
+function windowWidth(width: number) {
+  const before = window.innerWidth;
+  window.innerWidth = width;
+  onTestFinished(() => {
+    window.innerWidth = before;
+  });
+}
+
 test("a resized sidebar and panel area keep their widths after a reload", async () => {
+  windowWidth(1800);
   const bridge = await trackedBridge();
   const { unmount } = render(<App bridge={bridge} />);
   const sidebar = width("Resize sidebar");
@@ -614,6 +624,23 @@ test("a resized sidebar and panel area keep their widths after a reload", async 
 
   expect(width("Resize sidebar")).toBe(sidebar + 30);
   expect(width("Resize panel area")).toBe(panels - 50);
+});
+
+test("the panel area opens 720 px wide, and a width the user saved stays", async () => {
+  windowWidth(1800);
+  const bridge = await trackedBridge();
+  const { unmount } = render(<App bridge={bridge} />);
+
+  expect(width("Resize panel area")).toBe(720);
+  unmount();
+
+  localStorage.setItem(
+    "grove.layout",
+    JSON.stringify({ sidebarOpen: true, panelsOpen: true, sidebarWidth: 256, panelsWidth: 400 }),
+  );
+  render(<App bridge={bridge} />);
+
+  expect(width("Resize panel area")).toBe(400);
 });
 
 test("the arrow keys resize a region", async () => {
