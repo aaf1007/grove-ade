@@ -77,14 +77,16 @@ export interface RunTab {
 const TEXT_COLUMN = ".thread, .composer";
 
 /**
- * Where the selected worktree is, what runs in it and what changed, one row each: its folder, the
- * editors to open it in, a row per run session that starts or stops it, its branch, its changes
- * since the base branch, its servers and the focused agent session. A row whose data the worktree
- * does not have is left out. Escape or a click outside closes it, except on the button that opens
- * it, which closes it itself.
+ * The focused agent session at the top: its title, its state since when, and where the state came
+ * from. Then where the selected worktree is, what runs in it and what changed, one row each: its
+ * folder, the editors to open it in, a row per run session that starts or stops it, its branch, its
+ * changes since the base branch, its servers and the focused agent session. A row whose data the
+ * worktree does not have is left out.
  *
- * It floats over the chat lane's top right corner and reports whether it has room there beside the
- * text column, so the app can hide it rather than cover the text.
+ * Unpinned, it floats over the chat lane's top right corner, Escape or a click outside closes it,
+ * except on the button that opens it, which closes it itself, and it reports whether it has room
+ * beside the text column, so the app can hide it rather than cover the text. Pinned, it is a column
+ * at the lane's right edge that stays open until that button closes it.
  */
 export function DetailsCard({
   bridge,
