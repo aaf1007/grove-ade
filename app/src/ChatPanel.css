@@ -154,7 +154,7 @@ button.tool:hover {
   color: var(--fg);
 }
 
-/* Already under the row's label. */
+/* The list already sits under the row's label. */
 .tool-calls .tool-output {
   margin-left: 0;
 }

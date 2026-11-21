@@ -914,7 +914,7 @@ function ChatView({
   );
 }
 
-/** What the empty composer says: while an approval waits, a message declines it. */
+/** What the empty composer says. While an approval waits, a message declines it. */
 function placeholder(name: string, agent: Agent, declining: boolean): string {
   if (!declining) return `Ask ${name} anything. @ files, / commands`;
   if (DECLINE_TAKES_MESSAGE[agent]) return "Send a message to decline and redirect the agent";
