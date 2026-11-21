@@ -29,13 +29,15 @@ test.each<[State, string, string]>([
   expect(svg.getAttribute("aria-hidden")).toBe("true");
 });
 
-test("the source shows only when asked for", () => {
+test("the source shows on hover only when asked for, never as text", () => {
   const change = { session: "4", state: "Working", source: "Hook" } as const;
   const { container, rerender } = render(<AgentState state={change} />);
-  expect(container.textContent).toBe("Working");
+  const state = () => container.firstElementChild as HTMLElement;
+  expect(state().title).toBe("");
 
   rerender(<AgentState state={change} source={change.source} />);
-  expect(container.textContent).toBe("Working · Hook");
+  expect(container.textContent).toBe("Working");
+  expect(state().title).toBe("State from Hook");
 });
 
 test("a button takes focus and is named by its label", () => {

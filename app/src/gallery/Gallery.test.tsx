@@ -24,7 +24,7 @@ test("the gallery shows every component, every agent state, and switches between
   }
   const states = screen.getByRole("region", { name: "AgentState" });
   for (const word of ["Working", "Approval", "Question", "Failed", "Done", "Idle", "Exited"]) {
-    expect(within(states).getAllByText(word)).toHaveLength(4);
+    expect(within(states).getAllByText(word)).toHaveLength(1);
   }
   expect(document.documentElement.dataset.theme).toBe("dark");
 
