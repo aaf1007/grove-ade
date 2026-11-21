@@ -1,10 +1,22 @@
-import { Bell, ChevronDown, ChevronRight, Ellipsis, PanelLeft, Plus, Search, Settings2, SlidersHorizontal } from "lucide-react";
+import {
+  Bell,
+  ChevronDown,
+  ChevronRight,
+  Ellipsis,
+  FolderGit2,
+  PanelLeft,
+  Plus,
+  Search,
+  Settings2,
+  SlidersHorizontal,
+} from "lucide-react";
 import { type Ref, useEffect, useEffectEvent, useId, useImperativeHandle, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
 import type {
   Account,
   Agent,
+  AgentSessionRecord,
   AgentState as State,
   AgentStateChanged,
   BranchOutcome,
@@ -13,6 +25,7 @@ import type {
   SetupState,
   Worktree,
 } from "./bridge";
+import { Actions, Dialog } from "./Dialog";
 import { useSetting } from "./settings";
 import { stateWord } from "./ui/AgentState";
 import { IconButton } from "./ui/IconButton";
@@ -59,14 +72,20 @@ export interface SidebarHandle {
 /** What a worktree's menu does. */
 type WorktreeAction = "start" | "base" | "forget" | "delete";
 
-/** The dialog the sidebar shows: a new worktree for a repo, or a worktree's menu action. */
+/**
+ * The dialog the sidebar shows: a new worktree for a repo, a worktree's menu action, or Delete
+ * session.
+ */
 type OpenDialog =
   | { kind: "new"; repo: Worktree }
-  | { kind: Exclude<WorktreeAction, "start">; worktree: Worktree };
+  | { kind: Exclude<WorktreeAction, "start">; worktree: Worktree }
+  | { kind: "deleteSession"; session: AgentSessionRecord };
 
 /**
- * Lists every tracked worktree under its repo with its agent sessions, adds repos and selects a
- * worktree. Each repo's + adds a worktree, and each worktree's menu starts Claude Code in it,
+ * Lists each project, then its agent sessions as the core lists them, ended ones too, each
+ * subagent session under the session that spawned it. Below them, dimmed, the project's worktrees
+ * that have no session. Adds repos, selects a session or a worktree, and deletes a session. Each
+ * repo's + adds a worktree, and the menu of a worktree with no session starts Claude Code in it,
  * changes its base branch, forgets it or deletes it.
  *
  * Above the list: New worktree, Search, Needs you and Profiles. Below it: each agent's account and
@@ -76,13 +95,12 @@ export function Sidebar({
   bridge,
   selected,
   onSelect,
-  agents,
   agentStates,
   shownAgents,
   onStartAgent,
   onStartAgentAfterSetup,
-  onShowAgent,
   onFocusAgent,
+  onSessionsDeleted,
   onDeleting,
   onRemoved,
   onWorktrees,
@@ -100,18 +118,17 @@ export function Sidebar({
   selected: string | null;
   /** null when the selected worktree is forgotten or deleted. */
   onSelect(path: string | null): void;
-  /** Every agent session started, in order. */
-  agents: AgentSession[];
-  /** Each agent session's latest state, by session. */
+  /** Each agent session's latest state, by session. Newer than the core's list. */
   agentStates: Record<SessionId, AgentStateChanged>;
   /** The agent sessions whose panels the selected worktree shows. */
   shownAgents: SessionId[];
   onStartAgent(worktree: string): void;
   /** Starts an agent session in a new worktree once its setup script succeeds. */
   onStartAgentAfterSetup(worktree: string): void;
-  onShowAgent(agent: AgentSession): void;
-  /** Shows the agent session's panel and puts focus in it. */
+  /** Selects the agent session's worktree, shows its panel and puts focus in it. */
   onFocusAgent(agent: AgentSession): void;
+  /** Agent sessions were deleted, a session with its subagent sessions. */
+  onSessionsDeleted(sessions: SessionId[]): void;
   /** A delete of the worktree started or ended. */
   onDeleting(worktree: Worktree, running: boolean): void;
   /** A worktree was forgotten or deleted, which ended its sessions. */
@@ -136,13 +153,13 @@ export function Sidebar({
   ref?: Ref<SidebarHandle>;
 }) {
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
+  // Every agent session, as the core last listed them.
+  const [sessions, setSessions] = useState<AgentSessionRecord[]>([]);
   // False until the core's first list arrives, so an empty list before it means nothing.
   const [listed, setListed] = useState(false);
   const [query, setQuery] = useState("");
   // The repos folded shut, by main worktree path. It survives a restart.
   const [foldedRepos, setFoldedRepos] = useSetting<string[]>("grove.foldedRepos", [], isPathList);
-  // The worktrees whose agent session rows are folded shut, by path.
-  const [foldedSessions, setFoldedSessions] = useState<string[]>([]);
   const searchBox = useRef<HTMLInputElement>(null);
   // Each setup state the core sent since the sidebar opened. It is newer than any list.
   const [setups, setSetups] = useState<Record<string, SetupState>>({});
@@ -159,15 +176,15 @@ export function Sidebar({
     [bridge],
   );
 
-  // The number of the latest list asked for. An older one that answers late is dropped.
+  // The number of the latest lists asked for. Older ones that answer late are dropped.
   const latestList = useRef(0);
   function refresh() {
     const asked = ++latestList.current;
-    bridge
-      .listWorktrees()
-      .then((list) => {
+    Promise.all([bridge.listWorktrees(), bridge.agentSessions()])
+      .then(([list, records]) => {
         if (asked !== latestList.current) return;
         setWorktrees(list);
+        setSessions(records);
         setListed(true);
       })
       .catch((e: unknown) => setError(String(e)));
@@ -177,15 +194,30 @@ export function Sidebar({
   const listAtStart = useEffectEvent(refresh);
   useEffect(() => listAtStart(), [bridge]);
 
-  // A subagent that starts in another worktree nests that worktree, and no event says so. The
-  // first state of a session the sidebar has not seen lists the worktrees again.
-  const seenSessions = useRef<Set<SessionId> | null>(null);
-  const refreshOnNewSession = useEffectEvent((sessions: SessionId[]) => {
-    const seen = seenSessions.current;
-    seenSessions.current = new Set(sessions);
-    if (seen && sessions.some((session) => !seen.has(session))) refresh();
-  });
-  useEffect(() => refreshOnNewSession(Object.keys(agentStates)), [agentStates]);
+  // A subagent session can start in a worktree it adds, so the worktrees are listed again too.
+  const onSessionsChanged = useEffectEvent(refresh);
+  useEffect(() => bridge.onAgentSessionsChanged(onSessionsChanged), [bridge]);
+
+  // An ended session resumes first: until then the core cannot give its conversation.
+  async function selectSession(record: AgentSessionRecord) {
+    if (record.ended) {
+      try {
+        await bridge.resumeAgentSession(record.session);
+        setError(null);
+      } catch (e) {
+        setError(String(e));
+        return;
+      }
+    }
+    const { session, worktree, agent } = record;
+    onFocusAgent({ session, worktree, agent, panel: session });
+  }
+
+  function sessionDeleted(deleted: SessionId[]) {
+    setDialog(null);
+    refresh();
+    onSessionsDeleted(deleted);
+  }
 
   // `repo` opens, so the new worktree's selected row shows.
   function created(repo: string, worktree: Worktree, startAgent: boolean) {
@@ -197,8 +229,9 @@ export function Sidebar({
   }
 
   function removed(worktree: Worktree, outcome?: BranchOutcome) {
-    // A dialog about the worktree closes, since it is gone. One the user opened since stays.
-    setDialog((open) => (open && open.kind !== "new" && open.worktree.path === worktree.path ? null : open));
+    // A dialog about the worktree or one of its sessions closes, since it is gone. One the user
+    // opened since stays.
+    setDialog((open) => (open && dialogWorktree(open) === worktree.path ? null : open));
     refresh();
     setError(
       outcome?.outcome === "NotDeleted"
@@ -239,10 +272,6 @@ export function Sidebar({
     setFoldedRepos((folded) => toggled(folded, path));
   }
 
-  function toggleSessions(path: string) {
-    setFoldedSessions((folded) => toggled(folded, path));
-  }
-
   const repos = byRepo(worktrees);
   // New worktree adds to the selected worktree's repo, or else to the first repo.
   const newWorktreeRepo = (repos.find((repo) => repo.some((w) => w.path === selected)) ?? repos[0])?.[0];
@@ -269,24 +298,36 @@ export function Sidebar({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const names = sessionNames(agents);
-  // A worktree's row, then under it its agent sessions and the worktrees nested under it. A nested
-  // worktree has only its sessions under it, so worktrees nest one level deep.
-  function row(worktree: Worktree, nestedRows: Worktree[], isNested: boolean) {
-    const own = agents.filter((agent) => agent.worktree === worktree.path);
-    const setup = setups[worktree.path] ?? worktree.setup;
-    const children = own.length + nestedRows.length;
-    const childrenOpen = !foldedSessions.includes(worktree.path);
+  // A session's row, then under it the subagent sessions it spawned that `shown` has.
+  function sessionItem(record: AgentSessionRecord, shown: AgentSessionRecord[], byPath: Map<string, Worktree>) {
+    const subagents = shown.filter((other) => other.parent === record.session);
     return (
-      <li key={worktree.path} title={worktree.path} className={isNested ? "nested-worktree" : undefined}>
+      <li key={record.session}>
+        <SessionRow
+          record={record}
+          worktree={byPath.get(record.worktree)!}
+          state={agentStates[record.session] ?? (record.state === undefined ? undefined : record)}
+          current={shownAgents.includes(record.session)}
+          onClick={() => void selectSession(record)}
+          onDelete={() => setDialog({ kind: "deleteSession", session: record })}
+        />
+        {subagents.length > 0 && (
+          <ul className="agent-sessions">{subagents.map((subagent) => sessionItem(subagent, shown, byPath))}</ul>
+        )}
+      </li>
+    );
+  }
+
+  // A worktree with no agent session.
+  function worktreeItem(worktree: Worktree) {
+    const setup = setups[worktree.path] ?? worktree.setup;
+    return (
+      <li key={worktree.path} title={worktree.path}>
         <WorktreeRow
           worktree={worktree}
           selected={worktree.path === selected}
-          state={mostUrgent(own.map((agent) => agentStates[agent.session]))}
           setupRunning={setup?.state === "Running"}
-          sessionsOpen={children > 0 ? childrenOpen : null}
-          onToggleSessions={() => toggleSessions(worktree.path)}
-          onClick={() => (own.length === 1 ? onShowAgent(own[0]) : onSelect(worktree.path))}
+          onClick={() => onSelect(worktree.path)}
           onPick={(kind) => {
             if (kind !== "start") return setDialog({ kind, worktree });
             onSelect(worktree.path);
@@ -294,29 +335,20 @@ export function Sidebar({
           }}
         />
         {setup && <SetupStatus setup={setup} />}
-        {children > 0 && childrenOpen && (
-          <ul className="agent-sessions">
-            {own.map((agent) => (
-              <li key={agent.session}>
-                <button
-                  className="session-row"
-                  aria-current={shownAgents.includes(agent.session)}
-                  onClick={() => onFocusAgent(agent)}
-                >
-                  <span className="session-name">{names[agent.session]}</span>
-                  <StatusDot state={agentStates[agent.session]} />
-                </button>
-              </li>
-            ))}
-            {nestedRows.map((child) => row(child, [], true))}
-          </ul>
-        )}
       </li>
     );
   }
+
   const shownRepos = repos.flatMap((repo) => {
-    const shown = repo.filter((worktree) => matches(worktree, query));
-    return shown.length > 0 ? [{ head: repo[0], worktrees: shown, nested: nestingParents(repo) }] : [];
+    const byPath = new Map(repo.map((worktree) => [worktree.path, worktree]));
+    const own = sessions.filter((record) => byPath.has(record.worktree));
+    const shownSessions = own.filter((record) => sessionMatches(record, byPath.get(record.worktree)!, query));
+    const withNoSession = repo.filter(
+      (worktree) => !own.some((record) => record.worktree === worktree.path) && matches(worktree, query),
+    );
+    return shownSessions.length + withNoSession.length > 0
+      ? [{ head: repo[0], byPath, sessions: shownSessions, withNoSession }]
+      : [];
   });
   return (
     <aside className="sidebar" aria-label="Worktrees">
@@ -375,7 +407,7 @@ export function Sidebar({
       </div>
       <div className="sidebar-tree">
         {error && <p role="alert">{error}</p>}
-        {shownRepos.map(({ head, worktrees: repo, nested }) => {
+        {shownRepos.map(({ head, byPath, sessions: shownSessions, withNoSession }) => {
           const name = folderName(head.path);
           // Search shows the matching rows of a folded repo too, and keeps it from folding.
           const searching = query.trim() !== "";
@@ -403,13 +435,11 @@ export function Sidebar({
               </div>
               {open && (
                 <ul>
-                  {repo
-                    // A nested worktree shows under its parent, unless Search hides the parent.
-                    .filter((worktree) => !repo.some((parent) => parent.path === nested.get(worktree.path)))
-                    .map((worktree) => {
-                      const nestedRows = repo.filter((child) => nested.get(child.path) === worktree.path);
-                      return row(worktree, nestedRows, false);
-                    })}
+                  {/* A subagent session shows under its parent, unless Search hides the parent. */}
+                  {shownSessions
+                    .filter((record) => !shownSessions.some((parent) => parent.session === record.parent))
+                    .map((record) => sessionItem(record, shownSessions, byPath))}
+                  {withNoSession.map(worktreeItem)}
                 </ul>
               )}
             </section>
@@ -447,6 +477,15 @@ export function Sidebar({
           onCancel={() => setDialog(null)}
         />
       )}
+      {dialog?.kind === "deleteSession" && (
+        <DeleteSessionDialog
+          bridge={bridge}
+          record={dialog.session}
+          deleting={withSubagents(sessions, dialog.session.session)}
+          onDeleted={sessionDeleted}
+          onCancel={() => setDialog(null)}
+        />
+      )}
       {dialog?.kind === "delete" && (
         <DeleteDialog
           bridge={bridge}
@@ -463,6 +502,12 @@ export function Sidebar({
 const isPathList = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((path) => typeof path === "string");
 
+/** The worktree the dialog is about, by path. null for a new worktree's. */
+function dialogWorktree(dialog: OpenDialog): string | null {
+  if (dialog.kind === "new") return null;
+  return dialog.kind === "deleteSession" ? dialog.session.worktree : dialog.worktree.path;
+}
+
 /** `list` with `item` taken out if it was in, or put in if it was not. */
 function toggled(list: string[], item: string): string[] {
   return list.includes(item) ? list.filter((other) => other !== item) : [...list, item];
@@ -475,6 +520,22 @@ function matches(worktree: Worktree, query: string): boolean {
     needle === "" ||
     [worktree.displayName, worktree.branch ?? ""].some((text) => text.toLowerCase().includes(needle))
   );
+}
+
+/** Whether Search's `query` finds the session, by its title or its worktree, ignoring case. */
+function sessionMatches(record: AgentSessionRecord, worktree: Worktree, query: string): boolean {
+  return matches(worktree, query) || record.title.toLowerCase().includes(query.trim().toLowerCase());
+}
+
+/** `session`, then every subagent session below it, as the core deletes them. */
+function withSubagents(records: AgentSessionRecord[], session: SessionId): SessionId[] {
+  const found = [session];
+  for (let at = 0; at < found.length; at++) {
+    for (const record of records) {
+      if (record.parent === found[at] && !found.includes(record.session)) found.push(record.session);
+    }
+  }
+  return found;
 }
 
 /** Each agent's login that a session has reported, Claude's first. */
@@ -567,62 +628,131 @@ function AppearanceMenu({
   );
 }
 
-// The attention queue's order, most urgent first.
-const URGENCY = ["Approval", "Question", "Failed", "Done", "Working", "Idle", "Exited"];
-
-/** The most urgent of `states`, in attention queue order. undefined when none is known yet. */
-function mostUrgent(states: (State | undefined)[]): State | undefined {
-  const known = states.filter((state) => state !== undefined);
-  return known.sort((a, b) => URGENCY.indexOf(stateWord(a)) - URGENCY.indexOf(stateWord(b)))[0];
+/**
+ * An agent session's row: its title, its branch and, when it runs in a worktree of its own, the
+ * worktree badge. Then on the right its menu and its status dot. An ended one is dimmed. The dot's
+ * word describes the row's button.
+ */
+function SessionRow({
+  record,
+  worktree,
+  state,
+  current,
+  onClick,
+  onDelete,
+}: {
+  record: AgentSessionRecord;
+  worktree: Worktree;
+  state: State | undefined;
+  /** Its panel shows. */
+  current: boolean;
+  onClick(): void;
+  onDelete(): void;
+}) {
+  const dot = useId();
+  const classes = ["session-item", current && "selected", record.ended && "dimmed"].filter(Boolean).join(" ");
+  return (
+    <div className={classes}>
+      <button className="session-row" aria-current={current} aria-describedby={dot} onClick={onClick}>
+        <span className="session-title">{record.title}</span>
+        <span className="session-branch">{worktree.branch ?? worktree.displayName}</span>
+        {!worktree.isMain && (
+          <span role="img" aria-label="Worktree" title="Runs in a worktree of its own" className="session-badge">
+            <FolderGit2 aria-hidden="true" />
+          </span>
+        )}
+      </button>
+      <Menu
+        label={`Actions for ${record.title}`}
+        icon={Ellipsis}
+        align="end"
+        items={[{ key: "delete", label: "Delete session", onSelect: onDelete }]}
+      />
+      <StatusDot id={dot} state={state} />
+    </div>
+  );
 }
 
 /**
- * A worktree's row: its name, which fades out when cut, then on the right a chevron that folds its
- * agent sessions, its menu and its status dot. The dot's word describes the row's button.
+ * Deletes an agent session and the subagent sessions below it, for good, once the user confirms.
+ * `deleting` is the session, then its subagent sessions.
+ */
+function DeleteSessionDialog({
+  bridge,
+  record,
+  deleting,
+  onDeleted,
+  onCancel,
+}: {
+  bridge: Bridge;
+  record: AgentSessionRecord;
+  deleting: SessionId[];
+  onDeleted(deleted: SessionId[]): void;
+  onCancel(): void;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function remove() {
+    setBusy(true);
+    try {
+      await bridge.deleteAgentSession(record.session);
+      onDeleted(deleting);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const subagents = deleting.length - 1;
+  const alsoDeleted =
+    subagents === 0
+      ? ""
+      : subagents === 1
+        ? " Its subagent session is deleted too."
+        : ` Its ${subagents} subagent sessions are deleted too.`;
+  return (
+    <Dialog label="Delete session" onSubmit={remove} onCancel={onCancel}>
+      <div className="form">
+        <p>{`grove ends “${record.title}” and deletes its conversation for good.${alsoDeleted}`}</p>
+        {error && <p role="alert" className="error">{error}</p>}
+      </div>
+      <Actions submit="Delete session" busy={busy} onCancel={onCancel} />
+    </Dialog>
+  );
+}
+
+/**
+ * A worktree with no agent session, dimmed: its name, which fades out when cut, then on the right
+ * its menu and its status dot, which shows only while its setup script runs. The dot's word
+ * describes the row's button.
  */
 function WorktreeRow({
   worktree,
   selected,
-  state,
   setupRunning,
-  sessionsOpen,
-  onToggleSessions,
   onClick,
   onPick,
 }: {
   worktree: Worktree;
   selected: boolean;
-  state: State | undefined;
-  /** Shows "Setup running" in place of the state. */
+  /** Shows "Setup running". */
   setupRunning: boolean;
-  /** Whether its agent session rows show. null when it has no agent session. */
-  sessionsOpen: boolean | null;
-  onToggleSessions(): void;
   onClick(): void;
   onPick(action: WorktreeAction): void;
 }) {
   const dot = useId();
   return (
-    <div className={selected ? "wt-row selected" : "wt-row"}>
+    <div className={selected ? "wt-row dimmed selected" : "wt-row dimmed"}>
       <button className="wt-name" aria-current={selected} aria-describedby={dot} onClick={onClick}>
         <span className="wt-title">
           {worktree.displayName}
           {worktree.isMain && " (main worktree)"}
         </span>
       </button>
-      {sessionsOpen !== null && (
-        <IconButton
-          icon={sessionsOpen ? ChevronDown : ChevronRight}
-          size="xs"
-          className="wt-chevron"
-          label={`Sessions of ${worktree.displayName}`}
-          title={sessionsOpen ? "Hide agent sessions" : "Show agent sessions"}
-          aria-expanded={sessionsOpen}
-          onClick={onToggleSessions}
-        />
-      )}
       <WorktreeMenu worktree={worktree} setupRunning={setupRunning} onPick={onPick} />
-      <StatusDot id={dot} state={state} word={setupRunning ? "Setup running" : undefined} />
+      <StatusDot id={dot} state={undefined} word={setupRunning ? "Setup running" : undefined} />
     </div>
   );
 }
@@ -681,34 +811,6 @@ function WorktreeMenu({
       items={items.map(([action, label]) => ({ key: action, label, onSelect: () => onPick(action) }))}
     />
   );
-}
-
-/**
- * The worktree each nested worktree of one repo shows under, by path: the top of its chain. A
- * worktree of another repo, or a loop, nests nothing. The core writes neither, but an older state
- * file may hold one. The main worktree never nests.
- */
-export function nestingParents(repo: Worktree[]): Map<string, string> {
-  const byPath = new Map(repo.map((worktree) => [worktree.path, worktree]));
-  const parentOf = (worktree: Worktree) =>
-    worktree.isMain || worktree.nestedUnder === null ? undefined : byPath.get(worktree.nestedUnder);
-  const nested = new Map<string, string>();
-  for (const worktree of repo) {
-    const seen = new Set([worktree.path]);
-    let top = parentOf(worktree);
-    while (top) {
-      const up = parentOf(top);
-      if (!up) break;
-      if (seen.has(top.path)) {
-        top = undefined;
-        break;
-      }
-      seen.add(top.path);
-      top = up;
-    }
-    if (top && !seen.has(top.path)) nested.set(worktree.path, top.path);
-  }
-  return nested;
 }
 
 // The core lists worktrees repo by repo, main worktree first, so each main worktree starts a repo.

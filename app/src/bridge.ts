@@ -184,6 +184,26 @@ export type StateSource = "Protocol" | "Hook" | "Heuristic";
 /** An agent session's new state, as `AgentStateChanged` in `app/src-tauri/src/main.rs` sends it. */
 export type AgentStateChanged = AgentState & { session: SessionId; source: StateSource };
 
+/**
+ * An agent session, running or ended, as `AgentSession` in `app/src-tauri/src/main.rs` sends it.
+ * `state` is left out before its first state. Times are in milliseconds since the Unix epoch.
+ */
+export type AgentSessionRecord = {
+  session: SessionId;
+  worktree: string;
+  agent: Agent;
+  mode: Mode;
+  /** The agent session that spawned it as a subagent, while that one is listed. null for one the user started. */
+  parent: SessionId | null;
+  /** The first line of its first user message, or "New session" before that. */
+  title: string;
+  createdUnixMs: number;
+  /** Its process ended. `resumeAgentSession` starts it again. */
+  ended: boolean;
+  /** When it entered its state. */
+  sinceUnixMs: number;
+} & (AgentState | { state?: undefined });
+
 /** The macOS notification of an agent session that the user clicked. */
 export type NotificationClicked = { session: SessionId; worktree: string };
 
@@ -611,6 +631,18 @@ export interface Bridge {
   bracketedPaste(session: SessionId): Promise<boolean>;
   /** Shows `icon` in the Dock while grove runs. When grove quits, the bundle icon shows again. */
   setDockIcon(icon: DockIcon): Promise<void>;
+  // Agent session records (#62).
+  /** Every agent session of every tracked worktree, oldest first, ended ones too. */
+  agentSessions(): Promise<AgentSessionRecord[]>;
+  /** Deletes the agent session and every subagent session below it, for good. */
+  deleteAgentSession(session: SessionId): Promise<void>;
+  /**
+   * Starts the ended agent session again under the same id, resuming its conversation. It shows in
+   * the agent panel it had, or in a new one after the last. A running one stays as it is.
+   */
+  resumeAgentSession(session: SessionId): Promise<void>;
+  /** Called each time what `agentSessions` lists changes. */
+  onAgentSessionsChanged(listener: () => void): () => void;
 }
 
 // A failed command rejects with the core's error message as a string.
@@ -759,6 +791,14 @@ export const tauriBridge: Bridge = {
   lastFocusedAgent: (worktree) => invoke("last_focused_agent", { worktree }),
   bracketedPaste: (session) => invoke("bracketed_paste", { session }),
   setDockIcon: (icon) => invoke("set_dock_icon", { icon }),
+  // Agent session records (#62).
+  agentSessions: () => invoke("agent_sessions"),
+  deleteAgentSession: (session) => invoke("delete_agent_session", { session }),
+  resumeAgentSession: (session) => invoke("resume_agent_session", { session }),
+  onAgentSessionsChanged(listener) {
+    const unlisten = listen("agent-sessions-changed", () => listener());
+    return () => void unlisten.then((stop) => stop());
+  },
 };
 
 /**

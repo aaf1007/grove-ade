@@ -13,15 +13,14 @@ const groveRepo = [
 ];
 
 const noAgents = {
-  agents: [],
   agentStates: {},
   shownAgents: [],
   onStartAgent() {},
   onStartAgentAfterSetup() {},
   onDeleting() {},
   onRemoved() {},
-  onShowAgent() {},
   onFocusAgent() {},
+  onSessionsDeleted() {},
   waiting: 0,
   onJump() {},
   onHideSidebar() {},

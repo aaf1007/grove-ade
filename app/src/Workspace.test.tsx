@@ -68,8 +68,21 @@ async function trackedBridge() {
   return bridge;
 }
 
+// The sidebar row of the `nth` agent session on `branch`, in the order they started.
+function sessionRow(branch: string, nth = 0): HTMLElement | undefined {
+  return [...document.querySelectorAll<HTMLElement>(".session-row")].filter(
+    (row) => row.querySelector(".session-branch")?.textContent === branch,
+  )[nth];
+}
+
+// Selects the worktree by its row, or by its first agent session's row once it has one, which
+// focuses that session's panel too.
 async function select(branch: string) {
-  const row = await screen.findByRole("button", { name: branch });
+  const row = await vi.waitFor(() => {
+    const found = screen.queryByRole("button", { name: branch }) ?? sessionRow(branch);
+    if (!found) throw new Error(`the sidebar has no row for ${branch}`);
+    return found;
+  });
   await act(async () => fireEvent.click(row));
 }
 
@@ -219,7 +232,7 @@ test("hiding a panel keeps its session running, and its row in the sidebar shows
   // The last shown panel has no Hide button.
   expect(within(panel("0")).queryByRole("button", { name: "Hide panel" })).toBeNull();
 
-  await click(screen.getByText("Codex", { selector: ".session-name" }));
+  await click(sessionRow("feat-36", 1)!);
 
   expect(shownPanels()).toEqual(["Panel 0", "Panel 1"]);
   expect((await bridge.workspace(feature)).chat[1].shown).toBe(true);
@@ -640,9 +653,6 @@ test("a session that starts when the core's copy then does not load shows as sta
 // one goes after it.
 test("a jump while a session starts gives both sessions a panel", async () => {
   const bridge = await trackedBridge();
-  // Waiting on the user, from before the window opened, so it has no panel yet.
-  const waiting = bridge.spawnAgentWithoutPanel(feature, "Claude");
-  bridge.agentStateChanged({ session: waiting, state: "NeedsInput", kind: "Approval", source: "Protocol" });
   const spawnAgent = bridge.spawnAgent.bind(bridge);
   let finishSpawn = () => {};
   vi.spyOn(bridge, "spawnAgent").mockImplementation(
@@ -650,6 +660,11 @@ test("a jump while a session starts gives both sessions a panel", async () => {
   );
   render(<App bridge={bridge} />);
   await select("feat-36");
+  // Waiting on the user, as a subagent that has no panel yet.
+  const waiting = bridge.spawnAgentWithoutPanel(feature, "Claude");
+  await act(async () =>
+    bridge.agentStateChanged({ session: waiting, state: "NeedsInput", kind: "Approval", source: "Protocol" }),
+  );
   await click(screen.getByRole("button", { name: "Start session" }));
 
   await click(screen.getByRole("button", { name: "Needs you 1" }));

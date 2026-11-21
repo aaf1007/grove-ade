@@ -430,8 +430,8 @@ export function App({ bridge }: { bridge: Bridge }) {
   }
 
   // Before the first message the panel can take another agent: a new session takes its place,
-  // and the old one ends. The panel stays, with its draft. The core starts the new session in a
-  // panel of its own, which goes.
+  // and the old one is deleted, so the sidebar does not list it ended. The panel stays, with its
+  // draft. The core starts the new session in a panel of its own, which goes.
   function changeAgent(old: AgentSession, agent: Agent) {
     return start(
       "agent",
@@ -453,8 +453,9 @@ export function App({ bridge }: { bridge: Bridge }) {
         }));
         // The panel keeps focus through the swap, so no focus event tells the core.
         if (focusedAgent.current === old.session) focus(session, old.worktree);
-        // Fails only when the session has already exited.
-        bridge.kill(old.session).catch(() => {});
+        // Fails only when its process did not exit in time. Then the sidebar lists it, and the
+        // user can delete it there.
+        bridge.deleteAgentSession(old.session).catch(() => {});
       },
     );
   }
@@ -466,13 +467,37 @@ export function App({ bridge }: { bridge: Bridge }) {
 
   // Shows agent session `session` and puts focus in its panel, which calls `focus`. A session
   // started before the window reloaded, or a subagent, has no panel yet, so it gets one here.
-  // Nothing says which agent the session runs, so its panel is named Claude.
-  function focusSession({ session, worktree }: { session: SessionId; worktree: string }) {
+  // When the caller does not say which agent the session runs, its panel is named Claude.
+  function focusSession({
+    session,
+    worktree,
+    agent: runs = "Claude",
+  }: {
+    session: SessionId;
+    worktree: string;
+    agent?: Agent;
+  }) {
     const known = agents.find((started) => started.session === session);
-    const agent: AgentSession = known ?? { session, worktree, agent: "Claude", panel: session };
+    const agent: AgentSession = known ?? { session, worktree, agent: runs, panel: session };
     if (!known) setAgents((started) => [...started, agent]);
     showAgent(agent);
     setJumped(({ request }) => ({ session, request: request + 1 }));
+  }
+
+  // Deleted sessions lose their panels, with what the window kept for them. The window keeps the
+  // panel of a session that is not running, so it drops the panel itself.
+  function dropSessions(deleted: SessionId[]) {
+    for (const [worktree, { chat }] of Object.entries(workspaces)) {
+      if (!chat.some((panel) => panel.session !== null && deleted.includes(panel.session))) continue;
+      void changeWorkspace(worktree, (workspace) => ({
+        ...workspace,
+        chat: workspace.chat.filter((panel) => panel.session === null || !deleted.includes(panel.session)),
+      }));
+    }
+    setAgents((started) => started.filter((agent) => !deleted.includes(agent.session)));
+    setAgentStates((states) =>
+      Object.fromEntries(Object.entries(states).filter(([session]) => !deleted.includes(session))),
+    );
   }
 
   // Focuses the head of the attention queue.
@@ -671,15 +696,14 @@ export function App({ bridge }: { bridge: Bridge }) {
                 )
               }
               onRemoved={clearRemovedWorktree}
-              agents={agents}
               agentStates={agentStates}
               shownAgents={shownAgents}
               onStartAgent={(worktree) => startAgent(worktree, "Claude", firstEmptyPanel)}
               onStartAgentAfterSetup={(worktree) =>
                 startAgent(worktree, "Claude", firstEmptyPanel, true)
               }
-              onShowAgent={showAgent}
               onFocusAgent={focusSession}
+              onSessionsDeleted={dropSessions}
               onWorktrees={setWorktrees}
               waiting={attentionQueue.length}
               onJump={jump}

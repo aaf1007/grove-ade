@@ -2,6 +2,7 @@ import type {
   AccountChanged,
   AgentChange,
   Agent,
+  AgentSessionRecord,
   AgentMessage,
   AgentStateChanged,
   BatchComment,
@@ -162,10 +163,10 @@ export interface FakeBridge extends Bridge {
   /** Every `setWorkspace` call the fake core took, in order. */
   workspacesSet: { worktree: string; workspace: Workspace }[];
   /**
-   * Starts an agent session that no workspace names, as a subagent starts, or one from before
-   * the core placed sessions in panels.
+   * Starts an agent session that no workspace names, as a subagent of `parent` starts, or one from
+   * before the core placed sessions in panels.
    */
-  spawnAgentWithoutPanel(worktree: string, agent: Agent): SessionId;
+  spawnAgentWithoutPanel(worktree: string, agent: Agent, parent?: SessionId): SessionId;
   /**
    * Holds back each `workspace-changed` from now on, as a busy window gets it late. Returns what
    * sends the held ones, in order, and stops holding.
@@ -348,6 +349,13 @@ export function fakeBridge(
   const printed = new Map<SessionId, Uint8Array>();
   // Shell and agent sessions share the core's ids.
   let sessions = 0;
+  // Agent session records (#62): each listed agent session's parent, title and start, until it is
+  // deleted or its worktree removed.
+  const records = new Map<SessionId, { parent: SessionId | null; title: string | null; createdUnixMs: number }>();
+  const recordListeners = new Set<() => void>();
+  function agentSessionsChanged() {
+    recordListeners.forEach((listener) => listener());
+  }
   // Files panel (#124).
   const readFiles: FakeBridge["readFiles"] = [];
   const writtenFiles: FakeBridge["writtenFiles"] = [];
@@ -412,6 +420,7 @@ export function fakeBridge(
 
   function sessionExited(session: SessionId) {
     running.delete(session);
+    if (records.has(session)) agentSessionsChanged();
     const run = spawnedRuns.find((s) => s.session === session);
     if (run) {
       dropStoppedRun(run.worktree, run.name);
@@ -515,13 +524,27 @@ export function fakeBridge(
   }
 
   // A switch to terminal mode starts the agent's TUI at 80x24, as the app does.
-  function startAgentSession(worktree: string, agent: Agent): SessionId {
+  function startAgentSession(worktree: string, agent: Agent, parent: SessionId | null = null): SessionId {
     const session = start(worktree, 80, 24);
     chats.set(session, []);
     modes.set(session, "Chat");
     agentWorktrees.set(session, worktree);
     spawnedAgents.push({ session, worktree, agent });
+    records.set(session, { parent, title: null, createdUnixMs: Date.now() });
+    agentSessionsChanged();
     return session;
+  }
+
+  // As the core: `session`, then every subagent session below it.
+  function withSubagents(session: SessionId): SessionId[] {
+    if (!records.has(session)) throw `session ${session} is not an agent session`;
+    const found = [session];
+    for (let at = 0; at < found.length; at++) {
+      for (const [other, { parent }] of records) {
+        if (parent === found[at] && !found.includes(other)) found.push(other);
+      }
+    }
+    return found;
   }
 
   // As in the core: a panel `workspace` lists has no session yet, or one running in the worktree,
@@ -580,6 +603,9 @@ export function fakeBridge(
     }
     tracked.splice(tracked.findIndex((w) => w.path === worktree), 1);
     workspaces.delete(worktree);
+    const dropped = [...records.keys()].filter((session) => agentWorktrees.get(session) === worktree);
+    dropped.forEach((session) => records.delete(session));
+    if (dropped.length > 0) agentSessionsChanged();
     stoppedRuns.splice(0, stoppedRuns.length, ...stoppedRuns.filter((s) => s.worktree !== worktree));
   }
 
@@ -761,6 +787,13 @@ export function fakeBridge(
       chat(session);
       sent.push({ session, text });
       addMessages(session, [{ type: "User", text }]);
+      // As the core: the first line with text of the first message titles the session.
+      const record = records.get(session);
+      const title = text.split("\n").map((line) => line.trim()).find((line) => line !== "");
+      if (record && record.title === null && title) {
+        record.title = title;
+        agentSessionsChanged();
+      }
     },
     async interrupt(session) {
       chat(session);
@@ -1220,6 +1253,7 @@ export function fakeBridge(
       lastSeq.delete(session);
       printed.set(session, new Uint8Array());
       running.add(session);
+      agentSessionsChanged();
     },
     modesSet,
     holdModeSwitches() {
@@ -1301,8 +1335,77 @@ export function fakeBridge(
       pastes.set(session, on);
     },
     reviewBatches,
+
+    // Agent session records (#62). As in the core.
+    async agentSessions() {
+      return spawnedAgents
+        .filter(({ session }) => records.has(session))
+        .map(({ session, worktree, agent }): AgentSessionRecord => {
+          const { parent, title, createdUnixMs } = records.get(session)!;
+          const latest = agentStates.get(session);
+          // Left out before its first state, with the kind of a NeedsInput.
+          const state = !latest
+            ? {}
+            : latest.state === "NeedsInput"
+              ? { state: latest.state, kind: latest.kind }
+              : { state: latest.state };
+          return {
+            session,
+            worktree,
+            agent,
+            mode: modes.get(session)!,
+            parent: parent !== null && records.has(parent) ? parent : null,
+            title: title ?? "New session",
+            createdUnixMs,
+            ended: !running.has(session) && !switching.has(session),
+            // The fake does not keep when a session entered its state.
+            sinceUnixMs: createdUnixMs,
+            ...state,
+          };
+        });
+    },
+    async deleteAgentSession(session) {
+      const deleting = withSubagents(session);
+      for (const each of deleting) {
+        if (running.has(each)) {
+          killed.push(each);
+          sessionExited(each);
+        }
+        records.delete(each);
+      }
+      // As the core: their panels go, and each worktree that lost one hears of it.
+      const gone = (panel: Workspace["chat"][number]) => panel.session !== null && deleting.includes(panel.session);
+      const lostAPanel = [...workspaces].filter(([, saved]) => saved.chat.some(gone));
+      for (const [, saved] of lostAPanel) saved.chat = saved.chat.filter((panel) => !gone(panel));
+      agentSessionsChanged();
+      lostAPanel.forEach(([worktree]) => workspaceChanged(worktree));
+    },
+    async resumeAgentSession(session) {
+      const record = records.get(session);
+      if (!record) throw `session ${session} is not an agent session`;
+      if (switching.has(session)) throw `agent session ${session} is already switching mode`;
+      if (running.has(session)) return;
+      running.add(session);
+      const last = agentStates.get(session);
+      changeState({ session, state: "Idle", source: last?.source ?? "Protocol" });
+      // It shows in the panel it had, or in a new one after the last.
+      const worktree = agentWorktrees.get(session)!;
+      const agent = spawnedAgents.find((s) => s.session === session)!.agent;
+      const saved = structuredClone(workspaces.get(worktree) ?? DEFAULT_WORKSPACE);
+      const had = saved.chat.find((p) => p.session === session);
+      if (had) had.shown = true;
+      else saved.chat.push({ agent, session, shown: true });
+      workspaces.set(worktree, saved);
+      agentSessionsChanged();
+      workspaceChanged(worktree);
+    },
+    onAgentSessionsChanged(listener) {
+      recordListeners.add(listener);
+      return () => recordListeners.delete(listener);
+    },
   };
 }
+
 
 // What deleting a worktree would lose, as the core says it.
 function unsaved({ uncommitted, unpushed }: FakeWorktreeStatus): string {
