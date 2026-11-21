@@ -1736,7 +1736,7 @@ test("the Details button opens the card, shows whether it is open, and closes it
 
   await act(async () => fireEvent.click(button));
 
-  expect(within(detailsCard()).getByText(feature)).toBeTruthy();
+  expect(within(detailsCard()).getByTitle(feature)).toBeTruthy();
   expect(button.getAttribute("aria-pressed")).toBe("true");
 
   // Its own button closes it, rather than a click outside that the button then opens again.
@@ -1869,19 +1869,23 @@ test("a run session's tab shows at once while its port is still being read", asy
   expect(terminalTab("dev running").getAttribute("aria-selected")).toBe("true");
 });
 
-test("the Details card's session row shows the worktree's agent session and where its state comes from", async () => {
+test("the Details card shows the focused agent session's name, state and where its state comes from", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
   startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
-  act(() => bridge.agentStateChanged({ session: "0", state: "Working", source: "Protocol" }));
+  startAgent();
+  const second = await screen.findByRole("region", { name: "Panel 1" });
+  act(() => bridge.agentStateChanged({ session: "1", state: "Working", source: "Protocol" }));
+  fireEvent.focus(second);
 
   await clickButton("Details");
 
-  const session = within(detailsCard()).getByRole("listitem", { name: "Session" });
-  expect(within(session).getByText("Claude Code")).toBeTruthy();
-  expect(session.title).toBe("State from Protocol");
+  const block = within(detailsCard()).getByRole("group", { name: "Agent session" });
+  expect(within(block).getByRole("heading", { name: "Claude Code 2" })).toBeTruthy();
+  expect(within(block).getByText("Working")).toBeTruthy();
+  expect(within(block).getByText("State from Protocol")).toBeTruthy();
 });
 
 test("the Details card shows the new session of a panel that changed agent while it had focus", async () => {
@@ -1906,6 +1910,30 @@ test("the Details card shows the new session of a panel that changed agent while
 
   const session = within(detailsCard()).getByRole("listitem", { name: "Session" });
   expect(within(session).getByText("Codex")).toBeTruthy();
+});
+
+test("a pinned Details card stays open on a click outside, Escape, and after selecting another agent session", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 0" });
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 1" });
+  await clickButton("Details");
+  await act(async () => fireEvent.click(within(detailsCard()).getByRole("button", { name: "Pin" })));
+
+  fireEvent.pointerDown(screen.getByRole("main"));
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  const second = agentRow("Claude Code 2");
+  fireEvent.pointerDown(second);
+  await act(async () => fireEvent.click(second));
+  const other = screen.getByRole("button", { name: "main (main worktree)" });
+  fireEvent.pointerDown(other);
+  await act(async () => fireEvent.click(other));
+
+  expect(within(detailsCard()).getByRole("button", { name: "Pin" }).getAttribute("aria-pressed")).toBe("true");
+  expect(pressed("Details")).toBe("true");
 });
 
 // Window shell (#29).

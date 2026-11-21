@@ -37,6 +37,78 @@
   }
 }
 
+/* Pinned, the card is a column at the chat lane's right edge, as tall as the lane, and the chat
+   keeps its text out of it. */
+.chat-area:has(> .details-pinned) {
+  position: relative;
+  padding-right: var(--details-card-width);
+}
+
+.details-holder.details-pinned {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: var(--details-card-width);
+  height: auto;
+}
+
+.details-pinned .details-card {
+  position: static;
+  width: auto;
+  height: 100%;
+  overflow-y: auto;
+  border-width: 0 0 0 1px;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.details-pinned .details-rows {
+  max-height: none;
+  overflow-y: visible;
+}
+
+/* The focused agent session, then the switch that pins the card. */
+.details-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  padding: 0 var(--space-12) 0 var(--space-16);
+}
+
+.details-head:has(> .details-session) {
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.details-session {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding-top: var(--space-4);
+}
+
+.details-title {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  font: var(--text-title);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.details-source {
+  margin: 0;
+  color: var(--muted);
+  font: var(--text-meta);
+}
+
+.details-pin {
+  margin-left: auto;
+}
+
 /* The chat area clips what overflows it, so the rows scroll inside the window's height. */
 .details-rows {
   max-height: calc(100vh - var(--topbar) - var(--space-48) * 2);
@@ -50,7 +122,8 @@
 }
 
 /* A row is a line of 38px: its icon, its label, and a value or chevron at the right edge. A row
-   that does something is a button, or a menu's trigger, and fills on hover. */
+   that does something is a button, or a menu's trigger, and fills on hover. Every label has the
+   row's type style, every value the one of .details-end. */
 .details-row,
 .details-card .ui-menu-trigger {
   display: flex;
@@ -115,13 +188,29 @@ button.details-row:focus-visible,
 }
 
 .details-path {
+  display: flex;
   min-width: 0;
   flex: 1;
   overflow: hidden;
   color: var(--muted);
-  text-overflow: ellipsis;
   white-space: nowrap;
   user-select: text;
+}
+
+.details-path-start,
+.details-path-end {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The start gives way a thousand times faster, so the last folder shrinks only once it is gone. */
+.details-path-start {
+  flex: 0 1000 auto;
+}
+
+.details-path-end {
+  flex: 0 1 auto;
 }
 
 .details-end > span {
@@ -149,13 +238,6 @@ button.details-row:focus-visible,
   height: 1px;
   margin: var(--space-6) 0;
   background: var(--line);
-}
-
-.details-code {
-  overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: var(--text-code-sm-size);
-  text-overflow: ellipsis;
 }
 
 .details-muted {

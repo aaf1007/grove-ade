@@ -7,6 +7,7 @@ import {
   GitBranch,
   Laptop,
   type LucideIcon,
+  Pin,
   Play,
   Plus,
   Server,
@@ -16,6 +17,7 @@ import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "rea
 
 import type {
   Agent,
+  AgentStateChanged,
   Bridge,
   DiffBase,
   Editor,
@@ -23,11 +25,12 @@ import type {
   Mode,
   SessionId,
   RunSession,
-  StateSource,
   Worktree,
 } from "./bridge";
 import type { ModelChoice } from "./Picker";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
+import { useSetting } from "./settings";
+import { AgentState } from "./ui/AgentState";
 import { ChangeBaseDialog } from "./WorktreeDialogs";
 import { IconButton } from "./ui/IconButton";
 import { Menu } from "./ui/Menu";
@@ -46,13 +49,15 @@ const EDITORS: [Editor, string][] = [
 
 /** The focused agent session, as the card shows it. */
 export interface FocusedSession {
+  /** What the session is called, as the title bar and the sidebar name it. */
+  title: string;
   agent: Agent;
   /** undefined until its panel knows it, and in terminal mode. null on the agent's own default. */
   model: ModelChoice | null | undefined;
   /** undefined until its panel knows it. */
   mode: Mode | undefined;
-  /** Where its latest state came from. undefined before its first state. */
-  source: StateSource | undefined;
+  /** Its latest state and where it came from. undefined before its first state. */
+  state: AgentStateChanged | undefined;
 }
 
 /** A run session grove started or found in the worktree. */
@@ -128,6 +133,8 @@ export function DetailsCard({
   const [changingBase, setChangingBase] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const card = useRef<HTMLElement>(null);
+  // Kept in the window's settings, so the card of each worktree opens as the last one was left.
+  const [pinned, setPinned] = useSetting("grove.detailsPinned", false, (value) => typeof value === "boolean");
 
   useEffect(() => {
     let current = true;
@@ -203,7 +210,9 @@ export function DetailsCard({
     onClose();
   });
 
+  // A pinned card is a column beside the text, so it always has room.
   const measure = useEffectEvent(() => {
+    if (pinned) return onRoom(true);
     const box = card.current!.getBoundingClientRect();
     const text = [...lane!.querySelectorAll(TEXT_COLUMN)].map((column) => column.getBoundingClientRect());
     onRoom(!text.some((column) => overlapsAcross(box, column)));
@@ -237,18 +246,22 @@ export function DetailsCard({
     };
   }, [lane]);
 
+  useEffect(() => {
+    if (pinned) measure();
+  }, [pinned]);
+
   // The Change base dialog is modal, so while it is open the card leaves its keys and clicks
   // alone. In the capture phase, so the Escape or click that closes the dialog has passed by the
   // time the card listens again. A card hidden for lack of room is still on, so it ignores them too.
   useEffect(() => {
-    if (changingBase || hidden) return;
+    if (changingBase || hidden || pinned) return;
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("keydown", onKeyDown, true);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("keydown", onKeyDown, true);
     };
-  }, [changingBase, hidden]);
+  }, [changingBase, hidden, pinned]);
 
   function act(action: Promise<void>) {
     action.then(
@@ -282,7 +295,7 @@ export function DetailsCard({
   const alert = error ?? diffError;
 
   return (
-    <div className="details-holder">
+    <div className={pinned ? "details-holder details-pinned" : "details-holder"}>
       <section
         ref={card}
         id={DETAILS_CARD_ID}
@@ -292,11 +305,37 @@ export function DetailsCard({
         inert={hidden}
         aria-hidden={hidden || undefined}
       >
+        <div className="details-head">
+          {session && (
+            <div role="group" aria-label="Agent session" className="details-session">
+              <h2 className="details-title">
+                {session.title}
+              </h2>
+              {session.state && (
+                <>
+                  <AgentState state={session.state} />
+                  <p className="details-source">State from {session.state.source}</p>
+                </>
+              )}
+            </div>
+          )}
+          <IconButton
+            icon={Pin}
+            label="Pin"
+            title={pinned ? "Unpin: float over the chat" : "Pin beside the chat"}
+            size="xs"
+            className="details-pin"
+            aria-pressed={pinned}
+            onClick={() => setPinned((was) => !was)}
+          />
+        </div>
         <ul className="details-rows">
           <li aria-label="Worktree" className="details-row">
             <Laptop aria-hidden="true" />
             <span className="details-path" title={worktree}>
-              {worktree}
+              {/* Cut in the middle: the start gives way, the folder that names the worktree stays. */}
+              <span className="details-path-start">{worktree.slice(0, worktree.lastIndexOf("/"))}</span>
+              <span className="details-path-end">{worktree.slice(worktree.lastIndexOf("/"))}</span>
             </span>
             <IconButton
               icon={FolderOpen}
@@ -342,7 +381,7 @@ export function DetailsCard({
                       ) : stopped ? (
                         <span className="details-faint">Stopped</span>
                       ) : (
-                        command && <span className="details-faint details-code">{command}</span>
+                        command && <span className="details-faint">{command}</span>
                       )
                     }
                   />
@@ -371,7 +410,7 @@ export function DetailsCard({
                 trigger={
                   <RowContent
                     icon={GitBranch}
-                    label={<span className="details-code">{tracked.worktree.branch ?? "Detached HEAD"}</span>}
+                    label={tracked.worktree.branch ?? "Detached HEAD"}
                     end={<Chevron />}
                   />
                 }
@@ -395,7 +434,7 @@ export function DetailsCard({
                     </>
                   }
                   end={
-                    <span className="details-code">
+                    <span>
                       <span className="details-add">+{sum(changes.files, "added")}</span>{" "}
                       <span className="details-del">−{sum(changes.files, "removed")}</span>
                     </span>
@@ -409,12 +448,12 @@ export function DetailsCard({
               <RowContent
                 icon={Server}
                 label="Servers"
-                end={<span className="details-muted details-code">{servers.join(", ")}</span>}
+                end={<span className="details-muted">{servers.join(", ")}</span>}
               />
             </li>
           )}
           {session && (
-            <li aria-label="Session" className="details-row" title={session.source && `State from ${session.source}`}>
+            <li aria-label="Session" className="details-row">
               <RowContent
                 icon={Bot}
                 label={AGENT_NAMES[session.agent]}

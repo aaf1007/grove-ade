@@ -57,10 +57,11 @@ async function setup({ runSessions = RUN_SESSIONS } = {}) {
 }
 
 const claude: FocusedSession = {
+  title: "Claude Code",
   agent: "Claude",
   model: { model: FAKE_MODELS.Claude[1], effort: null },
   mode: "Chat",
-  source: "Protocol",
+  state: { session: "0", state: "Working", source: "Protocol" },
 };
 
 async function renderCard(
@@ -136,10 +137,20 @@ test("the worktree row shows its folder and reveals it in Finder", async () => {
   const bridge = await setup();
   await renderCard(bridge);
 
-  expect(within(row("Worktree")).getByText(feature)).toBeTruthy();
+  expect(within(row("Worktree")).getByTitle(feature)).toBeTruthy();
 
   await act(async () => fireEvent.click(within(row("Worktree")).getByRole("button", { name: "Reveal in Finder" })));
   expect(bridge.revealed).toEqual([feature]);
+});
+
+test("a long worktree path is cut in the middle: its start gives way, its last folder stays whole, the tooltip has it all", async () => {
+  const long = "/private/tmp/grove-verify.MTLB9xQ2/worktrees/feat-82-details-card-pin";
+  const bridge = await setup();
+  await renderCard(bridge, { worktree: long });
+
+  const path = within(row("Worktree")).getByTitle(long);
+  expect(within(path).getByText("/private/tmp/grove-verify.MTLB9xQ2/worktrees").className).toBe("details-path-start");
+  expect(within(path).getByText("/feat-82-details-card-pin").className).toBe("details-path-end");
 });
 
 test("Open in opens the worktree in the editor picked from its menu", async () => {
@@ -285,7 +296,23 @@ test("the servers row shows the port of each running run session that serves one
   expect(within(row("Servers")).getByText(":5173 dev")).toBeTruthy();
 });
 
-test("the session row shows the focused session's agent, model, effort and mode, and its state source on hover", async () => {
+test("the session block shows the focused session's title, its state in words and where the state came from", async () => {
+  const bridge = await setup();
+  await renderCard(bridge, {
+    session: {
+      ...claude,
+      title: "Claude Code 2",
+      state: { session: "0", state: "NeedsInput", kind: "Approval", source: "Hook" },
+    },
+  });
+
+  const block = within(card()).getByRole("group", { name: "Agent session" });
+  expect(within(block).getByRole("heading", { name: "Claude Code 2" })).toBeTruthy();
+  expect(within(block).getByText("Approval")).toBeTruthy();
+  expect(within(block).getByText("State from Hook")).toBeTruthy();
+});
+
+test("the session row shows the focused session's agent, model, effort and mode", async () => {
   const bridge = await setup();
   await renderCard(bridge, {
     session: {
@@ -296,7 +323,6 @@ test("the session row shows the focused session's agent, model, effort and mode,
 
   expect(within(row("Session")).getByText("Claude Code")).toBeTruthy();
   expect(within(row("Session")).getByText("Default (recommended) · max · Chat")).toBeTruthy();
-  expect(row("Session").title).toBe("State from Protocol");
 });
 
 test("Escape and a click outside close the card, a click inside does not", async () => {
