@@ -52,6 +52,8 @@ function message(warning: Warning) {
   switch (warning.kind) {
     case "LoginShellEnv":
       return `grove could not read your login shell's environment, so sessions may not find claude or codex: ${warning.reason}.`;
+    case "CodexHooksNotTrusted":
+      return `Codex is not running grove's hooks in ${warning.worktree}, so grove guesses the session's state. Approve the hooks in Codex's /hooks.`;
     case "SessionNotRestored":
       return `grove could not bring back a session in ${warning.worktree}, so it is gone: ${warning.reason}.`;
     case "WatcherNotStarted":
