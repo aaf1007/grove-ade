@@ -55,6 +55,22 @@ test("a failed Retry keeps the warning and shows the new cause", async () => {
     .toBe(`grove could not watch ${feature}, so its diff does not update live: could not watch: too many open files.`);
 });
 
+test("Codex hooks that are not approved show the worktree and say to approve them in /hooks", () => {
+  const bridge = fakeBridge({});
+  bridge.warn({ kind: "CodexHooksNotTrusted", session: "7", worktree: feature });
+  render(<Warnings bridge={bridge} />);
+
+  expect(screen.getByRole("status").querySelector("p")!.textContent).toBe(
+    `Codex is not running grove's hooks in ${feature}, so grove guesses the session's state. Approve the hooks in Codex's /hooks.`,
+  );
+});
+
+test("no warning shows no bar", () => {
+  render(<Warnings bridge={fakeBridge({})} />);
+
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
 test("other warnings have no Retry", async () => {
   const bridge = fakeBridge({});
   bridge.warn({ kind: "LoginShellEnv", reason: "/bin/zsh did not print its environment within 5s" });

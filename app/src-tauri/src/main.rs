@@ -790,14 +790,35 @@ struct WarningSent {
     warning: Warning,
 }
 
-/// Mirrors `Warning` in `app/src/bridge.ts`. Its name goes in a `kind` field. Codex's hook
-/// warning waits until the UI starts Codex sessions.
+/// Mirrors `Warning` in `app/src/bridge.ts`. Its name goes in a `kind` field.
 #[derive(Serialize, Clone)]
 #[serde(tag = "kind")]
 enum Warning {
     LoginShellEnv { reason: String },
+    CodexHooksNotTrusted { session: String, worktree: PathBuf },
     SessionNotRestored { worktree: PathBuf, reason: String },
     WatcherNotStarted { worktree: PathBuf, reason: String },
+}
+
+// No wildcard arm, so a new core warning does not compile until the UI gets it.
+impl From<grove_core::Warning> for Warning {
+    fn from(warning: grove_core::Warning) -> Self {
+        match warning {
+            grove_core::Warning::LoginShellEnv { reason } => Self::LoginShellEnv { reason },
+            grove_core::Warning::CodexHooksNotTrusted { session, worktree } => {
+                Self::CodexHooksNotTrusted {
+                    session: session.to_string(),
+                    worktree,
+                }
+            }
+            grove_core::Warning::SessionNotRestored { worktree, reason } => {
+                Self::SessionNotRestored { worktree, reason }
+            }
+            grove_core::Warning::WatcherNotStarted { worktree, reason } => {
+                Self::WatcherNotStarted { worktree, reason }
+            }
+        }
+    }
 }
 
 // Attention queue (#53).
@@ -2291,21 +2312,7 @@ fn main() -> anyhow::Result<()> {
                             };
                             report_account(&app, change);
                         }
-                        Ok(CoreEvent::Warning(grove_core::Warning::LoginShellEnv { reason })) => {
-                            warn(&app, Warning::LoginShellEnv { reason });
-                        }
-                        Ok(CoreEvent::Warning(grove_core::Warning::SessionNotRestored {
-                            worktree,
-                            reason,
-                        })) => {
-                            warn(&app, Warning::SessionNotRestored { worktree, reason });
-                        }
-                        Ok(CoreEvent::Warning(grove_core::Warning::WatcherNotStarted {
-                            worktree,
-                            reason,
-                        })) => {
-                            warn(&app, Warning::WatcherNotStarted { worktree, reason });
-                        }
+                        Ok(CoreEvent::Warning(warning)) => warn(&app, warning.into()),
                         Ok(CoreEvent::Setup { worktree, setup }) => {
                             let change = SetupChanged {
                                 worktree,
@@ -3221,6 +3228,23 @@ mod tests {
             ),
             _ => panic!("a warning goes to the UI as JSON"),
         }
+    }
+
+    #[test]
+    fn codex_hooks_not_trusted_reaches_the_ui_as_bridge_ts_reads_it() {
+        let sent = WarningSent {
+            id: 3,
+            warning: grove_core::Warning::CodexHooksNotTrusted {
+                session: serde_json::from_str("7").unwrap(),
+                worktree: "/w".into(),
+            }
+            .into(),
+        };
+
+        assert_eq!(
+            json(sent),
+            r#"{"id":3,"kind":"CodexHooksNotTrusted","session":"7","worktree":"/w"}"#
+        );
     }
 
     #[test]
