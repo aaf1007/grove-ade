@@ -140,17 +140,25 @@ function ToolRow({ call, worktree, live }: { call: ToolCall; worktree: string; l
   );
 }
 
-/** Calls of one kind in a row: "Read 4 files", which opens to list each, one line per target. */
+/**
+ * Calls of one kind in a row: "Read 4 files", which opens to list each, one line per target. Each
+ * line opens to the output of its calls.
+ */
 function FoldedRow({ calls, worktree, live }: { calls: ToolCall[]; worktree: string; live: boolean }) {
   const [open, setOpen] = useState(false);
   const timeId = useId();
   const kind = KINDS[calls[0].tool];
   const time = calls.find((call) => known(call.time))?.time;
-  const all = calls.flatMap((call) => targets(call)!.map((target) => relative(target, worktree)));
   // A file read or edited twice is one file. A command run twice ran twice.
-  const listed = kind.unique ? [...new Set(all)] : all;
+  const listed = new Map<string, ToolCall[]>();
+  calls.forEach((call, i) => {
+    for (const target of targets(call)!.map((target) => relative(target, worktree))) {
+      const key = kind.unique ? target : `${i} ${target}`;
+      listed.set(key, [...(listed.get(key) ?? []), call]);
+    }
+  });
   const label =
-    listed.length === 1 ? describe(calls[0], worktree).label : `${kind.verb} ${listed.length} ${kind.nouns}`;
+    listed.size === 1 ? describe(calls[0], worktree).label : `${kind.verb} ${listed.size} ${kind.nouns}`;
   return (
     <>
       <button
@@ -166,15 +174,33 @@ function FoldedRow({ calls, worktree, live }: { calls: ToolCall[]; worktree: str
       </button>
       {open && (
         <ul className="tool-calls" aria-label={label}>
-          {listed.map((target, i) => (
-            // A command has one target, so it lists at its own index.
-            <li key={i} title={(kind === COMMAND && wholeCommand(calls[i])) || undefined}>
-              {target}
-            </li>
+          {[...listed].map(([key, of]) => (
+            <FoldedCall key={key} target={kind.unique ? key : targets(of[0])![0]} calls={of} />
           ))}
         </ul>
       )}
     </>
+  );
+}
+
+/** One line of an opened folded row: a file or a command, which opens to the output of its calls. */
+function FoldedCall({ target, calls }: { target: string; calls: ToolCall[] }) {
+  const [open, setOpen] = useState(false);
+  // A command has one call, and keeps its whole command as its title.
+  const command = wholeCommand(calls[0]);
+  return (
+    <li title={command ?? undefined}>
+      <button className="tool-call" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {target}
+      </button>
+      {open &&
+        calls.map((call) => (
+          <pre key={call.id} className="tool-output">
+            {command && <span className="tool-command">{`${command}\n`}</span>}
+            {call.result ? call.result.output : "Running"}
+          </pre>
+        ))}
+    </li>
   );
 }
 
