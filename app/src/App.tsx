@@ -123,6 +123,8 @@ export function App({ bridge }: { bridge: Bridge }) {
   const [agents, setAgents] = useState<AgentSession[]>([]);
   // Each agent session's latest state, by session. An agent session has none until its first.
   const [agentStates, setAgentStates] = useState<Record<SessionId, AgentStateChanged>>({});
+  // How many times the sidebar resumed each ended session, so its panel takes the new process.
+  const [resumes, setResumes] = useState<Record<SessionId, number>>({});
   // Each agent's login: null when nobody is logged in, missing until a session reports it.
   const [accounts, setAccounts] = useState<Partial<Record<Agent, Account | null>>>({});
   // Why the last shell, agent or run session started in a worktree failed, by `startKey`.
@@ -703,6 +705,7 @@ export function App({ bridge }: { bridge: Bridge }) {
                 startAgent(worktree, "Claude", firstEmptyPanel, true)
               }
               onFocusAgent={focusSession}
+              onSessionResumed={(session) => setResumes((counts) => ({ ...counts, [session]: (counts[session] ?? 0) + 1 }))}
               onSessionsDeleted={dropSessions}
               onWorktrees={setWorktrees}
               waiting={attentionQueue.length}
@@ -770,6 +773,7 @@ export function App({ bridge }: { bridge: Bridge }) {
                   shown={places[started.session]?.shown ?? false}
                   order={places[started.session]?.at}
                   state={agentStates[started.session]}
+                  resumes={resumes[started.session]}
                   focusRequest={jumped.session === started.session ? jumped.request : 0}
                   onOpenDiff={(path) => {
                     open(started.worktree, "Diff");

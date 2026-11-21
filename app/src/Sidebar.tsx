@@ -100,6 +100,7 @@ export function Sidebar({
   onStartAgent,
   onStartAgentAfterSetup,
   onFocusAgent,
+  onSessionResumed,
   onSessionsDeleted,
   onDeleting,
   onRemoved,
@@ -127,6 +128,8 @@ export function Sidebar({
   onStartAgentAfterSetup(worktree: string): void;
   /** Selects the agent session's worktree, shows its panel and puts focus in it. */
   onFocusAgent(agent: AgentSession): void;
+  /** The ended agent session was resumed, so its panel takes the new process. */
+  onSessionResumed(session: SessionId): void;
   /** Agent sessions were deleted, a session with its subagent sessions. */
   onSessionsDeleted(sessions: SessionId[]): void;
   /** A delete of the worktree started or ended. */
@@ -204,6 +207,7 @@ export function Sidebar({
       try {
         await bridge.resumeAgentSession(record.session);
         setError(null);
+        onSessionResumed(record.session);
       } catch (e) {
         setError(String(e));
         return;

@@ -451,6 +451,24 @@ test("deleting a shown session drops its panel, and its worktree shows the empty
   expect(selectedWorktree()).toBe("feat-36");
 });
 
+// The window keeps the panel of a session that is not running, so the delete must drop it too.
+test("deleting a shown session that ended drops its panel", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 0" });
+  bridge.exit("0");
+  await waitFor(() => expect(sessionRow("feat-36")!.closest(".session-item")!.classList.contains("dimmed")).toBe(true));
+  expect(screen.getByRole("region", { name: "Panel 0" })).toBeTruthy();
+
+  await deleteSession(sessionRow("feat-36")!);
+
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Panel 0" })).toBeNull());
+  expect(sessionRow("feat-36")).toBeUndefined();
+  expect(await screen.findByRole("button", { name: "feat-36" })).toBeTruthy();
+});
+
 test("selecting a worktree with no session shows the empty state with Start session", async () => {
   const bridge = await trackedBridge();
   await bridge.spawnAgent(main, "Claude", null);
@@ -1308,7 +1326,8 @@ test("a new worktree opens selected, with Claude Code started in it", async () =
   expect(bridge.spawnedAgents).toEqual([
     { session: "0", worktree: "/grovecode/worktrees/grove/feat-52", agent: "Claude" },
   ]);
-  expect(selectedWorktree()).toBe("feat-52");
+  // The title bar names the worktree once the new worktree's list comes.
+  await waitFor(() => expect(selectedWorktree()).toBe("feat-52"));
   expect((await findSessionRow("feat-52")).getAttribute("aria-current")).toBe("true");
 });
 

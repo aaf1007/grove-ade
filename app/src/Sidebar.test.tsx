@@ -29,6 +29,7 @@ const noAgents = {
   onDeleting() {},
   onRemoved() {},
   onFocusAgent() {},
+  onSessionResumed() {},
   onSessionsDeleted() {},
   waiting: 0,
   onJump() {},
@@ -278,6 +279,7 @@ test("an ended session is dimmed, and selecting it resumes it before focusing it
       selected={null}
       onSelect={() => {}}
       {...noAgents}
+      onSessionResumed={(id) => steps.push(`resumed ${id}`)}
       onFocusAgent={({ session: id }) => steps.push(`focus ${id}`)}
     />,
   );
@@ -286,7 +288,8 @@ test("an ended session is dimmed, and selecting it resumes it before focusing it
 
   await act(async () => fireEvent.click(sessionRows()[0]));
 
-  expect(steps).toEqual([`resume ${session}`, `focus ${session}`]);
+  // The panel learns of the new process before it shows.
+  expect(steps).toEqual([`resume ${session}`, `resumed ${session}`, `focus ${session}`]);
   // The core says it runs again, and the row is no longer dimmed.
   await vi.waitFor(() => expect(sessionItem(sessionRows()[0]).classList.contains("dimmed")).toBe(false));
 });
@@ -296,12 +299,14 @@ test("an ended session that cannot resume says why, and is not focused", async (
   await bridge.exit(session);
   vi.spyOn(bridge, "resumeAgentSession").mockRejectedValueOnce("could not start the session's command");
   const focused: unknown[] = [];
+  const resumed: unknown[] = [];
   render(
     <Sidebar
       bridge={bridge}
       selected={null}
       onSelect={() => {}}
       {...noAgents}
+      onSessionResumed={(id) => resumed.push(id)}
       onFocusAgent={(agent) => focused.push(agent)}
     />,
   );
@@ -311,6 +316,7 @@ test("an ended session that cannot resume says why, and is not focused", async (
 
   expect(screen.getByRole("alert").textContent).toBe("could not start the session's command");
   expect(focused).toEqual([]);
+  expect(resumed).toEqual([]);
 });
 
 test("a subagent session sits under the session that spawned it, in another worktree too", async () => {

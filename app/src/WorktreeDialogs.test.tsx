@@ -20,6 +20,7 @@ const noAgents = {
   onDeleting() {},
   onRemoved() {},
   onFocusAgent() {},
+  onSessionResumed() {},
   onSessionsDeleted() {},
   waiting: 0,
   onJump() {},

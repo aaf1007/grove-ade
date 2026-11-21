@@ -322,6 +322,7 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
             onStartAgent={() => {}}
             onStartAgentAfterSetup={() => {}}
             onFocusAgent={() => {}}
+            onSessionResumed={() => {}}
             onSessionsDeleted={() => {}}
             onHideSidebar={() => {}}
             onDeleting={() => {}}

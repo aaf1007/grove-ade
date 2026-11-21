@@ -1385,6 +1385,11 @@ export function fakeBridge(
       if (!record) throw `session ${session} is not an agent session`;
       if (switching.has(session)) throw `agent session ${session} is already switching mode`;
       if (running.has(session)) return;
+      // As in the core: a new process takes the id, so its output and its subscription start over.
+      messageSinks.delete(session);
+      sinks.delete(session);
+      lastSeq.delete(session);
+      printed.set(session, new Uint8Array());
       running.add(session);
       const last = agentStates.get(session);
       changeState({ session, state: "Idle", source: last?.source ?? "Protocol" });

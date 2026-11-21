@@ -13,11 +13,20 @@ vi.mock("./FilesPanel", () => ({
 vi.mock("./ProfilePanel", () => ({
   ProfilePanel: ({ worktree }: { worktree: string }) => <p>Profile of {worktree}</p>,
 }));
-vi.mock("./TerminalPanel", () => ({
-  TerminalPanel: ({ session, shown }: { session: string; shown: boolean }) => (
-    <section aria-label={`Panel ${session}`} hidden={!shown} />
-  ),
-}));
+// Each terminal a panel makes, by session, so a test can see a panel attach again.
+const terminalsMade: string[] = [];
+
+vi.mock("./TerminalPanel", async () => {
+  const { useEffect } = await import("react");
+  return {
+    TerminalPanel: ({ session, shown }: { session: string; shown: boolean }) => {
+      useEffect(() => {
+        terminalsMade.push(session);
+      }, [session]);
+      return <section aria-label={`Panel ${session}`} hidden={!shown} />;
+    },
+  };
+});
 
 // Animation frames run only when a test calls `nextFrame`.
 let frames: FrameRequestCallback[] = [];
@@ -49,6 +58,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   frames = [];
+  terminalsMade.length = 0;
   localStorage.clear();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -998,4 +1008,38 @@ test("the fake core keeps an ended session's panel when it places another, as th
     { agent: "Claude", session: ended, shown: true },
     { agent: "Codex", session: placed, shown: true },
   ]);
+});
+
+// The core starts a new process on resume, so the panel already on screen must take its messages.
+test("a shown chat panel shows the messages of its session after the sidebar resumes it", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  await startClaudeCode();
+  await screen.findByRole("region", { name: "Panel 0" });
+  bridge.exit("0");
+  await waitFor(() => expect(sessionRow("feat-36")!.closest(".session-item")!.classList.contains("dimmed")).toBe(true));
+
+  await click(sessionRow("feat-36")!);
+  await waitFor(() => expect(sessionRow("feat-36")!.closest(".session-item")!.classList.contains("dimmed")).toBe(false));
+  await waitFor(() => expect(bridge.subscribed.filter((session) => session === "0")).toHaveLength(2));
+  act(() => bridge.messages("0", { type: "TurnStarted" }, { type: "TextDelta", text: "Back at work." }));
+  nextFrame();
+
+  expect(await within(panel("0")).findByText("Back at work.")).toBeTruthy();
+});
+
+test("a shown terminal-mode panel attaches again after the sidebar resumes its session", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  await startClaudeCode();
+  await click(within(await screen.findByRole("region", { name: "Panel 0" })).getByRole("button", { name: "Terminal" }));
+  await waitFor(() => expect(terminalsMade).toEqual(["0"]));
+  bridge.exit("0");
+  await waitFor(() => expect(sessionRow("feat-36")!.closest(".session-item")!.classList.contains("dimmed")).toBe(true));
+
+  await click(sessionRow("feat-36")!);
+
+  await waitFor(() => expect(terminalsMade).toEqual(["0", "0"]));
 });
