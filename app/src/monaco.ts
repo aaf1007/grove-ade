@@ -3,7 +3,7 @@ import * as monaco from "monaco-editor/editor";
 import "monaco-editor/features/register.all";
 import EditorWorker from "monaco-editor/editor/editor.worker?worker";
 
-import { buildOrReport, codeFont, colorScheme, monacoTheme, onAppearanceChange } from "./codeTheme";
+import { buildOrReport, codeFont, colorScheme, monacoTheme, onAppearanceChange, syntaxTokenOf } from "./codeTheme";
 
 // Everything comes from the app bundle, never a CDN, because WKWebView may be offline.
 // `features` adds the editor's own parts, such as icons, find and folding. The editor worker
@@ -68,4 +68,103 @@ export function languageOf(path: string): string | undefined {
     .getLanguages()
     .find((l) => l.filenames?.includes(name) || (extension && l.extensions?.includes(extension)))
     ?.id;
+}
+
+/** A run of code and the syntax token that colors it, if any. */
+export type CodeRun = { text: string; syntax?: string };
+
+// Tokenizing runs on the main thread, at about 5,000 characters a millisecond and slower for code
+// full of slashes, so a block this long takes about 6 ms at most. A longer block stays plain.
+const MOST_CHARACTERS_TO_COLOR = 20_000;
+
+// The blocks colored so far, by tag and code, so a block shown again is not tokenized again. Past
+// this many, the oldest that has finished goes. One still waiting or coloring stays, and one whose
+// coloring failed goes at once, so it is tried again.
+const MOST_BLOCKS_KEPT = 200;
+type Coloring = { done: Promise<CodeRun[][] | undefined>; finished: boolean; runs?: CodeRun[][] };
+const colorings = new Map<string, Coloring>();
+
+// Blocks color one at a time, each in a task of its own, so the window paints between them.
+let lastColoring: Promise<unknown> = Promise.resolve();
+const nextTask = () => new Promise<void>((resolve) => setTimeout(resolve));
+
+/** The colored runs of `code` in the language `tag` names, if `colorRuns` has finished them. */
+export function coloredRuns(code: string, tag: string): CodeRun[][] | undefined {
+  return colorings.get(`${tag}\n${code}`)?.runs;
+}
+
+/**
+ * The colored runs of `code` in the language a fenced block's tag names, such as ts or rust.
+ * Undefined when Monaco has no such language or the block is too long, and it stays plain.
+ */
+export function colorRuns(code: string, tag: string): Promise<CodeRun[][] | undefined> {
+  const key = `${tag}\n${code}`;
+  const known = colorings.get(key);
+  if (known) return known.done;
+  const coloring: Coloring = {
+    finished: false,
+    done: lastColoring
+      .then(nextTask)
+      .then(() => runsOf(code, tag))
+      .then(
+        (runs) => {
+          Object.assign(coloring, { finished: true, runs });
+          forgetOldest();
+          return runs;
+        },
+        (error: unknown) => {
+          colorings.delete(key);
+          throw error;
+        },
+      ),
+  };
+  lastColoring = coloring.done.catch(() => {});
+  colorings.set(key, coloring);
+  return coloring.done;
+}
+
+function forgetOldest() {
+  for (const [key, coloring] of colorings) {
+    if (colorings.size <= MOST_BLOCKS_KEPT) return;
+    if (coloring.finished) colorings.delete(key);
+  }
+}
+
+async function runsOf(code: string, tag: string): Promise<CodeRun[][] | undefined> {
+  if (code.length > MOST_CHARACTERS_TO_COLOR) return undefined;
+  const name = tag.toLowerCase();
+  const language = monaco.languages
+    .getLanguages()
+    .find((l) => l.id === name || l.aliases?.some((alias) => alias.toLowerCase() === name) || l.extensions?.includes(`.${name}`));
+  if (!language) return undefined;
+  await loadLanguages([language.id]);
+  let lines = monaco.editor.tokenize(code, language.id);
+  // Code in a language embedded in this one, such as a script in HTML, comes as one plain token
+  // until that language has loaded too.
+  const embedded = new Set(lines.flat().map((token) => token.language));
+  if ([...embedded].some((id) => !loadedLanguages.has(id))) {
+    await loadLanguages([...embedded]);
+    lines = monaco.editor.tokenize(code, language.id);
+  }
+  const text = code.split(/\r\n|\r|\n/);
+  return lines.map((tokens, index) => {
+    const line = text[index];
+    const runs: CodeRun[] = [];
+    tokens.forEach((token, at) => {
+      const part = line.slice(token.offset, tokens[at + 1]?.offset ?? line.length);
+      const syntax = syntaxTokenOf(token.type);
+      const last = runs.at(-1);
+      if (last && last.syntax === syntax) last.text += part;
+      else runs.push(syntax ? { text: part, syntax } : { text: part });
+    });
+    return runs;
+  });
+}
+
+// A language's tokenizer loads on first use. Colorize waits for it, and tokenize does not.
+const loadedLanguages = new Set<string>();
+
+async function loadLanguages(ids: string[]) {
+  await Promise.all(ids.filter((id) => !loadedLanguages.has(id)).map((id) => monaco.editor.colorize("", id, {})));
+  ids.forEach((id) => loadedLanguages.add(id));
 }
