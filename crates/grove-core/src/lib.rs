@@ -42,7 +42,7 @@ pub use agent::{
 };
 pub use chat::{
     AgentMessage, MessageSink, ModelChoice, ModelInfo, Question, QuestionOption, Reply, RequestId,
-    TurnOutcome,
+    SlashCommand, TurnOutcome,
 };
 pub use comments::{BatchComment, CommentId, CommentState, NewReviewComment, ReviewComment};
 pub use config::CoreConfig;
