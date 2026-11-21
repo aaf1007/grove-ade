@@ -52,6 +52,16 @@ struct Setup {
 }
 
 fn setup(agent: Agent, chat: Vec<Value>, tui: Vec<Value>) -> Setup {
+    setup_tuned(agent, chat, tui, |_| {})
+}
+
+/// Like `setup`, with `tune` changing the config first.
+fn setup_tuned(
+    agent: Agent,
+    chat: Vec<Value>,
+    tui: Vec<Value>,
+    tune: impl FnOnce(&mut CoreConfig),
+) -> Setup {
     // macOS caps a socket path at 104 bytes, and its default temp folder is long.
     let dir = tempfile::Builder::new()
         .prefix("grove")
@@ -124,6 +134,7 @@ fn setup(agent: Agent, chat: Vec<Value>, tui: Vec<Value>) -> Setup {
             cfg.codex_command = wrapper("codex", lines, fake("codex"));
         }
     }
+    tune(&mut cfg);
     let (core, events) = Core::start(cfg).unwrap();
     block_on(core.add_repo(&repo)).unwrap();
     let worktree = block_on(core.list_worktrees())[0].path.clone();
@@ -199,9 +210,13 @@ fn the_value_after(argv: &[String], flag: &str) -> String {
 
 impl Setup {
     fn spawn_chat(&self) -> SessionId {
+        self.spawn(Mode::Chat)
+    }
+
+    fn spawn(&self, mode: Mode) -> SessionId {
         let spec = AgentSpec {
             agent: self.agent,
-            mode: Mode::Chat,
+            mode,
             prompt: None,
             cols: 120,
             rows: 40,
@@ -436,6 +451,89 @@ fn codex_chat_to_terminal_resumes_in_the_tui_with_the_integration_flags_and_back
     chat_to_terminal_resumes_in_the_tui_with_the_integration_flags_and_back_in_chat_mode(
         Agent::Codex,
     );
+}
+
+/// The MCP servers each launch got, as the fakes read them: a first launch in chat mode, a
+/// resume in the TUI, a resume in chat mode, and a first launch in the TUI. For Claude, the
+/// servers in each `mcp.json`; for Codex, the `mcp_servers` of each launch, the hook check's app
+/// servers included.
+fn mcp_servers_of_every_launch(agent: Agent, mcp_server: Option<PathBuf>) -> Vec<Value> {
+    let mut s = setup_tuned(agent, chat_scenario(agent), tui_scenario(agent), |cfg| {
+        cfg.mcp_server = mcp_server;
+    });
+    let session = s.spawn_chat();
+    s.chat_turn(session, "one");
+    s.set_mode(session, Mode::Terminal).unwrap();
+    s.terminal_turn(session, 1, "two");
+    s.set_mode(session, Mode::Chat).unwrap();
+    s.chat_turn(session, "three");
+    s.spawn(Mode::Terminal);
+    wait_lines(&s.tui_log, 2, "SessionStart hooks", |l| {
+        l["hook"] == "SessionStart"
+    });
+
+    let lines: Vec<Value> = read_log(&s.tui_log)
+        .into_iter()
+        .chain(read_log(&s.chat_log))
+        .collect();
+    match agent {
+        Agent::Claude => {
+            let servers: Vec<Value> = lines
+                .iter()
+                .filter(|l| l["file"].as_str().is_some_and(|f| f.ends_with("mcp.json")))
+                .map(|l| {
+                    let config: Value =
+                        serde_json::from_str(l["content"].as_str().unwrap()).unwrap();
+                    config["mcpServers"].clone()
+                })
+                .collect();
+            assert_eq!(servers.len(), 4, "{lines:?}");
+            servers
+        }
+        Agent::Codex => {
+            // The fake logs the `-c` overrides of each launch as the config Codex would read.
+            let servers: Vec<Value> = lines
+                .iter()
+                .filter_map(|l| l.get("config"))
+                .map(|config| config.get("mcp_servers").cloned().unwrap_or(json!({})))
+                .collect();
+            // Two TUI launches and at least the two chat-mode app servers.
+            assert!(servers.len() >= 4, "{lines:?}");
+            servers
+        }
+    }
+}
+
+#[test]
+fn claude_with_no_mcp_server_gets_no_grove_server_on_any_launch() {
+    for servers in mcp_servers_of_every_launch(Agent::Claude, None) {
+        assert_eq!(servers, json!({}));
+    }
+}
+
+#[test]
+fn codex_with_no_mcp_server_gets_no_grove_server_on_any_launch() {
+    for servers in mcp_servers_of_every_launch(Agent::Codex, None) {
+        assert_eq!(servers, json!({}));
+    }
+}
+
+#[test]
+fn claude_with_an_mcp_server_gets_it_on_every_launch() {
+    let mcp_server = PathBuf::from("/opt/grove/grove-mcp");
+    for servers in mcp_servers_of_every_launch(Agent::Claude, Some(mcp_server.clone())) {
+        assert_eq!(servers["grove"]["command"], mcp_server.to_str().unwrap());
+        assert_eq!(servers.as_object().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn codex_with_an_mcp_server_gets_it_on_every_launch() {
+    let mcp_server = PathBuf::from("/opt/grove/grove-mcp");
+    for servers in mcp_servers_of_every_launch(Agent::Codex, Some(mcp_server.clone())) {
+        assert_eq!(servers["grove"]["command"], mcp_server.to_str().unwrap());
+        assert_eq!(servers.as_object().unwrap().len(), 1);
+    }
 }
 
 fn after_three_round_trips_subscribe_returns_every_message_in_order(agent: Agent) {
