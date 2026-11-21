@@ -1,46 +1,60 @@
-/* A line of no height at the top of the chat area, which the card hangs from at the right. */
-.details-holder {
-  position: relative;
-  z-index: 5;
-  flex: none;
-  height: 0;
-}
-
+/* A column at the chat area's right edge, as tall as the area. The chat keeps its text out of it. */
 .chat-area {
   --details-card-width: 320px;
 }
 
-.details-card {
+.chat-area:has(> .details-holder) {
+  position: relative;
+  padding-right: var(--details-card-width);
+}
+
+.details-holder {
   position: absolute;
-  top: var(--space-8);
-  right: var(--space-12);
-  width: min(var(--details-card-width), calc(100% - 2 * var(--space-12)));
-  padding: var(--space-8) 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-2xl);
-  background: var(--panel);
-  box-shadow: var(--shadow-menu);
-  transition:
-    opacity var(--duration-fast) var(--ease-out),
-    visibility var(--duration-fast);
+  inset: 0 0 0 auto;
+  z-index: 5;
+  width: var(--details-card-width);
 }
 
-/* Hidden for lack of room, it keeps its box so the app can tell when room returns. */
-.details-card[inert] {
-  visibility: hidden;
-  opacity: 0;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .details-card {
-    transition: none;
-  }
-}
-
-/* The chat area clips what overflows it, so the rows scroll inside the window's height. */
-.details-rows {
-  max-height: calc(100vh - var(--topbar) - var(--space-48) * 2);
+.details-card {
+  height: 100%;
   overflow-y: auto;
+  padding: var(--space-8) 0;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+}
+
+/* The focused agent session, its state and where the state came from. */
+.details-session {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+  padding: var(--space-4) var(--space-16) var(--space-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.details-title {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  font: var(--text-title);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.details-state {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  margin: 0;
+  font: var(--text-meta);
+}
+
+.details-meta {
+  margin: 0;
+  color: var(--muted);
+  font: var(--text-meta);
 }
 
 .details-rows {
@@ -50,7 +64,8 @@
 }
 
 /* A row is a line of 38px: its icon, its label, and a value or chevron at the right edge. A row
-   that does something is a button, or a menu's trigger, and fills on hover. */
+   that does something is a button, or a menu's trigger, and fills on hover. Every label has the
+   row's type style, every value the one of .details-end. */
 .details-row,
 .details-card .ui-menu-trigger {
   display: flex;
@@ -115,13 +130,27 @@ button.details-row:focus-visible,
 }
 
 .details-path {
+  display: flex;
   min-width: 0;
   flex: 1;
   overflow: hidden;
   color: var(--muted);
-  text-overflow: ellipsis;
   white-space: nowrap;
   user-select: text;
+}
+
+.details-path-start,
+.details-path-end {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Cut in the middle: the start gives way, and the last folder, which names the worktree, keeps its
+   width unless it is wider than the row. */
+.details-path-end {
+  max-width: 100%;
+  flex: none;
 }
 
 .details-end > span {
@@ -149,13 +178,6 @@ button.details-row:focus-visible,
   height: 1px;
   margin: var(--space-6) 0;
   background: var(--line);
-}
-
-.details-code {
-  overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: var(--text-code-sm-size);
-  text-overflow: ellipsis;
 }
 
 .details-muted {
