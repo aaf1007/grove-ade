@@ -21,7 +21,7 @@
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: shimmer 2.2s linear infinite;
+  animation: shimmer var(--shimmer);
 }
 
 @keyframes shimmer {
@@ -75,8 +75,8 @@ button.tool:hover {
   height: var(--space-12);
   opacity: 0;
   transition:
-    transform 200ms cubic-bezier(0.4, 0, 0.2, 1),
-    opacity 150ms cubic-bezier(0.4, 0, 0.2, 1);
+    transform var(--duration-slow) var(--ease-out),
+    opacity var(--duration-base) var(--ease-out);
 }
 
 .tool:hover .chevron,
