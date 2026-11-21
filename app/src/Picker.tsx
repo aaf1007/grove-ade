@@ -2,6 +2,7 @@ import { Asterisk, Hexagon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import type { Agent, Bridge, Model, SessionId } from "./bridge";
+import { openedByPointer } from "./motion";
 import { AGENT_NAMES } from "./Sidebar";
 import { Segmented } from "./ui/Segmented";
 
@@ -114,6 +115,10 @@ export function Picker({
   onChoose(choice: ModelChoice): void;
 }) {
   const [open, setOpen] = useState(false);
+  const [entering, setEntering] = useState(false);
+  // Opened while the models load, it keeps one height until it closes, so they fill in below the
+  // rows already shown and no row moves under the pointer.
+  const [held, setHeld] = useState(false);
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -149,7 +154,11 @@ export function Picker({
         aria-label="Agent and model"
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => setOpen(!open)}
+        onClick={() => {
+          setEntering(!open && openedByPointer());
+          setHeld(!open && models === null);
+          setOpen(!open);
+        }}
       >
         <AgentMark agent={agent} />
         <b>{name}</b>
@@ -161,7 +170,13 @@ export function Picker({
         )}
       </button>
       {open && (
-        <div className="pop picker-pop" role="dialog" aria-label="Agent and model">
+        <div
+          className={["pop picker-pop", entering && "popover-enter", held && "picker-pop-held"]
+            .filter(Boolean)
+            .join(" ")}
+          role="dialog"
+          aria-label="Agent and model"
+        >
           <h4>Agent</h4>
           {agentLocked && <p className="note">Fixed after the first message.</p>}
           {AGENTS.map((a) => (
@@ -176,7 +191,11 @@ export function Picker({
             </button>
           ))}
           <h4>Model</h4>
-          {models === null && <p className="note">Loading models</p>}
+          {models === null && (
+            <p className="note" role="status">
+              Loading models
+            </p>
+          )}
           {models?.length === 0 && (
             <p className="note">{AGENT_NAMES[agent]} listed no models, so it uses its own default.</p>
           )}
