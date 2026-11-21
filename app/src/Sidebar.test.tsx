@@ -620,12 +620,15 @@ test("Cmd-K puts focus in Search, and Escape there clears it", async () => {
   expect(rowNames()).toHaveLength(5);
 });
 
-// New session's places, by name, in order. The picker must be open.
-function places() {
-  return within(screen.getByRole("menu", { name: "New session" }))
+// The places in the open picker named `menu`, by name, in order.
+function placesIn(menu: string) {
+  return within(screen.getByRole("menu", { name: menu }))
     .getAllByRole("menuitem")
     .map((item) => item.getAttribute("aria-label"));
 }
+
+// The main New session button's places. Its picker must be open.
+const places = () => placesIn("New session");
 
 function pickPlace(name: string) {
   fireEvent.click(screen.getByRole("button", { name: "New session" }));
@@ -760,6 +763,59 @@ test("a worktree whose setup script runs gets its session once the setup ends", 
 
   expect(now).toEqual([]);
   expect(afterSetup).toEqual([feature]);
+});
+
+test("a project's + opens New session for that project, though a row of another project is selected", async () => {
+  const bridge = await twoRepos();
+  const selected: (string | null)[] = [];
+  const started: string[] = [];
+  render(
+    <Sidebar
+      bridge={bridge}
+      selected={feature}
+      onSelect={(path) => selected.push(path)}
+      {...noAgents}
+      onNewSession={(path) => started.push(path)}
+    />,
+  );
+  await worktreeRow("Terminal resize");
+  const plus = screen.getByRole("button", { name: "New session in site" });
+  expect(plus.title).toBe("New session in site");
+
+  fireEvent.click(plus);
+  expect(placesIn("New session in site")).toEqual(["Local checkout", "Terminal resize", "New worktree…"]);
+  fireEvent.click(screen.getByRole("menuitem", { name: "Terminal resize" }));
+
+  expect(selected).toEqual(["/code/site-wt/fix-12"]);
+  expect(started).toEqual(["/code/site-wt/fix-12"]);
+  // The main button still uses the selected worktree's project.
+  fireEvent.click(screen.getByRole("button", { name: "New session" }));
+  expect(places()).toEqual(["Local checkout", "feat-35-tauri-sidebar", "spike", "New worktree…"]);
+});
+
+test("a folded project's + opens New session for it, and Escape gives focus back to the +", async () => {
+  render(<Sidebar bridge={await twoRepos()} selected={null} onSelect={() => {}} {...noAgents} />);
+  await worktreeRow("Terminal resize");
+  fireEvent.click(folder("site"));
+  expect(screen.queryByRole("button", { name: "Terminal resize" })).toBeNull();
+  const plus = screen.getByRole("button", { name: "New session in site" });
+  // A button, so Tab reaches it and Enter or Space opens it.
+  expect(plus.tagName).toBe("BUTTON");
+  expect(plus.tabIndex).toBe(0);
+
+  plus.focus();
+  fireEvent.click(plus);
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Local checkout" }));
+  expect(placesIn("New session in site")).toEqual(["Local checkout", "Terminal resize", "New worktree…"]);
+
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(document.activeElement).toBe(plus);
+});
+
+test("a project's + shows on hover or focus, and stays while its picker is open", () => {
+  expect(sidebarStyles).toMatch(/\.repo-folder \.ui-menu \{\s*opacity: 0;/);
+  expect(sidebarStyles).toMatch(/\.repo-folder:hover \.ui-menu,\s*\.repo-folder \.ui-menu:focus-within \{\s*opacity: 1;/);
 });
 
 test("New worktree… opens the new worktree dialog for the project, which makes the worktree", async () => {

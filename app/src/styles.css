@@ -416,7 +416,7 @@ svg {
   list-style: none;
 }
 
-/* A repo: its name and a chevron that folds it. */
+/* A repo: its name and a chevron that folds it, then a + that shows on hover. */
 .repo-folder {
   display: flex;
   align-items: center;
@@ -458,6 +458,15 @@ svg {
 .repo-toggle:disabled {
   color: inherit;
   cursor: default;
+}
+
+.repo-folder .ui-menu {
+  opacity: 0;
+}
+
+.repo-folder:hover .ui-menu,
+.repo-folder .ui-menu:focus-within {
+  opacity: 1;
 }
 
 /* A session's or a worktree's row: its button, then its menu and its status dot. */

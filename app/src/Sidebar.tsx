@@ -84,8 +84,8 @@ type OpenDialog =
 /**
  * Lists each project, then its agent sessions as the core lists them, ended ones too, each
  * subagent session under the session that spawned it. Below them, dimmed, the project's worktrees
- * that have no session. Adds repos, selects a session or a worktree, and deletes a session. The
- * menu of a worktree with no session starts Claude Code in it, changes its base branch, forgets it
+ * that have no session. Adds repos, selects a session or a worktree, and deletes a session. Each
+ * project's + opens New session for that project. The menu of a worktree with no session starts Claude Code in it, changes its base branch, forgets it
  * or deletes it.
  *
  * Above the list: New session, Search, Needs you and Profiles. Below it: each agent's account and
@@ -284,6 +284,10 @@ export function Sidebar({
   const newSessionProject = repos.find((repo) => repo.some((w) => w.path === selected)) ?? repos[0];
   const newSessionMenu = useRef<MenuHandle>(null);
 
+  // New session's places in `project`. New worktree… makes one there.
+  const placesIn = (project: Worktree[]) =>
+    places(project, startIn, () => setDialog({ kind: "new", repo: project[0] }));
+
   // A worktree whose setup script runs gets its session once the setup succeeds, as `spawn_agent`
   // does not wait for it.
   function startIn(worktree: Worktree) {
@@ -363,7 +367,7 @@ export function Sidebar({
       (worktree) => !own.some((record) => record.worktree === worktree.path) && matches(worktree, query),
     );
     return shownSessions.length + withNoSession.length > 0
-      ? [{ head: repo[0], byPath, sessions: shownSessions, withNoSession }]
+      ? [{ repo, byPath, sessions: shownSessions, withNoSession }]
       : [];
   });
   return (
@@ -385,11 +389,7 @@ export function Sidebar({
           label="New session"
           icon={Plus}
           heading="Start in"
-          items={
-            newSessionProject
-              ? places(newSessionProject, startIn, () => setDialog({ kind: "new", repo: newSessionProject[0] }))
-              : []
-          }
+          items={newSessionProject ? placesIn(newSessionProject) : []}
           trigger={
             <>
               <Plus aria-hidden="true" />
@@ -432,7 +432,8 @@ export function Sidebar({
       </div>
       <div className="sidebar-tree">
         {error && <p role="alert">{error}</p>}
-        {shownRepos.map(({ head, byPath, sessions: shownSessions, withNoSession }) => {
+        {shownRepos.map(({ repo, byPath, sessions: shownSessions, withNoSession }) => {
+          const head = repo[0];
           const name = folderName(head.path);
           // Search shows the matching rows of a folded repo too, and keeps it from folding.
           const searching = query.trim() !== "";
@@ -449,6 +450,13 @@ export function Sidebar({
                   <span className="repo-name">{name}</span>
                   {open ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
                 </button>
+                <Menu
+                  label={`New session in ${name}`}
+                  icon={Plus}
+                  heading="Start in"
+                  align="end"
+                  items={placesIn(repo)}
+                />
               </div>
               {open && (
                 <ul>
