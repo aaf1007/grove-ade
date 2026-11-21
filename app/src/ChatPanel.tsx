@@ -76,6 +76,7 @@ export function ChatPanel({
   order,
   state,
   focusRequest,
+  resumes = 0,
   onFocus,
   onBlur,
   onOpenDiff,
@@ -98,6 +99,11 @@ export function ChatPanel({
   order?: number;
   /** The session's latest state. None until its first. */
   state: AgentStateChanged | undefined;
+  /**
+   * How many times the ended session was resumed. Each resume starts a new process, so the panel
+   * subscribes or attaches again.
+   */
+  resumes?: number;
   /** Each new number puts focus in the composer once the panel is shown. 0 asks for nothing. */
   focusRequest: number;
   /** Called each time the panel gets focus. */
@@ -259,6 +265,7 @@ export function ChatPanel({
           draft={draft}
           onDraft={setDraft}
           resumed={modeSwitch.switches > 0}
+          resumes={resumes}
           switchingMode={modeSwitch.pending !== null}
           onOpenDiff={onOpenDiff}
           onChangeAgent={onChangeAgent}
@@ -271,7 +278,7 @@ export function ChatPanel({
             The same conversation, resumed in {name}&apos;s own TUI. State now comes from hooks.
           </p>
           <TerminalPanel
-            key={modeSwitch.switches}
+            key={`${modeSwitch.switches} ${resumes}`}
             bridge={bridge}
             session={session}
             shown={shown}
@@ -547,6 +554,7 @@ function ChatView({
   draft,
   onDraft: setDraft,
   resumed,
+  resumes,
   switchingMode,
   onOpenDiff,
   onChangeAgent,
@@ -567,6 +575,8 @@ function ChatView({
   onDraft: Dispatch<SetStateAction<string>>;
   /** The conversation came back from terminal mode, so the list says where. */
   resumed: boolean;
+  /** Each new number means a new process, so the view subscribes again. */
+  resumes: number;
   /** A mode switch is on its way, so nothing may be sent. */
   switchingMode: boolean;
   onOpenDiff(path?: string): void;
@@ -652,7 +662,7 @@ function ChatView({
       // The next subscribe brings the history again, and a jump waits for it.
       setHistoryLoaded(false);
     };
-  }, [bridge, session, shown, resumed]);
+  }, [bridge, session, shown, resumed, resumes]);
 
   const items = useMemo(() => thread(messages), [messages]);
   const changes = useHeadDiff(bridge, worktree);
