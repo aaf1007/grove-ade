@@ -34,7 +34,7 @@ Use these terms exactly. If a new concept appears, add it here in the same PR.
 | Chat area | The middle region of the window, holding the selected agent session's panel and the panels of the subagent sessions it spawned. |
 | Panel area | The right region of the window: panels as tabs, with an optional terminal panel at its bottom. |
 | Editor | Monaco tabs in the Files panel for reading and editing a worktree's files. Its file model is kept apart from the panel, so a language server can attach later. |
-| Workspace | One agent session's layout: its agent panels, the panels open in the panel area and its terminal. Starts from the profile's layout. |
+| Workspace | One agent session's layout: its agent panels, the panels open in the panel area and whether the terminal is open. Starts from the profile's layout and is saved with the session. A subagent session shows in the workspace of its top parent. |
 | Subagent panel | An agent panel holding an agent session that another agent session spawned through `grove-mcp`. Its parent is recorded. |
 | Log panel | A panel in the panel area that shows the output of a command an agent session ran through grove-mcp. The user cannot type into it. Only that agent session can read, wait on or close it. |
 | Command panel | A panel in the panel area that runs a command an agent session started through grove-mcp, as a terminal the user can type into. Only that agent session can read, wait on or close it. |

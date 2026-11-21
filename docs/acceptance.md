@@ -63,12 +63,12 @@ Setup: 2 real agent sessions in chat mode, 3 fake chat-mode sessions replaying a
 | Attention jump | One key focuses the head of the attention queue. |
 | Notifications | With grove's window unfocused, an agent session that asks for approval shows a macOS notification naming its worktree. Clicking it brings grove forward with that session's agent panel focused, in another worktree too. With the window focused, none shows. A profile that lists `Done` gets a notification when a turn ends; the default does not. |
 | Review batch | 3 comments on 2 files arrive as one message with correct `path:line`: as a card in chat mode, and in the agent's TUI in terminal mode. A snippet containing `ESC[201~` arrives as plain text in both. |
-| Restart | Quitting and reopening grove restores worktrees, workspaces, sessions to relaunch in their mode, and open comments. |
+| Restart | Quitting and reopening grove restores worktrees, sessions to relaunch in their mode, each agent session's workspace, and open comments. Two sessions in one place come back with their own layouts. |
 | Profile | A new worktree in a repo with `Cargo.toml` suggests the Rust crate profile. Its setup runs, and its layout, agent and model are what the profile says. |
 
 ## Agent-shaped workspace (from M6)
 | Test | Pass |
 |---|---|
-| Layout change | An agent opens the Logs panel through `grove-mcp`. The notice names the agent session; Undo restores the workspace exactly. |
+| Layout change | An agent opens the Logs panel through `grove-mcp`. Only its own session's workspace changes: another session in the same place keeps its layout. The notice names the agent session; Undo restores the workspace exactly. |
 | Profile change | An agent changes its profile's default model through `grove-mcp`. The Profile panel shows the change, and the next new worktree uses it. |
 | Subagent panel | An agent spawns a subagent. It opens as an agent panel beside its parent in chat mode, and the user can type into it, for Claude Code and for Codex. |
