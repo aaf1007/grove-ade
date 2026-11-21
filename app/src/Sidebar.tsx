@@ -30,7 +30,7 @@ import { useSetting } from "./settings";
 import { keyHint, shortcut } from "./shortcuts";
 import { stateWord } from "./ui/AgentState";
 import { IconButton } from "./ui/IconButton";
-import { Menu } from "./ui/Menu";
+import { Menu, type MenuHandle, type MenuItem } from "./ui/Menu";
 import { Segmented } from "./ui/Segmented";
 import { APP_ICONS, type Appearance, PALETTES, THEMES } from "./theme";
 import { ChangeBaseDialog, DeleteDialog, ForgetDialog, NewWorktreeDialog } from "./WorktreeDialogs";
@@ -68,8 +68,8 @@ export interface SidebarHandle {
   addRepo(): void;
   /** Puts focus on the sidebar switch in the top row. */
   focusSidebarSwitch(): void;
-  /** Opens New worktree, as the sidebar's row does. */
-  newWorktree(): void;
+  /** Opens New session's place picker, as the sidebar's button does. */
+  newSession(): void;
   /** Shows the sidebar and puts focus in Search. */
   focusSearch(): void;
 }
@@ -90,10 +90,10 @@ type OpenDialog =
  * Lists each project, then its agent sessions as the core lists them, ended ones too, each
  * subagent session under the session that spawned it. Below them, dimmed, the project's worktrees
  * that have no session. Adds repos, selects a session or a worktree, and deletes a session. Each
- * repo's + adds a worktree, and the menu of a worktree with no session starts Claude Code in it,
- * changes its base branch, forgets it or deletes it.
+ * project's + opens New session for that project. The menu of a worktree with no session starts Claude Code in it, changes its base branch, forgets it
+ * or deletes it.
  *
- * Above the list: New worktree, Search, Needs you and Profiles. Below it: each agent's account and
+ * Above the list: New session, Search, Needs you and Profiles. Below it: each agent's account and
  * the appearance menu.
  */
 export function Sidebar({
@@ -104,6 +104,7 @@ export function Sidebar({
   shownAgents,
   onStartAgent,
   onStartAgentAfterSetup,
+  onNewSession,
   onFocusAgent,
   onSessionResumed,
   onSessionsDeleted,
@@ -129,8 +130,10 @@ export function Sidebar({
   /** The agent sessions whose panels the selected worktree shows. */
   shownAgents: SessionId[];
   onStartAgent(worktree: string): void;
-  /** Starts an agent session in a new worktree once its setup script succeeds. */
+  /** Starts an agent session in a worktree once its setup script succeeds. */
   onStartAgentAfterSetup(worktree: string): void;
+  /** Starts an agent session in the place New session picked and puts focus in its panel. */
+  onNewSession(worktree: string): void;
   /** Selects the agent session's worktree, shows its panel and puts focus in it. */
   onFocusAgent(agent: AgentSession): void;
   /** The ended agent session was resumed, so its panel takes the new process. */
@@ -276,17 +279,33 @@ export function Sidebar({
   }
 
   const repos = byRepo(worktrees);
-  // New worktree adds to the selected worktree's repo, or else to the first repo.
-  const newWorktreeRepo = (repos.find((repo) => repo.some((w) => w.path === selected)) ?? repos[0])?.[0];
-  function newWorktree() {
-    if (newWorktreeRepo) setDialog({ kind: "new", repo: newWorktreeRepo });
+  // New session starts in the selected worktree's project, or else in the first project.
+  const newSessionProject = repos.find((repo) => repo.some((w) => w.path === selected)) ?? repos[0];
+  const newSessionMenu = useRef<MenuHandle>(null);
+
+  // New session's places in `project`. New worktree… makes one there.
+  const placesIn = (project: Worktree[]) =>
+    places(project, startIn, () => setDialog({ kind: "new", repo: project[0] }));
+
+  // A worktree whose setup script runs gets its session once the setup succeeds, as `spawn_agent`
+  // does not wait for it.
+  function startIn(worktree: Worktree) {
+    onSelect(worktree.path);
+    const setup = setups[worktree.path] ?? worktree.setup;
+    if (setup?.state === "Running") onStartAgentAfterSetup(worktree.path);
+    else onNewSession(worktree.path);
   }
 
   const sidebarSwitch = useRef<HTMLButtonElement>(null);
   useImperativeHandle(ref, () => ({
     addRepo: () => void addRepo(),
     focusSidebarSwitch: () => sidebarSwitch.current?.focus(),
-    newWorktree,
+    newSession() {
+      if (!newSessionProject) return;
+      // Shown first, since a hidden picker takes no focus.
+      flushSync(() => onShowSidebar?.());
+      newSessionMenu.current?.open();
+    },
     focusSearch() {
       // Shown first, since a hidden box takes no focus.
       flushSync(() => onShowSidebar?.());
@@ -343,7 +362,7 @@ export function Sidebar({
       (worktree) => !own.some((record) => record.worktree === worktree.path) && matches(worktree, query),
     );
     return shownSessions.length + withNoSession.length > 0
-      ? [{ head: repo[0], byPath, sessions: shownSessions, withNoSession }]
+      ? [{ repo, byPath, sessions: shownSessions, withNoSession }]
       : [];
   });
   return (
@@ -360,16 +379,21 @@ export function Sidebar({
         />
       </div>
       <nav className="sidebar-nav" aria-label="Sidebar">
-        <button
-          className="nav-row"
-          aria-keyshortcuts={shortcut("newWorktree").keys}
-          disabled={!newWorktreeRepo}
-          onClick={newWorktree}
-        >
-          <Plus aria-hidden="true" />
-          New worktree
-          <kbd aria-hidden="true">{keyHint(shortcut("newWorktree").keys)}</kbd>
-        </button>
+        <Menu
+          ref={newSessionMenu}
+          label="New session"
+          icon={Plus}
+          heading="Start in"
+          items={newSessionProject ? placesIn(newSessionProject) : []}
+          trigger={
+            <>
+              <Plus aria-hidden="true" />
+              New session
+              <kbd aria-hidden="true">{keyHint(shortcut("newSession").keys)}</kbd>
+            </>
+          }
+          triggerProps={{ className: "nav-row", "aria-keyshortcuts": shortcut("newSession").keys, disabled: !newSessionProject }}
+        />
         <label className="nav-row search-row">
           <Search aria-hidden="true" />
           <input
@@ -403,7 +427,8 @@ export function Sidebar({
       </div>
       <div className="sidebar-tree">
         {error && <p role="alert">{error}</p>}
-        {shownRepos.map(({ head, byPath, sessions: shownSessions, withNoSession }) => {
+        {shownRepos.map(({ repo, byPath, sessions: shownSessions, withNoSession }) => {
+          const head = repo[0];
           const name = folderName(head.path);
           // Search shows the matching rows of a folded repo too, and keeps it from folding.
           const searching = query.trim() !== "";
@@ -420,13 +445,12 @@ export function Sidebar({
                   <span className="repo-name">{name}</span>
                   {open ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
                 </button>
-                <IconButton
+                <Menu
+                  label={`New session in ${name}`}
                   icon={Plus}
-                  size="xs"
-                  className="repo-add"
-                  label={`New worktree in ${name}`}
-                  title="New worktree"
-                  onClick={() => setDialog({ kind: "new", repo: head })}
+                  heading="Start in"
+                  align="end"
+                  items={placesIn(repo)}
                 />
               </div>
               {open && (
@@ -493,6 +517,21 @@ export function Sidebar({
       )}
     </aside>
   );
+}
+
+/**
+ * The places New session offers in `project`: the local checkout on its current branch, each
+ * worktree, then New worktree…, which opens the new worktree dialog. A place may already have
+ * sessions. #64 and #65 add their places here.
+ */
+function places(project: Worktree[], startIn: (worktree: Worktree) => void, newWorktree: () => void): MenuItem[] {
+  const worktreePlaces = project.map((worktree) => {
+    const label = worktree.isMain ? "Local checkout" : worktree.displayName;
+    // The branch shows under the name, unless the name already is the branch.
+    const hint = worktree.branch !== null && worktree.branch !== label ? worktree.branch : undefined;
+    return { key: worktree.path, label, hint, onSelect: () => startIn(worktree) };
+  });
+  return [...worktreePlaces, { key: "new-worktree", label: "New worktree…", onSelect: newWorktree }];
 }
 
 const isPathList = (value: unknown): value is string[] =>

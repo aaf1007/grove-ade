@@ -1,4 +1,4 @@
-export type ShortcutId = "newWorktree" | "search" | "jump" | "showShortcuts";
+export type ShortcutId = "newSession" | "search" | "jump" | "showShortcuts";
 
 /** A key that works anywhere in the window. No shortcut fires while a dialog is open. */
 export interface Shortcut {
@@ -16,8 +16,8 @@ export interface Shortcut {
 }
 
 export const SHORTCUTS: readonly Shortcut[] = [
-  { id: "newWorktree", keys: "Meta+N", label: "New worktree", group: "Worktrees", when: "unclaimed" },
-  { id: "search", keys: "Meta+K", label: "Search", group: "Worktrees", when: "unclaimed" },
+  { id: "newSession", keys: "Meta+N", label: "New session", group: "Agent sessions", when: "unclaimed" },
+  { id: "search", keys: "Meta+K", label: "Search", group: "Agent sessions", when: "unclaimed" },
   // Plain Ctrl-J is a newline in a terminal, so Cmd-J is free to come first.
   { id: "jump", keys: "Meta+J", label: "Needs you", group: "Agent sessions", when: "anywhere" },
   { id: "showShortcuts", keys: "Meta+/", label: "Keyboard shortcuts", group: "Help", when: "unclaimed" },

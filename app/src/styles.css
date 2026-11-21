@@ -280,7 +280,7 @@ svg {
   padding: 0 var(--space-10) 0 calc(var(--space-10) + var(--window-controls));
 }
 
-/* New worktree, Search, Needs you and Profiles, over the list. */
+/* New session, Search, Needs you and Profiles, over the list. */
 /* One column as wide as the sidebar. An auto one would grow to the Search box's own width. */
 .sidebar-nav {
   display: grid;
@@ -460,12 +460,12 @@ svg {
   cursor: default;
 }
 
-.repo-folder .repo-add {
+.repo-folder .ui-menu {
   opacity: 0;
 }
 
-.repo-folder:hover .repo-add,
-.repo-folder .repo-add:focus-visible {
+.repo-folder:hover .ui-menu,
+.repo-folder .ui-menu:focus-within {
   opacity: 1;
 }
 
