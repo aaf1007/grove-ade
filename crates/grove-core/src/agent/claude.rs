@@ -56,7 +56,7 @@ pub(crate) struct ClaudeCode {
     /// The Claude sidecar, for chat mode.
     pub sidecar: PathBuf,
     pub hook_relay: PathBuf,
-    pub mcp_server: PathBuf,
+    pub mcp_server: Option<PathBuf>,
 }
 
 impl AgentAdapter for ClaudeCode {
@@ -207,10 +207,14 @@ impl ClaudeCode {
         Ok((settings, mcp))
     }
 
-    /// grove-mcp, with the session's id and token and the socket in its own environment.
+    /// grove-mcp, with the session's id and token and the socket in its own environment. No
+    /// server of grove's without grove-mcp.
     fn mcp_config(&self, ctx: &LaunchCtx) -> Value {
+        let Some(mcp_server) = &self.mcp_server else {
+            return json!({"mcpServers": {}});
+        };
         json!({"mcpServers": {"grove": {
-            "command": self.mcp_server,
+            "command": mcp_server,
             "args": [],
             "env": {
                 GROVE_SESSION_ID: ctx.session.to_string(),
@@ -296,7 +300,7 @@ mod tests {
             command: "claude".into(),
             sidecar: "claude-sidecar".into(),
             hook_relay: "/home/it's/bin/grove-hook".into(),
-            mcp_server: "grove-mcp".into(),
+            mcp_server: None,
         };
         assert_eq!(check(claude.settings(SessionId(7))), Ok(()));
     }
@@ -320,7 +324,7 @@ mod tests {
             command: "claude".into(),
             sidecar: "claude-sidecar".into(),
             hook_relay: "grove-hook".into(),
-            mcp_server: "grove-mcp".into(),
+            mcp_server: None,
         };
         claude.read_screen(screen)
     }

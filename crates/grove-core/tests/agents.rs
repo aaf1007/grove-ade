@@ -153,6 +153,8 @@ fn setup_agent(
     if let Some(relay) = hook_relay {
         cfg.hook_relay = relay.to_path_buf();
     }
+    // As in the app, which has grove-mcp next to it. These fakes never start it.
+    cfg.mcp_server = Some("grove-mcp".into());
     tune(&mut cfg);
     let (core, events) = Core::start(cfg.clone()).unwrap();
     block_on(core.add_repo(&repo)).unwrap();
@@ -1748,7 +1750,7 @@ fn codex_gets_exactly_the_flags_and_environment_grove_passed() {
         hook("Interrupt"),
         format!(
             r#"mcp_servers.grove={{command="{}",args=[],env_vars=["GROVE_SESSION_ID","GROVE_SESSION_TOKEN","GROVE_SOCKET"]}}"#,
-            s.cfg.mcp_server.display()
+            s.cfg.mcp_server.as_ref().unwrap().display()
         ),
         format!(r#"shell_environment_policy.set.GROVE_SESSION_ID="{session}""#),
     ] {

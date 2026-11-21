@@ -90,7 +90,8 @@ export interface FakeBridge extends Bridge {
   accountChanged(change: AccountChanged): void;
   /**
    * Adds the messages to a chat-mode session's conversation, as its agent sends them. If a panel
-   * subscribed, they go to it as one frame, as the core's batcher sends them.
+   * subscribed, they go to it as one frame, as the core's batcher sends them. A `Commands` message
+   * replaces the session's command list instead, which a later subscribe gets after the history.
    */
   messages(session: SessionId, ...messages: FakeMessage[]): void;
   /** Every `openInEditor` call, in order. */
@@ -329,6 +330,8 @@ export function fakeBridge(
   // Each chat-mode session's conversation, and the panel that subscribed to it.
   const chats = new Map<SessionId, AgentMessage[]>();
   const messageSinks = new Map<SessionId, (messages: AgentMessage[]) => void>();
+  // Each chat-mode session's latest command list, which as in the core is kept out of the conversation.
+  const commandLists = new Map<SessionId, AgentMessage>();
   const writes: FakeBridge["writes"] = [];
   const resizes: FakeBridge["resizes"] = [];
   const acks: FakeBridge["acks"] = [];
@@ -476,7 +479,10 @@ export function fakeBridge(
   }
 
   function addMessages(session: SessionId, messages: AgentMessage[]) {
-    chat(session).push(...messages);
+    for (const message of messages) {
+      if (message.type === "Commands") commandLists.set(session, message);
+      else chat(session).push(message);
+    }
     messageSinks.get(session)?.(messages);
   }
 
@@ -810,7 +816,8 @@ export function fakeBridge(
       const history = chat(session);
       subscribed.push(session);
       messageSinks.set(session, onMessages);
-      return [...history];
+      const commands = commandLists.get(session);
+      return commands ? [...history, commands] : [...history];
     },
     // The core adds the user's message to the conversation before any reply can come.
     async sendMessage(session, text) {

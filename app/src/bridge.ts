@@ -213,6 +213,8 @@ export type Warning =
       /** Why the login shell's environment could not be read, so sessions got the minimal one. */
       reason: string;
     }
+  /** Codex runs none of grove's hooks in this agent session, so its state comes from heuristics. The user approves them in Codex's `/hooks`. */
+  | { kind: "CodexHooksNotTrusted"; session: SessionId; worktree: string }
   /** A session that was running when grove quit could not start again, so it is gone with its panel. */
   | { kind: "SessionNotRestored"; worktree: string; reason: string }
   /** A worktree's watcher could not start, so its diff does not update live until `retryWatcher` starts it. */
@@ -280,7 +282,22 @@ export type AgentMessage =
   | ({ type: "TurnEnded"; timeUnixMs: number | null } & TurnOutcome)
   | { type: "ReviewBatch"; comments: BatchComment[] }
   /** A message the user sent never reached the agent: its process ended first. `text` is what the agent would have got. */
-  | { type: "NotDelivered"; text: string };
+  | { type: "NotDelivered"; text: string }
+  /**
+   * The commands and skills the agent offers now, in place of any list before. Never part of the
+   * conversation: a subscribe gets the latest list after the history, and frames bring changes.
+   */
+  | { type: "Commands"; commands: SlashCommand[] };
+
+/** A slash command or skill the agent offers, as `SlashCommand` in `app/src-tauri/src/main.rs` sends it. */
+export interface SlashCommand {
+  name: string;
+  description: string;
+  /** What it takes, such as `<pr>`. Empty when it takes nothing or the agent does not say. */
+  argumentHint: string;
+  /** What the user types to run it: `/review` for Claude, `$review` for a Codex skill. */
+  invocation: string;
+}
 
 /** One review comment of a review batch, as sent, with control characters but newline and tab stripped. */
 export interface BatchComment {
