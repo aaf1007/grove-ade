@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest"
 
 import { App } from "./App";
 import type { Agent, AgentState, StateSource, Workspace, Worktree } from "./bridge";
-import { DEFAULT_WORKSPACE, fakeBridge } from "./fakeBridge";
+import { DEFAULT_WORKSPACE, type FakeBridge, fakeBridge } from "./fakeBridge";
 import { menuItems } from "./testing";
 import detailsStyles from "./DetailsCard.css?raw";
 import appStyles from "./styles.css?raw";
@@ -195,16 +195,33 @@ async function select(branch: string) {
   await act(async () => fireEvent.click(row));
 }
 
-// An agent session's row in the sidebar, by the name it shows. Only a worktree with two or more
-// sessions has them.
-function agentRow(name: string) {
-  return screen.getByText(name, { selector: ".session-name" }).closest("button")!;
+// The sidebar row of the `nth` agent session on `branch`, in the order they started.
+function sessionRow(branch: string, nth = 0): HTMLElement | undefined {
+  return [...document.querySelectorAll<HTMLElement>(".session-row")].filter(
+    (row) => row.querySelector(".session-branch")?.textContent === branch,
+  )[nth];
 }
 
-// The state the status dot on a worktree's row names. null when it has none, as for Idle.
-function rowState(worktree: string) {
-  const row = screen.getByRole("button", { name: worktree }).closest(".wt-row");
+// Waits for the sidebar to list the session, which it does once the core says its list changed.
+async function findSessionRow(branch: string, nth = 0): Promise<HTMLElement> {
+  await vi.waitFor(() => expect(sessionRow(branch, nth)).toBeTruthy());
+  return sessionRow(branch, nth)!;
+}
+
+// The state the status dot on a session's row names. null when it has none, as for Idle.
+function rowState(branch: string, nth = 0) {
+  const row = sessionRow(branch, nth)?.closest(".session-item");
   return row?.querySelector(".status-dot")?.getAttribute("aria-label") ?? null;
+}
+
+// The selected worktree's name, as the title bar shows it.
+function selectedWorktree() {
+  return document.querySelector(".crumbs b")?.textContent ?? null;
+}
+
+// Starts another agent session in the worktree, as Split or a subagent would, outside the sidebar.
+async function startAnother(bridge: FakeBridge, worktree: string) {
+  await act(async () => void (await bridge.spawnAgent(worktree, "Claude", null)));
 }
 
 test("opening a shell starts one in the selected worktree and shows its panel", async () => {
@@ -308,7 +325,7 @@ test("closing a shell that already exited shows no error", async () => {
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
-test("starting Claude Code in a worktree opens its panel, and the session nests under the worktree's row", async () => {
+test("starting Claude Code in a worktree opens its panel, and the session's row takes the worktree's place", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
@@ -320,9 +337,10 @@ test("starting Claude Code in a worktree opens its panel, and the session nests 
   expect(bridge.spawnedAgents).toEqual([
     { session: "0", worktree: feature, agent: "Claude" },
   ]);
-  expect(screen.getByRole("button", { name: "feat-36" }).getAttribute("aria-current")).toBe("true");
+  expect(selectedWorktree()).toBe("feat-36");
+  expect((await findSessionRow("feat-36")).getAttribute("aria-current")).toBe("true");
   expect(rowState("feat-36")).toBeNull();
-  expect(agentRow("Claude Code")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "feat-36" })).toBeNull();
 });
 
 test.each<[string, AgentState, StateSource]>([
@@ -333,27 +351,30 @@ test.each<[string, AgentState, StateSource]>([
   ["Idle", { state: "Idle" }, "Heuristic"],
   ["Failed", { state: "Failed" }, "Heuristic"],
   ["Exited", { state: "Exited" }, "Hook"],
-])("a worktree's row shows its one agent session's %s, without its source", async (word, state, source) => {
+])("a session's row shows its %s, without its source", async (word, state, source) => {
   const shown = word === "Idle" || word === "Exited" ? null : word;
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
   startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
+  const row = await findSessionRow("feat-36");
 
   act(() => bridge.agentStateChanged({ session: "0", ...state, source }));
 
   expect(rowState("feat-36")).toBe(shown);
-  expect(screen.getByRole("button", { name: "feat-36" }).textContent).not.toMatch(source);
+  expect(row.closest(".session-item")!.textContent).not.toMatch(source);
 });
 
-test("focusing a Done agent session's panel calls focus, and its worktree's row goes to Idle, with no dot", async () => {
+test("focusing a Done agent session's panel calls focus, and its row goes to Idle, with no dot", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
   startAgent();
   const panel = await screen.findByRole("region", { name: "Panel 0" });
+  await findSessionRow("feat-36");
   act(() => bridge.agentStateChanged({ session: "0", state: "Done", source: "Hook" }));
+  expect(rowState("feat-36")).toBe("Done");
 
   await act(async () => panel.focus());
 
@@ -367,18 +388,103 @@ test("clicking an agent session's row selects its worktree, whose panels show si
   await select("feat-36");
   startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
-  startAgent();
+  await startAnother(bridge, feature);
   await screen.findByRole("region", { name: "Panel 1" });
   await select("main (main worktree)");
   expect(screen.getByLabelText("Panel 0").hidden).toBe(true);
 
-  await act(async () => fireEvent.click(agentRow("Claude Code")));
+  const row = await findSessionRow("feat-36");
+  await act(async () => fireEvent.click(row));
 
-  expect(screen.getByRole("button", { name: "feat-36" }).getAttribute("aria-current")).toBe("true");
+  expect(selectedWorktree()).toBe("feat-36");
   expect(screen.getByLabelText("Panel 0").hidden).toBe(false);
   expect(screen.getByLabelText("Panel 1").hidden).toBe(false);
-  expect(agentRow("Claude Code").getAttribute("aria-current")).toBe("true");
-  expect(agentRow("Claude Code 2").getAttribute("aria-current")).toBe("true");
+  expect(sessionRow("feat-36", 0)!.getAttribute("aria-current")).toBe("true");
+  expect(sessionRow("feat-36", 1)!.getAttribute("aria-current")).toBe("true");
+});
+
+// The sidebar lists projects, then sessions (#70).
+
+test("selecting a session of a worktree not opened since launch shows its worktree's chat area and panel area", async () => {
+  const bridge = await trackedBridge();
+  const session = await bridge.spawnAgent(feature, "Codex", null);
+  render(<App bridge={bridge} />);
+
+  const row = await findSessionRow("feat-36");
+  await act(async () => fireEvent.click(row));
+
+  expect(selectedWorktree()).toBe("feat-36");
+  const panel = screen.getByRole("region", { name: `Panel ${session}` });
+  expect(panel.hidden).toBe(false);
+  expect(within(panel).getByText("Codex")).toBeTruthy();
+  expect(document.activeElement).toBe(panel);
+  expect(screen.getByRole("tabpanel", { name: "Files" }).textContent).toBe(`Files of ${feature}`);
+});
+
+test("selecting an ended session resumes it, then shows and focuses its panel", async () => {
+  const bridge = await trackedBridge();
+  // It ended before the window opened, as after a restart.
+  const session = await bridge.spawnAgent(feature, "Claude", null);
+  bridge.exit(session);
+  render(<App bridge={bridge} />);
+  const row = await findSessionRow("feat-36");
+  expect(row.closest(".session-item")!.classList.contains("dimmed")).toBe(true);
+
+  await act(async () => fireEvent.click(row));
+
+  expect((await bridge.agentSessions())[0].ended).toBe(false);
+  const panel = await screen.findByRole("region", { name: `Panel ${session}` });
+  expect(panel.hidden).toBe(false);
+  expect(document.activeElement).toBe(panel);
+  await waitFor(() => expect(sessionRow("feat-36")!.closest(".session-item")!.classList.contains("dimmed")).toBe(false));
+});
+
+test("deleting a shown session drops its panel, and its worktree shows the empty state", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 0" });
+
+  await deleteSession(await findSessionRow("feat-36"));
+
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Panel 0" })).toBeNull());
+  expect(sessionRow("feat-36")).toBeUndefined();
+  expect(await screen.findByRole("button", { name: "feat-36" })).toBeTruthy();
+  expect(selectedWorktree()).toBe("feat-36");
+});
+
+// The window keeps the panel of a session that is not running, so the delete must drop it too.
+test("deleting a shown session that ended drops its panel", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 0" });
+  bridge.exit("0");
+  await waitFor(() => expect(sessionRow("feat-36")!.closest(".session-item")!.classList.contains("dimmed")).toBe(true));
+  expect(screen.getByRole("region", { name: "Panel 0" })).toBeTruthy();
+
+  await deleteSession(sessionRow("feat-36")!);
+
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Panel 0" })).toBeNull());
+  expect(sessionRow("feat-36")).toBeUndefined();
+  expect(await screen.findByRole("button", { name: "feat-36" })).toBeTruthy();
+});
+
+test("selecting a worktree with no session shows the empty state with Start session", async () => {
+  const bridge = await trackedBridge();
+  await bridge.spawnAgent(main, "Claude", null);
+  render(<App bridge={bridge} />);
+  await findSessionRow("main");
+
+  await select("feat-36");
+
+  const chat = screen.getByRole("main");
+  expect(within(chat).getByText("No agent session yet")).toBeTruthy();
+  await act(async () => fireEvent.click(within(chat).getByRole("button", { name: "Start session" })));
+  expect(bridge.spawnedAgents.at(-1)).toEqual({ session: "1", worktree: feature, agent: "Claude" });
+  await findSessionRow("feat-36");
 });
 
 test("a double click starts one agent session", async () => {
@@ -420,6 +526,7 @@ test("a turn that ends while its panel has focus goes straight to Idle", async (
   await act(async () => bridge.agentStateChanged({ session: "0", state: "Done", source: "Hook" }));
 
   expect(bridge.focused).toEqual(["0", "0"]);
+  await findSessionRow("feat-36");
   expect(rowState("feat-36")).toBeNull();
 });
 
@@ -430,7 +537,8 @@ test("a turn that ends after focus has left its panel stays Done", async () => {
   startAgent();
   const panel = await screen.findByRole("region", { name: "Panel 0" });
   await act(async () => panel.focus());
-  act(() => screen.getByRole("button", { name: "feat-36" }).focus());
+  const row = await findSessionRow("feat-36");
+  act(() => row.focus());
 
   await act(async () => bridge.agentStateChanged({ session: "0", state: "Done", source: "Hook" }));
 
@@ -745,7 +853,7 @@ test("an agent session that fails to start shows its error beside an agent panel
   await screen.findByRole("region", { name: "Panel 0" });
   vi.spyOn(bridge, "spawnAgent").mockRejectedValueOnce("out of ptys");
 
-  startAgent();
+  fireEvent.click(screen.getByRole("button", { name: "Split" }));
 
   expect((await screen.findByRole("alert")).textContent).toBe("out of ptys");
   expect(screen.getByLabelText("Panel 0").hidden).toBe(false);
@@ -944,8 +1052,9 @@ test("picking Codex before the first message starts a Codex session in the same 
   expect((within(panel).getByRole("textbox", { name: "Draft" }) as HTMLInputElement).value).toBe("add a test");
   expect(bridge.spawnedAgents.map((s) => s.agent)).toEqual(["Claude", "Codex"]);
   expect(bridge.killed).toEqual(["0"]);
-  // The Codex session took the Claude one's place, so the worktree has one session.
-  expect([...document.querySelectorAll(".session-row")].map((row) => row.textContent)).toEqual(["Codex"]);
+  // The Codex session took the Claude one's place, which is deleted, so the worktree has one session.
+  await waitFor(async () => expect((await bridge.agentSessions()).map((s) => s.agent)).toEqual(["Codex"]));
+  await waitFor(() => expect(document.querySelectorAll(".session-row")).toHaveLength(1));
 });
 
 // The core starts the Codex session in a panel of its own. The switch drops that panel, even when
@@ -1035,7 +1144,7 @@ test("with nothing waiting Needs you counts 0, and the key does nothing", async 
   await pressJump();
 
   expect(waiting()).toBe("0");
-  expect(screen.getByRole("button", { name: "main (main worktree)" }).getAttribute("aria-current")).toBe("true");
+  expect(selectedWorktree()).toBe("main");
   expect(bridge.focused).toEqual([]);
 });
 
@@ -1048,7 +1157,10 @@ test("the key focuses the head of the attention queue's agent panel in another w
   await select("main (main worktree)");
   startAgent();
   await screen.findByRole("region", { name: "Panel 1" });
-  await select("feat-36");
+  // Selecting the session focuses its panel.
+  const row = await findSessionRow("feat-36");
+  await act(async () => fireEvent.click(row));
+  expect(bridge.focused).toEqual(["0"]);
   // The approval ranks first, though the question came first.
   await act(async () =>
     bridge.agentStateChanged({ session: "0", state: "NeedsInput", kind: "Question", source: "Protocol" }),
@@ -1060,21 +1172,21 @@ test("the key focuses the head of the attention queue's agent panel in another w
 
   await pressJump();
 
-  expect(screen.getByRole("button", { name: "main (main worktree)" }).getAttribute("aria-current")).toBe("true");
+  expect(selectedWorktree()).toBe("main");
   expect(screen.getByLabelText("Panel 1").hidden).toBe(false);
   expect(document.activeElement).toBe(screen.getByLabelText("Panel 1"));
-  expect(bridge.focused).toEqual(["1"]);
+  expect(bridge.focused).toEqual(["0", "1"]);
 
   // The user answers, and the agent goes back to work.
   await act(async () => bridge.agentStateChanged({ session: "1", state: "Working", source: "Protocol" }));
   expect(waiting()).toBe("1");
   await pressJump();
 
-  expect(screen.getByRole("button", { name: "feat-36" }).getAttribute("aria-current")).toBe("true");
+  expect(selectedWorktree()).toBe("feat-36");
   expect(screen.getByLabelText("Panel 0").hidden).toBe(false);
   expect(screen.getByLabelText("Panel 1").hidden).toBe(true);
   expect(document.activeElement).toBe(screen.getByLabelText("Panel 0"));
-  expect(bridge.focused).toEqual(["1", "0"]);
+  expect(bridge.focused).toEqual(["0", "1", "0"]);
 });
 
 test("clicking Needs you jumps as the key does", async () => {
@@ -1103,6 +1215,9 @@ test("jumping to a Done session's panel makes it Idle, which leaves the queue", 
   await select("main (main worktree)");
   expect(waiting()).toBe("1");
 
+  await findSessionRow("feat-36");
+  expect(rowState("feat-36")).toBe("Done");
+
   await pressJump();
 
   expect(rowState("feat-36")).toBeNull();
@@ -1119,7 +1234,7 @@ test("the key opens and focuses a waiting session that has no panel", async () =
 
   await pressJump();
 
-  expect(screen.getByRole("button", { name: "feat-36" }).getAttribute("aria-current")).toBe("true");
+  expect(selectedWorktree()).toBe("feat-36");
   expect(screen.getByLabelText(`Panel ${session}`).hidden).toBe(false);
   expect(document.activeElement).toBe(screen.getByLabelText(`Panel ${session}`));
   expect(bridge.focused).toEqual([session]);
@@ -1135,7 +1250,7 @@ test("clicking a notification shows its session's worktree and focuses its agent
 
   await act(async () => bridge.clickNotification({ session: "0", worktree: feature }));
 
-  expect(screen.getByRole("button", { name: "feat-36" }).getAttribute("aria-current")).toBe("true");
+  expect(selectedWorktree()).toBe("feat-36");
   expect(screen.getByLabelText("Panel 0").hidden).toBe(false);
   expect(document.activeElement).toBe(screen.getByLabelText("Panel 0"));
   expect(bridge.focused).toEqual(["0"]);
@@ -1163,7 +1278,7 @@ test("clicking a notification for a session grove no longer has changes nothing"
 
   await act(async () => bridge.clickNotification({ session: "7", worktree: feature }));
 
-  expect(screen.getByRole("button", { name: "main (main worktree)" }).getAttribute("aria-current")).toBe("true");
+  expect(selectedWorktree()).toBe("main");
   expect(screen.queryByLabelText("Panel 7")).toBeNull();
   expect(bridge.focused).toEqual([]);
 });
@@ -1214,7 +1329,9 @@ test("a new worktree opens selected, with Claude Code started in it", async () =
   expect(bridge.spawnedAgents).toEqual([
     { session: "0", worktree: "/grovecode/worktrees/grove/feat-52", agent: "Claude" },
   ]);
-  expect(screen.getByRole("button", { name: "feat-52" }).getAttribute("aria-current")).toBe("true");
+  // The title bar names the worktree once the new worktree's list comes.
+  await waitFor(() => expect(selectedWorktree()).toBe("feat-52"));
+  expect((await findSessionRow("feat-52")).getAttribute("aria-current")).toBe("true");
 });
 
 // A repo whose Cargo.toml gets it the Rust crate profile, with its setup script.
@@ -1251,7 +1368,9 @@ test("Claude Code starts in a new worktree once its setup script succeeds, and t
     { session: "0", worktree: "/grovecode/worktrees/grove/feat-52", agent: "Claude" },
   ]);
   expect(screen.queryByRole("img", { name: "Setup running" })).toBeNull();
-  expect(menuItems("feat-52")).toContain("Start Claude Code");
+  // The session's row takes the worktree's place.
+  await findSessionRow("feat-52");
+  expect(screen.queryByRole("button", { name: "feat-52" })).toBeNull();
 });
 
 // Issue #158: a start that waits for setup holds back none of the worktree's saves.
@@ -1409,6 +1528,14 @@ async function deleteFeat52() {
   await expect.poll(() => screen.queryByRole("button", { name: "feat-52" })).toBeNull();
 }
 
+// Deletes the session in the row's menu, once the dialog is confirmed.
+async function deleteSession(row: HTMLElement) {
+  fireEvent.click(within(row.closest<HTMLElement>(".session-item")!).getByRole("button", { name: /^Actions for / }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Delete session" }));
+  const dialog = await screen.findByRole("dialog", { name: "Delete session" });
+  await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Delete session" })));
+}
+
 test("a worktree deleted and made again on the same branch starts with no agent session or shell", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
@@ -1416,7 +1543,8 @@ test("a worktree deleted and made again on the same branch starts with no agent 
   await screen.findByRole("region", { name: "Panel 0" });
   fireEvent.click(await screen.findByRole("button", { name: "Open shell" }));
   await screen.findByRole("button", { name: "Close shell" });
-  act(() => bridge.agentStateChanged({ session: "0", state: "Working", source: "Protocol" }));
+  // A worktree with a session has no row, so its session goes first.
+  await deleteSession(await findSessionRow("feat-52"));
 
   await deleteFeat52();
 
@@ -1425,11 +1553,8 @@ test("a worktree deleted and made again on the same branch starts with no agent 
   expect(screen.getByRole("button", { name: "feat-52" }).getAttribute("aria-current")).toBe("true");
   expect(await screen.findByRole("button", { name: "Open shell" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Close shell" })).toBeNull();
-  expect(rowState("feat-52")).toBeNull();
+  expect(sessionRow("feat-52")).toBeUndefined();
   expect(screen.queryByRole("region", { name: "Panel 0" })).toBeNull();
-  // The deleted worktree's Working session ended with it, so Cmd-Q quits at once.
-  act(() => bridge.requestQuit());
-  await expect.poll(() => bridge.quitCount()).toBe(1);
 });
 
 test("a layout that loads after its worktree was deleted does not reach the one made again at its path", async () => {
@@ -1882,7 +2007,7 @@ test("the Details card shows the focused agent session's name, state and where i
   await select("feat-36");
   startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
-  startAgent();
+  await startAnother(bridge, feature);
   const second = await screen.findByRole("region", { name: "Panel 1" });
   await act(() => bridge.sendMessage("1", "Second task"));
   act(() => bridge.agentStateChanged({ session: "1", state: "Working", source: "Protocol" }));
@@ -1920,19 +2045,42 @@ test("the Details card shows the new session of a panel that changed agent while
   expect(within(session).getByText("Codex")).toBeTruthy();
 });
 
+test("selecting an agent session in the sidebar shows it in the Details card", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 0" });
+  await startAnother(bridge, feature);
+  await screen.findByRole("region", { name: "Panel 1" });
+  await act(() => bridge.sendMessage("0", "First task"));
+  await act(() => bridge.sendMessage("1", "Second task"));
+  await clickButton("Details");
+  const sessionTitle = () =>
+    within(within(detailsCard()).getByRole("group", { name: "Agent session" })).getByRole("heading").textContent;
+
+  const row0 = await findSessionRow("feat-36", 0);
+  await act(async () => fireEvent.click(row0));
+  await waitFor(() => expect(sessionTitle()).toBe("First task"));
+
+  const row1 = await findSessionRow("feat-36", 1);
+  await act(async () => fireEvent.click(row1));
+  await waitFor(() => expect(sessionTitle()).toBe("Second task"));
+});
+
 test("the Details card stays open on a click outside, Escape, and after selecting another agent session and another worktree", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
   startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
-  startAgent();
+  await startAnother(bridge, feature);
   await screen.findByRole("region", { name: "Panel 1" });
   await clickButton("Details");
 
   fireEvent.pointerDown(screen.getByRole("main"));
   fireEvent.keyDown(document.body, { key: "Escape" });
-  const second = agentRow("Claude Code 2");
+  const second = await findSessionRow("feat-36", 1);
   fireEvent.pointerDown(second);
   await act(async () => fireEvent.click(second));
   const other = screen.getByRole("button", { name: "main (main worktree)" });
@@ -2064,11 +2212,12 @@ test("Details hides, and its button shows it closed, while the chat area is too 
 });
 
 test("with two agent panels, Details shows only while each panel keeps its minimum width beside it", async () => {
-  render(<App bridge={await trackedBridge()} />);
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
   await select("feat-36");
   startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
-  startAgent();
+  await startAnother(bridge, feature);
   await screen.findByRole("region", { name: "Panel 1" });
   await clickButton("Details");
   expect(detailsShown()).toBe(true);
@@ -2136,11 +2285,12 @@ test("clicking the second of two nested agent sessions focuses its panel", async
   await select("feat-36");
   startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
-  startAgent();
+  await startAnother(bridge, feature);
   await screen.findByRole("region", { name: "Panel 1" });
   await select("main (main worktree)");
 
-  await act(async () => fireEvent.click(agentRow("Claude Code 2")));
+  const row = await findSessionRow("feat-36", 1);
+  await act(async () => fireEvent.click(row));
 
   expect(screen.getByLabelText("Panel 1").hidden).toBe(false);
   expect(document.activeElement).toBe(screen.getByLabelText("Panel 1"));
