@@ -860,6 +860,62 @@ test("an interrupted or failed turn says so", async () => {
   expect(screen.getByText("API Error: 529 overloaded")).toBeTruthy();
 });
 
+// Claude's and Codex's own names for a turn that failed because nobody is logged in.
+test.each<[Agent, string, string]>([
+  ["Claude", "authentication_failed", "Not logged in · Please run /login"],
+  ["Codex", "unauthorized", "401 Unauthorized"],
+])("a %s turn that failed to log in offers terminal mode, where the agent's own login runs", async (agent, kind, text) => {
+  const bridge = await started(agent);
+  await shownPanel(bridge, { agent, state: working("Failed") });
+  act(() => bridge.messages("0", { type: "TurnEnded", outcome: "Failed", kind, message: text }));
+  nextFrame();
+  const card = screen.getByRole("group", { name: "Turn failed" });
+  expect(card.textContent).toContain(text);
+
+  await act(async () => fireEvent.click(within(card).getByRole("button", { name: "Switch to terminal mode" })));
+
+  expect(bridge.modesSet).toEqual([{ session: "0", mode: "Terminal" }]);
+  expect(terminal()).toBeTruthy();
+});
+
+test("a turn that failed for another reason offers no switch", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Failed") });
+
+  act(() =>
+    bridge.messages("0", { type: "TurnEnded", outcome: "Failed", kind: "overloaded", message: "API Error: 529 overloaded" }),
+  );
+  nextFrame();
+
+  expect(within(screen.getByRole("group", { name: "Turn failed" })).queryByRole("button")).toBeNull();
+});
+
+test("the panel reports whether its latest turn failed to log in", async () => {
+  const bridge = await started();
+  bridge.messages("0", { type: "TurnEnded", outcome: "Failed", kind: "authentication_failed", message: "Not logged in" });
+  const reported: boolean[] = [];
+  render(
+    <ChatPanel
+      bridge={bridge}
+      session="0"
+      agent="Claude"
+      worktree={worktree}
+      shown
+      state={undefined}
+      focusRequest={0}
+      onOpenDiff={() => {}}
+      onLoginFailed={(failed) => reported.push(failed)}
+    />,
+  );
+  await act(async () => {});
+  expect(reported).toEqual([true]);
+
+  act(() => bridge.messages("0", { type: "TurnStarted" }, { type: "TurnEnded", outcome: "Completed" }));
+  nextFrame();
+
+  expect(reported).toEqual([true, false]);
+});
+
 test("a message the agent never got says so, with its text", async () => {
   const bridge = await started();
   await shownPanel(bridge);

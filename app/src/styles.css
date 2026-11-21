@@ -1968,9 +1968,11 @@ svg {
   background: var(--term-bg);
 }
 
+/* The panel measures this element's content box, so the padding is left out of the fit. */
 .terminal-panel .terminal {
   flex: 1;
   min-height: 0;
+  padding: var(--space-8);
 }
 
 /* Above an agent panel's terminal in terminal mode. */
