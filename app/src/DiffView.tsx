@@ -249,7 +249,15 @@ export function DiffView({
   return (
     <section className="diff-view">
       <div className="toolbar">
-        <Segmented<DiffBase> label="Diff base" options={bases} value={base} onChange={setBase} />
+        <Segmented<DiffBase>
+          label="Diff base"
+          options={bases}
+          value={base}
+          onChange={(next) => {
+            unpin();
+            setBase(next);
+          }}
+        />
         {openCount > 0 && (
           <div className="review">
             <Button variant="primary" size="xs" onClick={() => setPicking(!picking)}>

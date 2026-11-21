@@ -193,7 +193,8 @@ test("switching the diff base switches the whole list, each section with its cou
   expect(within(bases).getByRole("button", { name: "Merge base" }).getAttribute("aria-pressed")).toBe("true");
   expect(listed()).toEqual(["a.rs +2 -1", "committed.rs +4 -0"]);
   expect(editorShows("a.rs")).toEqual({ original: "base a\n", modified: "saved a\n" });
-  expect(within(section("committed.rs")).getByLabelText("Modified").textContent).toBe("fn main() {}\n");
+  // Each file shows as its own read lands, so this one may come after a.rs.
+  expect((await within(section("committed.rs")).findByLabelText("Modified")).textContent).toBe("fn main() {}\n");
 
   fireEvent.click(within(bases).getByRole("button", { name: "HEAD" }));
 
@@ -277,6 +278,21 @@ test("a revealed file stays in view while the sections above it take their heigh
   fireEvent.wheel(screen.getByRole("list", { name: "Changed files" }));
   grow();
   expect(scrolledTo).toHaveLength(2);
+});
+
+test("switching the diff base lets go of a revealed file, so the view does not jump back to it", async () => {
+  const scrolledTo = watchScrolls();
+  const diffs = twoFiles();
+  diffs[worktree].MergeBase = [change({ newPath: "b.rs", added: 2 }, "", "base b\n")];
+  const { reveal } = await revealable(diffs);
+  reveal("b.rs");
+  expect(scrolledTo).toHaveLength(1);
+
+  fireEvent.click(within(screen.getByRole("group", { name: "Diff base" })).getByRole("button", { name: "Merge base" }));
+  await waitFor(() => expect(listed()).toEqual(["b.rs +2 -0"]));
+  grow();
+
+  expect(scrolledTo).toHaveLength(1);
 });
 
 test("a revealed file that is not in the HEAD diff is dropped, so it does not scroll the view when it shows up later", async () => {
