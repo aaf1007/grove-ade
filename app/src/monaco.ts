@@ -70,14 +70,20 @@ export function languageOf(path: string): string | undefined {
     ?.id;
 }
 
+// Tokenizing runs on the main thread, about 15 ms for this many lines of TypeScript. A longer block
+// stays plain rather than hold up a frame.
+const MOST_LINES_TO_COLOR = 1000;
+
 /** A run of code and the syntax token that colors it, if any. */
 export type CodeRun = { text: string; syntax?: string };
 
 /**
  * `code` cut into colored runs, one list per line, by the language a fenced block's tag names, such
- * as ts or rust. Undefined when Monaco has no such language.
+ * as ts or rust. Undefined when Monaco has no such language, or the block is too long to color.
  */
 export async function colorRuns(code: string, tag: string): Promise<CodeRun[][] | undefined> {
+  const lines = code.split(/\r\n|\r|\n/);
+  if (lines.length > MOST_LINES_TO_COLOR) return undefined;
   const name = tag.toLowerCase();
   const language = monaco.languages
     .getLanguages()
@@ -85,7 +91,6 @@ export async function colorRuns(code: string, tag: string): Promise<CodeRun[][] 
   if (!language) return undefined;
   // A language's tokenizer loads on first use. Colorize waits for it, and tokenize does not.
   await monaco.editor.colorize("", language.id, {});
-  const lines = code.split(/\r\n|\r|\n/);
   return monaco.editor.tokenize(code, language.id).map((tokens, index) => {
     const line = lines[index];
     const runs: CodeRun[] = [];

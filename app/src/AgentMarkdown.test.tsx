@@ -32,7 +32,7 @@ test("a list renders as list items", () => {
 // it on each click and key in WebKit, which jsdom claims to be, with a ClipboardItem, which jsdom
 // lacks. Monaco cancels the text it promised on the next event, so the item lets that go.
 function stubClipboard() {
-  const writeText = vi.fn(async (_text: string) => {});
+  const writeText = vi.fn<(text: string) => Promise<void>>(async () => {});
   Object.defineProperty(navigator, "clipboard", { value: { writeText, write: async () => {} }, configurable: true });
   vi.stubGlobal(
     "ClipboardItem",
@@ -74,6 +74,14 @@ test("a block in a language Monaco does not know shows as plain text", async () 
   const plain = container.querySelectorAll("pre > code")[0];
   expect(plain.querySelector("span")).toBeNull();
   expect(plain.textContent).toBe("const name = 1;\n");
+});
+
+test("a block too long to color in one frame stays plain", async () => {
+  const long = Array.from({ length: 1001 }, (_, line) => `const line${line} = ${line};`).join("\n");
+  const container = shown("```ts\n" + long + "\n```\n\n```ts\nlet ready = true;\n```");
+  await screen.findByText("let");
+
+  expect(container.querySelectorAll("pre > code")[0].querySelector("span")).toBeNull();
 });
 
 test("the copy button copies the code as written, not the colored markup", async () => {

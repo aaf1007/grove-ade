@@ -124,7 +124,9 @@ function CodeBlock({ node }: { node?: HastNode }) {
   return (
     <div className="code-block">
       <pre>
-        <code>{lines ? lines.map((runs, index) => <ColoredLine key={index} runs={runs} last={index === lines.length - 1} />) : text}</code>
+        <code>
+          {lines?.map((runs, index) => <ColoredLine key={index} runs={runs} last={index === lines.length - 1} />) ?? text}
+        </code>
       </pre>
       <IconButton
         icon={Copy}

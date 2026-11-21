@@ -277,9 +277,10 @@
   --text-control: 500 var(--text-control-size) / 20px var(--font-ui);
   --text-body-size: 14px;
   --text-body: 400 var(--text-body-size) / 1.625 var(--font-ui);
-  /* The chat transcript: its text, and code in it. */
+  /* The chat transcript: its text, the width of its prose (about 75 characters a line), and code in it. */
   --text-transcript-size: 15px;
   --text-transcript: 400 var(--text-transcript-size) / 24px var(--font-ui);
+  --text-transcript-measure: 520px;
   --text-transcript-code-size: 13px;
   --text-transcript-code: 400 var(--text-transcript-code-size) / 20px var(--font-mono);
   --text-meta-size: 12px;

@@ -911,6 +911,11 @@ svg {
   overflow-wrap: anywhere;
 }
 
+/* Prose keeps a readable line length. Code and tables may use the whole lane. */
+.msg-agent > :not(.code-block, table) {
+  max-width: var(--text-transcript-measure);
+}
+
 /* Agent text is markdown. A single newline in a paragraph shows as a line break, as the agent wrote it. */
 .msg-agent p {
   margin: 0 0 var(--space-10);
