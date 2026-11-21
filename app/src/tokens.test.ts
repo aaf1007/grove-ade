@@ -85,6 +85,55 @@ test.each([
   expect(rawSpacing(source)).toEqual([]);
 });
 
+// Every transition and animation takes its timing from the motion tokens.
+test("no app stylesheet outside the token file has a raw duration or easing curve", () => {
+  const raw = Object.entries(stylesheets).flatMap(([path, text]) =>
+    rawMotion(text).map((declaration) => `${path}: ${declaration}`),
+  );
+  expect(raw).toEqual([]);
+});
+
+test.each([
+  ".a { transition: opacity 120ms ease-out; }",
+  ".a { transition: transform .2s; }",
+  ".a { transition: opacity var(--duration-fast) cubic-bezier(0.4, 0, 0.2, 1); }",
+  ".a { transition: opacity var(--duration-fast) linear; }",
+  ".a { animation: pulse 1.4s infinite; }",
+  ".a { animation-duration: 2s; }",
+  ".a { animation: pulse var(--duration-slow) steps(6) infinite; }",
+  ".a { transition-timing-function: ease; }",
+])("the raw motion check rejects %s", (source) => {
+  expect(rawMotion(source)).toHaveLength(1);
+});
+
+test.each([
+  ".a { transition: opacity var(--duration-fast) var(--ease-out), visibility var(--duration-fast); }",
+  ".a { animation: shimmer var(--shimmer); }",
+  ".a { animation: ui-ease-in-pulse var(--working-pulse); transition: none; }",
+])("the raw motion check allows %s", (source) => {
+  expect(rawMotion(source)).toEqual([]);
+});
+
+test("reduced motion sets every duration to zero", () => {
+  // The scales block sets them, indented by two spaces. The reduced motion block indents by four.
+  const durations = [...withoutComments(tokens).matchAll(/^ {2}(--duration-[\w-]+):/gm)].map(([, name]) => name);
+  expect(durations.length).toBe(3);
+  const reduced = /@media \(prefers-reduced-motion: reduce\) \{\s*:root \{([^}]*)\}/.exec(withoutComments(tokens));
+  expect(reduced, "a reduced motion block for :root").not.toBeNull();
+  for (const duration of durations) expect(reduced![1]).toMatch(new RegExp(`${duration}: 0s;`));
+});
+
+// Each transition or animation declaration that sets a duration or a curve of its own.
+function rawMotion(css: string): string[] {
+  return [...withoutComments(css).matchAll(/(?<![\w-])(transition|animation)(-[a-z]+)*\s*:([^;}]+)/g)]
+    .filter(([, , , value]) =>
+      /(?<![\w-])(\d*\.?\d+m?s|ease(-in)?(-out)?|linear|cubic-bezier|steps)(?![\w-])/.test(
+        value.replace(/var\([^)]*\)/g, ""),
+      ),
+    )
+    .map(([declaration]) => declaration.trim());
+}
+
 // Each padding, margin or gap declaration that sets a raw length.
 function rawSpacing(css: string): string[] {
   return [...withoutComments(css).matchAll(/(?<![\w-])(padding|margin|gap|row-gap|column-gap)(-[a-z]+)*\s*:([^;}]+)/g)]

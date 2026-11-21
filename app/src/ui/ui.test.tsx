@@ -151,6 +151,20 @@ test("a menu item's shortcut picks it while the menu is open", () => {
   expect(screen.queryByRole("menu")).toBeNull();
 });
 
+test("a menu opened by a pointer plays its enter transition, and by a key it does not", () => {
+  render(<Menu label="Open a panel" icon={Plus} items={[{ key: "Files", label: "Files", onSelect() {} }]} />);
+  const trigger = screen.getByRole("button", { name: "Open a panel" });
+
+  fireEvent.pointerDown(trigger);
+  fireEvent.click(trigger);
+  expect(screen.getByRole("menu").classList.contains("popover-enter")).toBe(true);
+  fireEvent.click(trigger);
+
+  fireEvent.keyDown(trigger, { key: "Enter" });
+  fireEvent.click(trigger);
+  expect(screen.getByRole("menu").classList.contains("popover-enter")).toBe(false);
+});
+
 test("a card is a region named by its title", () => {
   render(
     <Card title="Changed files" actions={<Button size="xs">Review diff</Button>}>

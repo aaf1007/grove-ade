@@ -21,8 +21,8 @@
   background: var(--panel);
   box-shadow: var(--shadow-menu);
   transition:
-    opacity 120ms ease-out,
-    visibility 120ms;
+    opacity var(--duration-fast) var(--ease-out),
+    visibility var(--duration-fast);
 }
 
 /* Hidden for lack of room, it keeps its box so the app can tell when room returns. */
