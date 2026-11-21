@@ -30,6 +30,7 @@ import type {
 } from "./bridge";
 import type { ModelChoice } from "./Picker";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
+import { CHAT_MIN_WIDTH } from "./layout";
 import { useSetting } from "./settings";
 import { AgentState } from "./ui/AgentState";
 import { ChangeBaseDialog } from "./WorktreeDialogs";
@@ -100,6 +101,7 @@ export function DetailsCard({
   onOpenProfile,
   onClose,
   onRoom,
+  onShowOverText,
 }: {
   bridge: Bridge;
   worktree: string;
@@ -117,6 +119,8 @@ export function DetailsCard({
   onClose(): void;
   /** Called with whether the card covers none of the text column, each time the layout changes. */
   onRoom(fits: boolean): void;
+  /** Asks to show the card over the text when it has no room, as after an unpin. */
+  onShowOverText(): void;
 }) {
   const [tracked, setTracked] = useState<{
     worktree: Worktree;
@@ -139,6 +143,9 @@ export function DetailsCard({
   const card = useRef<HTMLElement>(null);
   // Kept in the window's settings, so the card of each worktree opens as the last one was left.
   const [pinned, setPinned] = useSetting("grove.detailsPinned", false, (value) => typeof value === "boolean");
+  // Whether the lane is wide enough for the pinned column beside a chat of its minimum width.
+  const [roomForColumn, setRoomForColumn] = useState(true);
+  const column = pinned && roomForColumn;
 
   useEffect(() => {
     let current = true;
@@ -189,7 +196,7 @@ export function DetailsCard({
       const ask = ++asks;
       bridge.agentSessions().then(
         (all) => listening && ask === asks && setRecord(all.find((listed) => listed.session === focused) ?? null),
-        (e: unknown) => listening && setError(String(e)),
+        (e: unknown) => listening && ask === asks && setError(String(e)),
       );
     }
     const stopSessions = bridge.onAgentSessionsChanged(list);
@@ -238,10 +245,14 @@ export function DetailsCard({
     onClose();
   });
 
-  // A pinned card is a column beside the text, so it always has room.
+  // A pinned card always shows: as a column while the chat keeps its minimum width beside it, and
+  // floating otherwise. The card is as wide either way, so the choice does not flip back and forth.
   const measure = useEffectEvent(() => {
-    if (pinned) return onRoom(true);
     const box = card.current!.getBoundingClientRect();
+    if (pinned) {
+      setRoomForColumn(lane!.getBoundingClientRect().width - box.width >= CHAT_MIN_WIDTH);
+      return onRoom(true);
+    }
     const text = [...lane!.querySelectorAll(TEXT_COLUMN)].map((column) => column.getBoundingClientRect());
     onRoom(!text.some((column) => overlapsAcross(box, column)));
   });
@@ -275,8 +286,8 @@ export function DetailsCard({
   }, [lane]);
 
   useEffect(() => {
-    if (pinned) measure();
-  }, [pinned]);
+    if (lane) measure();
+  }, [lane, pinned]);
 
   // The Change base dialog is modal, so while it is open the card leaves its keys and clicks
   // alone. In the capture phase, so the Escape or click that closes the dialog has passed by the
@@ -324,7 +335,7 @@ export function DetailsCard({
   const focusedRecord = record?.session === focused ? record : null;
 
   return (
-    <div className={pinned ? "details-holder details-pinned" : "details-holder"}>
+    <div className={column ? "details-holder details-pinned" : "details-holder"}>
       <section
         ref={card}
         id={DETAILS_CARD_ID}
@@ -358,7 +369,10 @@ export function DetailsCard({
             size="xs"
             className="details-pin"
             aria-pressed={pinned}
-            onClick={() => setPinned((was) => !was)}
+            onClick={() => {
+              if (pinned) onShowOverText();
+              setPinned((was) => !was);
+            }}
           />
         </div>
         <ul className="details-rows">

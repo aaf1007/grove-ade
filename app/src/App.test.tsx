@@ -2364,3 +2364,51 @@ test("quick icon changes leave the last requested Dock icon applied, even when a
   }
   await waitFor(() => expect(applied.at(-1)).toBe("blue-dark"));
 });
+
+// The chat lane, wide enough for the pinned column beside a chat of the minimum width, or not.
+const WIDE_LANE = { left: 300, right: 1240, top: 52, bottom: 860 };
+const NARROW_LANE = { left: 300, right: 820, top: 52, bottom: 860 };
+
+test("a pinned Details card is a column beside the chat only while the chat keeps its minimum width, and floats otherwise", async () => {
+  const style = document.createElement("style");
+  style.textContent = appStyles + detailsStyles;
+  document.head.append(style);
+  onTestFinished(() => style.remove());
+  await cardWithText(BESIDE_CARD);
+  boxes.push([".chat-area", NARROW_LANE]);
+  const lane = screen.getByRole("main");
+  const unpinnedPadding = getComputedStyle(lane).paddingRight;
+  await clickButton("Details");
+  await act(async () => fireEvent.click(within(detailsCard()).getByRole("button", { name: "Pin" })));
+  relayout(boxes);
+
+  expect(getComputedStyle(lane).paddingRight).toBe(unpinnedPadding);
+  expect(within(detailsCard()).getByRole("button", { name: "Pin" }).getAttribute("aria-pressed")).toBe("true");
+  fireEvent.pointerDown(lane);
+  expect(detailsShown()).toBe(true);
+
+  relayout([
+    [".details-card", CARD],
+    [".thread", BESIDE_CARD],
+    [".chat-area", WIDE_LANE],
+  ]);
+  expect(getComputedStyle(lane).paddingRight).not.toBe(unpinnedPadding);
+});
+
+test("unpinning the Details card in a lane with no room beside the text keeps it shown over the text, with focus on Pin", async () => {
+  await cardWithText(UNDER_CARD);
+  boxes.push([".chat-area", WIDE_LANE]);
+  await clickButton("Details");
+  const pin = () => within(detailsCard()).getByRole("button", { name: "Pin" });
+  await act(async () => fireEvent.click(pin()));
+  relayout(boxes);
+
+  pin().focus();
+  await act(async () => fireEvent.click(pin()));
+  relayout(boxes);
+
+  expect(detailsShown()).toBe(true);
+  expect(pin().getAttribute("aria-pressed")).toBe("false");
+  expect(document.activeElement).toBe(pin());
+  expect(pressed("Details")).toBe("true");
+});

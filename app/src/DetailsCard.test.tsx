@@ -75,6 +75,7 @@ async function renderCard(
     onOpenProfile: vi.fn(),
     onClose: vi.fn(),
     onRoom: vi.fn(),
+    onShowOverText: vi.fn(),
   };
   // With no chat lane to measure, the card always has room. App.test.tsx covers hiding it.
   const card = (more: typeof props) => (
@@ -320,6 +321,40 @@ test("the session block shows the focused session's title, its state in words si
   await act(async () => rerender({ session: { ...claude, session, state: working } }));
   expect(within(block()).getByText("Working")).toBeTruthy();
   expect(within(block()).getByText("since 14:20")).toBeTruthy();
+});
+
+test("a state entered on another day shows its date with its time", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 10, 19, 14, 5));
+  const bridge = await setup();
+  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const idle = { session, state: "Idle", source: "Protocol" } as const;
+  bridge.agentStateChanged(idle);
+  vi.setSystemTime(new Date(2026, 10, 20, 9, 30));
+  await renderCard(bridge, { session: { ...claude, session, state: idle } });
+
+  const block = within(card()).getByRole("group", { name: "Agent session" });
+  expect(within(block).getByText("since Nov 19, 14:05")).toBeTruthy();
+});
+
+test("a listing of the agent sessions that fails after a later one succeeded says nothing", async () => {
+  const bridge = await setup();
+  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const listings: { resolve: () => void; reject: () => void }[] = [];
+  const list = bridge.agentSessions.bind(bridge);
+  vi.spyOn(bridge, "agentSessions").mockImplementation(
+    () =>
+      new Promise((resolve, reject) =>
+        listings.push({ resolve: () => void list().then(resolve), reject: () => reject("the core is busy") }),
+      ),
+  );
+  await renderCard(bridge, { session: { ...claude, session } });
+  await act(async () => bridge.agentStateChanged({ session, state: "Working", source: "Protocol" }));
+
+  await act(async () => listings[1].resolve());
+  await act(async () => listings[0].reject());
+
+  expect(within(card()).queryByRole("alert")).toBeNull();
 });
 
 test("the session row shows the focused session's agent, model, effort and mode", async () => {

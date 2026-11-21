@@ -726,6 +726,7 @@ export function App({ bridge }: { bridge: Bridge }) {
                 }}
                 onOpenProfile={() => open(selected, "Profile")}
                 onClose={closeDetails}
+                onShowOverText={() => setDetailsOverText(true)}
               />
             )}
             {(agentError || workspaceError) && (
