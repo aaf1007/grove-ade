@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 
+import { openedByPointer } from "../motion";
 import { IconButton } from "./IconButton";
 import "./Menu.css";
 
@@ -62,15 +63,26 @@ export function Menu({
   ref?: Ref<MenuHandle>;
 }) {
   const [open, setOpen] = useState(false);
+  const [entering, setEntering] = useState(false);
   const holder = useRef<HTMLSpanElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
-  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }));
+  useImperativeHandle(ref, () => ({
+    open: () => {
+      if (!open) setEntering(openedByPointer());
+      setOpen(true);
+    },
+  }));
 
   // The item with focus goes away, so focus goes back to the button, where a dialog finds it.
   function close() {
     button.current?.focus();
     setOpen(false);
+  }
+
+  function toggle() {
+    setEntering(!open && openedByPointer());
+    setOpen(!open);
   }
 
   function pick(item: MenuItem) {
@@ -131,7 +143,7 @@ export function Menu({
           size="xs"
           aria-haspopup="menu"
           aria-expanded={open}
-          onClick={() => setOpen(!open)}
+          onClick={toggle}
         />
       ) : (
         <button
@@ -142,13 +154,18 @@ export function Menu({
           aria-label={label}
           aria-haspopup="menu"
           aria-expanded={open}
-          onClick={() => setOpen(!open)}
+          onClick={toggle}
         >
           {trigger}
         </button>
       )}
       {open && (
-        <div ref={list} className={`ui-menu-list ui-menu-list-${align}`} role="menu" aria-label={label}>
+        <div
+          ref={list}
+          className={`ui-menu-list ui-menu-list-${align}${entering ? " popover-enter" : ""}`}
+          role="menu"
+          aria-label={label}
+        >
           {heading && <div className="ui-menu-heading">{heading}</div>}
           {items.map((item) => (
             <button

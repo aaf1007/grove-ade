@@ -1,6 +1,7 @@
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { openedByPointer } from "./motion";
 import { Button } from "./ui/Button";
 
 /**
@@ -24,6 +25,7 @@ export function Dialog({
   const form = useRef<HTMLFormElement>(null);
   // Read on the first render, before a control takes focus.
   const opener = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  const [entering] = useState(openedByPointer);
 
   useEffect(() => {
     if (!form.current?.contains(document.activeElement)) {
@@ -37,10 +39,13 @@ export function Dialog({
 
   // In the body, so no region's styles or overflow reach it.
   return createPortal(
-    <div className="overlay" onPointerDown={(event) => event.target === event.currentTarget && onCancel()}>
+    <div
+      className={entering ? "overlay overlay-enter" : "overlay"}
+      onPointerDown={(event) => event.target === event.currentTarget && onCancel()}
+    >
       <form
         ref={form}
-        className="dialog"
+        className={entering ? "dialog popover-enter" : "dialog"}
         role={role}
         aria-modal="true"
         aria-label={label}
