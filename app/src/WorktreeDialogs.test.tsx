@@ -17,6 +17,7 @@ const noAgents = {
   shownAgents: [],
   onStartAgent() {},
   onStartAgentAfterSetup() {},
+  onNewSession() {},
   onDeleting() {},
   onRemoved() {},
   onFocusAgent() {},
@@ -54,7 +55,8 @@ async function sidebarWith(
 }
 
 async function openNewWorktree() {
-  fireEvent.click(screen.getByRole("button", { name: "New worktree in grove" }));
+  fireEvent.click(screen.getByRole("button", { name: "New session" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "New worktree…" }));
   return screen.findByRole("dialog", { name: "New worktree" });
 }
 
@@ -295,18 +297,16 @@ test("the main worktree's menu only starts Claude Code and changes its base bran
   expect(items.map((item) => item.textContent)).toEqual(["Start Claude Code", "Change base branch"]);
 });
 
-test("closing a dialog puts focus back on the + that opened it", async () => {
+test("closing the new worktree dialog puts focus back on New session, which opened it", async () => {
   await sidebarWith();
-  const plus = screen.getByRole("button", { name: "New worktree in grove" });
-  plus.focus();
-  fireEvent.click(plus);
-  const dialog = await screen.findByRole("dialog", { name: "New worktree" });
+  const newSession = screen.getByRole("button", { name: "New session" });
+  const dialog = await openNewWorktree();
   expect(dialog.contains(document.activeElement)).toBe(true);
 
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
 
   await waitForNoDialog();
-  expect(document.activeElement).toBe(plus);
+  expect(document.activeElement).toBe(newSession);
 });
 
 test("closing a worktree menu, or the dialog it opened, puts focus back on the menu's button", async () => {
