@@ -325,9 +325,12 @@ test("closing a shell that already exited shows no error", async () => {
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
-// Picks `place` in the sidebar's New session picker.
+// Picks `place` in the sidebar's New session picker. New session stays disabled until the projects
+// load, and a click on it before then does nothing, so wait for it to be enabled.
 async function pickPlace(place: string) {
-  fireEvent.click(await screen.findByRole("button", { name: "New session" }));
+  const newSession = await screen.findByRole("button", { name: "New session" });
+  await waitFor(() => expect(newSession).toHaveProperty("disabled", false));
+  fireEvent.click(newSession);
   await act(async () => fireEvent.click(screen.getByRole("menuitem", { name: place })));
 }
 
