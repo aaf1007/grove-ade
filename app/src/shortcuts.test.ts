@@ -46,3 +46,10 @@ test("keys match only their own key with exactly their modifiers", () => {
   expect(matchesKeys("Meta+N", press({ key: "m", metaKey: true }))).toBe(false);
   expect(matchesKeys("Meta+/", press({ key: "/", metaKey: true }))).toBe(true);
 });
+
+test("a key that some layouts type with Shift, such as / on a German keyboard, matches with Shift too", () => {
+  const press = (init: KeyboardEventInit) => new KeyboardEvent("keydown", init);
+  expect(matchesKeys("Meta+/", press({ key: "/", code: "Digit7", metaKey: true, shiftKey: true }))).toBe(true);
+  // A letter's Shift is still its own key: Cmd-Shift-N is not Cmd-N.
+  expect(matchesKeys("Meta+N", press({ key: "N", metaKey: true, shiftKey: true }))).toBe(false);
+});

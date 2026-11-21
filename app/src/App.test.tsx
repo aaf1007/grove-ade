@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest"
 import { App } from "./App";
 import type { Agent, AgentState, StateSource, Workspace, Worktree } from "./bridge";
 import { DEFAULT_WORKSPACE, fakeBridge } from "./fakeBridge";
-import { keyHint, type ShortcutId, SHORTCUTS } from "./shortcuts";
+import { keyHint, shortcut, type ShortcutId, SHORTCUTS } from "./shortcuts";
 import { menuItems } from "./testing";
 import detailsStyles from "./DetailsCard.css?raw";
 import appStyles from "./styles.css?raw";
@@ -527,7 +527,7 @@ test("Cmd-K with the sidebar collapsed shows the sidebar and puts focus in Searc
 
 // Presses a shortcut by the keys the list gives it, or those keys with Ctrl for Cmd.
 async function pressShortcut(id: ShortcutId, { target = document.body, ctrlForCmd = false } = {}) {
-  const keys = SHORTCUTS.find((shortcut) => shortcut.id === id)!.keys.split("+");
+  const keys = shortcut(id).keys.split("+");
   const cmd = keys.includes("Meta");
   await act(async () =>
     fireEvent.keyDown(target, {

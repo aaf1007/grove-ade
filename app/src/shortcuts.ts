@@ -47,11 +47,17 @@ export function keyHint(keys: string): string {
   return MODIFIERS.filter(([name]) => modifiers.includes(name)).map(([, , symbol]) => symbol).join("") + key.toUpperCase();
 }
 
-/** Whether `event` is the key with exactly the modifiers `keys` names. */
+/**
+ * Whether `event` is the key with exactly the modifiers `keys` names. Shift counts only for a
+ * letter: some layouts need it to type a sign such as /, and then the key itself says which sign.
+ */
 export function matchesKeys(keys: string, event: KeyboardEvent): boolean {
   const { modifiers, key } = parse(keys);
+  const isLetter = key.toLowerCase() !== key.toUpperCase();
   return (
     event.key.toLowerCase() === key.toLowerCase() &&
-    MODIFIERS.every(([name, flag]) => event[flag] === modifiers.includes(name))
+    MODIFIERS.every(
+      ([name, flag]) => (name === "Shift" && !isLetter) || event[flag] === modifiers.includes(name),
+    )
   );
 }

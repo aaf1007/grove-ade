@@ -5,7 +5,7 @@ import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 import type { AgentStateChanged, Worktree } from "./bridge";
 import { fakeBridge, type FakeBridge } from "./fakeBridge";
 import sidebarStyles from "./styles.css?raw";
-import { keyHint, type ShortcutId, SHORTCUTS } from "./shortcuts";
+import { keyHint, shortcut, type ShortcutId } from "./shortcuts";
 import { Sidebar, type SidebarHandle } from "./Sidebar";
 import agentStateStyles from "./ui/AgentState.css?raw";
 import { menuItems } from "./testing";
@@ -458,7 +458,7 @@ test("the sidebar's key hints come from the shortcut list", () => {
     ["jump", screen.getByRole("button", { name: /^Needs you/ })],
   ];
   for (const [id, control] of rows) {
-    const { keys } = SHORTCUTS.find((shortcut) => shortcut.id === id)!;
+    const { keys } = shortcut(id);
     expect(control.getAttribute("aria-keyshortcuts")).toBe(keys);
     expect(control.closest(".nav-row")!.querySelector("kbd")!.textContent).toBe(keyHint(keys));
   }
