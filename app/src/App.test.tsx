@@ -325,6 +325,53 @@ test("closing a shell that already exited shows no error", async () => {
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
+// Picks `place` in the sidebar's New session picker.
+async function pickPlace(place: string) {
+  fireEvent.click(await screen.findByRole("button", { name: "New session" }));
+  await act(async () => fireEvent.click(screen.getByRole("menuitem", { name: place })));
+}
+
+test("New session in the local checkout starts a session there, selects it and puts focus in its panel", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+
+  await pickPlace("Local checkout");
+
+  const panel = await screen.findByRole("region", { name: "Panel 0" });
+  expect(panel.hidden).toBe(false);
+  expect(bridge.spawnedAgents).toEqual([{ session: "0", worktree: main, agent: "Claude" }]);
+  expect(selectedWorktree()).toBe("main");
+  expect((await findSessionRow("main")).getAttribute("aria-current")).toBe("true");
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Panel 0")));
+  expect(bridge.focused).toEqual(["0"]);
+});
+
+test("New session in an existing worktree starts a session there, and picking it again starts a second one", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await screen.findByRole("button", { name: "feat-36" });
+
+  await pickPlace("feat-36");
+  await screen.findByRole("region", { name: "Panel 0" });
+  await findSessionRow("feat-36");
+  await pickPlace("feat-36");
+
+  await screen.findByRole("region", { name: "Panel 1" });
+  expect(bridge.spawnedAgents).toEqual([
+    { session: "0", worktree: feature, agent: "Claude" },
+    { session: "1", worktree: feature, agent: "Claude" },
+  ]);
+  expect(selectedWorktree()).toBe("feat-36");
+  expect((await findSessionRow("feat-36", 1)).getAttribute("aria-current")).toBe("true");
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Panel 1")));
+  // Each session has one panel.
+  expect(screen.getAllByRole("region", { name: /^Panel \d+$/ }).map((panel) => panel.ariaLabel)).toEqual([
+    "Panel 0",
+    "Panel 1",
+  ]);
+});
+
 test("starting Claude Code in a worktree opens its panel, and the session's row takes the worktree's place", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
@@ -1314,10 +1361,10 @@ test("Cmd-Q asks first while an agent session works, and quits at once after it 
   expect(screen.queryByRole("alertdialog")).toBeNull();
 });
 
-test("a new worktree opens selected, with Claude Code started in it", async () => {
+test("New worktree… in New session makes a worktree, which opens selected with Claude Code started in it", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
-  fireEvent.click(await screen.findByRole("button", { name: "New worktree in grove" }));
+  await pickPlace("New worktree…");
   const dialog = await screen.findByRole("dialog", { name: "New worktree" });
   fireEvent.change(within(dialog).getByLabelText("Branch name"), { target: { value: "feat-52" } });
   const profile = within(dialog).getByLabelText<HTMLSelectElement>("Profile");
@@ -1342,7 +1389,7 @@ async function rustRepo() {
 }
 
 async function createWorktree(branch: string) {
-  fireEvent.click(await screen.findByRole("button", { name: "New worktree in grove" }));
+  await pickPlace("New worktree…");
   const dialog = await screen.findByRole("dialog", { name: "New worktree" });
   await within(dialog).findByText(/^Suggested/);
   fireEvent.change(within(dialog).getByLabelText("Branch name"), { target: { value: branch } });
@@ -1505,7 +1552,7 @@ test("a setup script that fails shows on the row and in the chat area, and start
 
 // Makes worktree feat-52 with no profile, so no setup script runs.
 async function createFeat52({ startAgent }: { startAgent: boolean }) {
-  fireEvent.click(await screen.findByRole("button", { name: "New worktree in grove" }));
+  await pickPlace("New worktree…");
   const dialog = await screen.findByRole("dialog", { name: "New worktree" });
   fireEvent.change(within(dialog).getByLabelText("Branch name"), { target: { value: "feat-52" } });
   fireEvent.change(within(dialog).getByLabelText("Profile"), { target: { value: "none" } });

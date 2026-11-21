@@ -321,6 +321,7 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
             shownAgents={pane ? [pane] : []}
             onStartAgent={() => {}}
             onStartAgentAfterSetup={() => {}}
+            onNewSession={() => {}}
             onFocusAgent={() => {}}
             onSessionResumed={() => {}}
             onSessionsDeleted={() => {}}
