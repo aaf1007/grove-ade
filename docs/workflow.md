@@ -17,6 +17,13 @@ Skill names below may differ slightly between versions. Check your `/` menu and 
 | Two equal approaches | pstack arena | Build both, compare against `acceptance.md` |
 | Cleanup | pstack `unslop` | Cuts AI filler from code and docs |
 | Understanding code | pstack `how` / `why` | Explains code paths when I review |
+| PR that touches PTY or acked streams, the socket protocol, agent state, or the Core API | pstack `interrogate` | Several models review the diff adversarially. The orchestrator runs it after the PR is open, before QA, and posts the "Act on" items on the PR as review comments for the implementer to fix. The rest are dropped |
+| PR when CodeRabbit hit its limit | pstack `thermos` | Optional second pass beside the reviewer. Not by default, for cost. The orchestrator runs it only when the owner asks. Its findings go to the owner first, and the owner says which the implementer fixes |
+| Before opening the PR | `verify` | The implementer runs its own "How to test it" steps through `verify`, on the headless surface. A failed step is fixed before the PR opens. Anything it cannot reach is listed in the PR as not run |
+| PR, before merge-ready | `qa` on `verify` | The orchestrator gives the branch to the `qa` agent. QA in the real app. A fail goes back to the implementer with repro steps, per step 7 of the Build loop |
+| Milestone close, and risky PRs | pstack `swarm` on `verify` | Break-it gauntlet: one worker per feature file, told to break it. The orchestrator runs it. Each proven defect becomes an issue, and nothing else is reported |
+| Weekly, before the Sunday retro | pstack `maintain-verification-skill` | Keeps the feature map true to the app. The orchestrator runs it. At most one PR of fixes, which the owner approves. Product bugs become issues |
+| Sunday retro | pstack `correct` | Runs the rule promotion ladder. The orchestrator runs it. Rule changes are proposed in a PR for the owner's approval, never written directly |
 
 Do not run both stacks' planners on the same task. Matt plans, pstack executes and reviews.
 
@@ -59,18 +66,20 @@ Skipped on Oct 25.
 2. Implementer builds it in its own worktree, test first where testable, and commits there.
 3. Gates pass (two failures: escalate model or re-plan).
 4. `unslop` pass.
-5. The implementer pushes its branch and opens the PR on its own, named `#<issue> <type>: <what it does>` on a branch `<type>-<issue>-<slug>` (see the README). Once the PR is open, before QA, the orchestrator runs the `reviewer` agent on it (`.claude/skills/reviewer/SKILL.md`):
+5. Before the PR, the implementer proves its change through `verify` on the headless surface, using the "How to test it" steps it will put in the PR. Step 7 allows one app run at a time, so the app surface is left to QA. The implementer then pushes its branch and opens the PR on its own, named `#<issue> <type>: <what it does>` on a branch `<type>-<issue>-<slug>` (see the README). Once the PR is open, before QA, the orchestrator runs the `reviewer` agent on it (`.claude/skills/reviewer/SKILL.md`):
    - CI checks, on every PR: the reviewer reads the `rust` and `ts` checks on the PR's head commit, waits while they run, and reports a failure with the failing step. A failed check ends the run.
    - Review, only when CodeRabbit did not review the head commit: its notice for that commit is "Review limit reached", or it posted nothing 15 minutes after the push. The reviewer then runs Anthropic's `code-review` plugin for bugs and `CLAUDE.md` breaks, checks the diff against the owner's private rules in `CLAUDE.local.md` when that file exists, and checks the change against its issue.
    - It posts from my GitHub login: a summary that names the commit reviewed, plus one thread per finding when it reviewed. When CodeRabbit reviewed, it posts only the check results.
    - After the implementer's fixes to its threads, the orchestrator runs it once more as a recheck. The recheck replies on its own threads, resolves the fixed ones, and opens no new thread. Then it stops.
    - CodeRabbit reviews the PR and every push. Cursor's Bugbot, Security Agent, and Approval Agent run on a weekly quota.
    - Full or light: the first commit of a PR that CodeRabbit did not review gets the full review above. A later fix round gets a light review: one agent reads only the diff since the last reviewed commit, checks it against the open threads and the issue, and posts threads for what it finds. It starts no plugin agents.
+   - `interrogate`: on a PR that touches PTY or acked streams, the socket protocol, agent state, or the Core API, the orchestrator also runs pstack `interrogate`, before QA. It posts the "Act on" items on the PR as review comments. Step 6 covers them like any other review comment, with the same two-round cap.
+   - Gauntlet on a PR: the orchestrator runs `swarm` on a PR only when the owner asks for it on that PR, after QA passes, or after CI is green when QA is skipped. Otherwise it runs at milestone close (Phase 4).
 6. Right after opening the PR, the implementer session turns on the app's Auto-fix for it (`mcp__ccd_pr__set_monitor` with `auto_fix` and `address_comments`; I approve). Auto-fix wakes it on review comments and merge conflicts, and it handles them itself:
-   - Review comments (the reviewer, CodeRabbit, Cursor, me): implement each finding by default. Check it against the code, fix it test first, and run the gates.
+   - Review comments (the reviewer, `interrogate`, CodeRabbit, Cursor, me): implement each finding by default. Check it against the code, fix it test first, and run the gates.
    - Skip a finding only if it is clearly wrong or out of scope, with the reason on the thread. Style-only nitpicks get a reply, not code.
    - Stop and ask before a Core API change, a new dependency, or a doc change.
-   - Push and reply on every thread. Resolve the threads of CodeRabbit, Cursor and me. Leave the reviewer's threads open: its recheck resolves them. `main` requires every thread resolved before merge. List skipped findings in the report. At most two fix rounds.
+   - Push and reply on every thread. Resolve the threads of CodeRabbit, Cursor, `interrogate` and me. Leave the reviewer's threads open: its recheck resolves them. `main` requires every thread resolved before merge. List skipped findings in the report. At most two fix rounds.
    - A failed check in the reviewer's summary: fix the root cause. No retries, sleeps, or disabled tests.
    - Merge conflict: sync with `main`. Never rebase or force-push.
    - Never use CodeRabbit's own autofix.
@@ -100,6 +109,7 @@ Skipped on Oct 25.
 | Every commit | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `tsc --noEmit`, `eslint` |
 | Every PR | `cargo test` (includes diff parity), `vitest run` |
 | Every milestone | Full `docs/acceptance.md`, including manual terminal tests and the 8-session performance run |
+| Every milestone | The gauntlet: the orchestrator runs pstack `swarm` on `verify`, next to the `acceptance.md` run. Each proven defect becomes an issue |
 
 A ruleset protects `main`: changes land only by PR, every review thread must be resolved, the branch must be up to date with `main`, no force push, and the `rust` and `ts` CI checks must pass. CI runs on every PR and every push to `main`.
 
@@ -116,6 +126,9 @@ CI retries a failed Rust test twice. One that then passes is listed as flaky in 
 **Per-PR metrics** (PR template): gate failures before green, review findings by category, retries, models used. These show whether the routing works.
 
 **Weekly retro (30 min, Sunday):**
+- The orchestrator runs pstack `maintain-verification-skill` first. It keeps the feature map true to the app, opens at most one PR of fixes, and files product bugs as issues.
+- Read the eval tables in `evals/`.
+- The orchestrator runs pstack `correct`. It keeps the rule enforcement table in `CLAUDE.md` in step and proposes rule changes. The ladder above is grove's, so `correct` does not replace it. It proposes changes in a PR for my approval.
 - Tally review findings and promote rules.
 - Apply a scope cut early if behind.
 

@@ -817,14 +817,35 @@ struct WarningSent {
     warning: Warning,
 }
 
-/// Mirrors `Warning` in `app/src/bridge.ts`. Its name goes in a `kind` field. Codex's hook
-/// warning waits until the UI starts Codex sessions.
+/// Mirrors `Warning` in `app/src/bridge.ts`. Its name goes in a `kind` field.
 #[derive(Serialize, Clone)]
 #[serde(tag = "kind")]
 enum Warning {
     LoginShellEnv { reason: String },
+    CodexHooksNotTrusted { session: String, worktree: PathBuf },
     SessionNotRestored { worktree: PathBuf, reason: String },
     WatcherNotStarted { worktree: PathBuf, reason: String },
+}
+
+// No wildcard arm, so a new core warning does not compile until the UI gets it.
+impl From<grove_core::Warning> for Warning {
+    fn from(warning: grove_core::Warning) -> Self {
+        match warning {
+            grove_core::Warning::LoginShellEnv { reason } => Self::LoginShellEnv { reason },
+            grove_core::Warning::CodexHooksNotTrusted { session, worktree } => {
+                Self::CodexHooksNotTrusted {
+                    session: session.to_string(),
+                    worktree,
+                }
+            }
+            grove_core::Warning::SessionNotRestored { worktree, reason } => {
+                Self::SessionNotRestored { worktree, reason }
+            }
+            grove_core::Warning::WatcherNotStarted { worktree, reason } => {
+                Self::WatcherNotStarted { worktree, reason }
+            }
+        }
+    }
 }
 
 // Attention queue (#53).
@@ -2229,33 +2250,26 @@ fn show_window(app: &tauri::AppHandle) {
     }
 }
 
+/// The file `name` in the folder of this executable, when it is there.
+fn next_to_this_executable(name: &str) -> Option<PathBuf> {
+    let path = std::env::current_exe().ok()?.parent()?.join(name);
+    path.exists().then_some(path)
+}
+
 fn main() -> anyhow::Result<()> {
     let mut cfg = CoreConfig::for_user().context("could not find the home folder")?;
     // grove-hook sits next to this executable: in target/<profile>/ after a workspace build,
     // and in Contents/MacOS/ in the .app that `npm run bundle` makes. Without it the core skips
     // the copy, so the app still starts but agents get no hook status.
-    cfg.hook_relay_source = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join("grove-hook")))
-        .filter(|relay| relay.exists());
+    cfg.hook_relay_source = next_to_this_executable("grove-hook");
     // The Claude sidecar sits next to it in the .app. Elsewhere the core runs `claude-sidecar`
     // from PATH, so chat mode fails to start unless one is there.
-    if let Some(sidecar) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join("claude-sidecar")))
-        .filter(|sidecar| sidecar.exists())
-    {
+    if let Some(sidecar) = next_to_this_executable("claude-sidecar") {
         cfg.claude_sidecar_command = sidecar;
     }
-    // grove-mcp sits next to this executable, as grove-hook does. Elsewhere the core runs
-    // `grove-mcp` from PATH, so agents cannot spawn subagents unless one is there.
-    if let Some(mcp_server) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join("grove-mcp")))
-        .filter(|mcp_server| mcp_server.exists())
-    {
-        cfg.mcp_server = mcp_server;
-    }
+    // grove-mcp sits next to this executable, as grove-hook does. Without it grove adds no MCP
+    // server of its own to agent sessions, so they cannot open panels or spawn subagents.
+    cfg.mcp_server = next_to_this_executable("grove-mcp");
     let (core, mut events) = Core::start(cfg)?;
 
     tauri::Builder::default()
@@ -2318,21 +2332,7 @@ fn main() -> anyhow::Result<()> {
                             };
                             report_account(&app, change);
                         }
-                        Ok(CoreEvent::Warning(grove_core::Warning::LoginShellEnv { reason })) => {
-                            warn(&app, Warning::LoginShellEnv { reason });
-                        }
-                        Ok(CoreEvent::Warning(grove_core::Warning::SessionNotRestored {
-                            worktree,
-                            reason,
-                        })) => {
-                            warn(&app, Warning::SessionNotRestored { worktree, reason });
-                        }
-                        Ok(CoreEvent::Warning(grove_core::Warning::WatcherNotStarted {
-                            worktree,
-                            reason,
-                        })) => {
-                            warn(&app, Warning::WatcherNotStarted { worktree, reason });
-                        }
+                        Ok(CoreEvent::Warning(warning)) => warn(&app, warning.into()),
                         Ok(CoreEvent::Setup { worktree, setup }) => {
                             let change = SetupChanged {
                                 worktree,
@@ -2496,6 +2496,15 @@ mod tests {
             kind,
             text: b"x\n".to_vec(),
         }
+    }
+
+    #[test]
+    fn a_file_next_to_this_executable_is_found_and_a_missing_one_is_none() {
+        let exe = std::env::current_exe().unwrap();
+        let name = exe.file_name().unwrap().to_str().unwrap();
+
+        assert_eq!(next_to_this_executable(name), Some(exe.clone()));
+        assert_eq!(next_to_this_executable("grove-no-such-binary"), None);
     }
 
     #[test]
@@ -3259,6 +3268,23 @@ mod tests {
             ),
             _ => panic!("a warning goes to the UI as JSON"),
         }
+    }
+
+    #[test]
+    fn codex_hooks_not_trusted_reaches_the_ui_as_bridge_ts_reads_it() {
+        let sent = WarningSent {
+            id: 3,
+            warning: grove_core::Warning::CodexHooksNotTrusted {
+                session: serde_json::from_str("7").unwrap(),
+                worktree: "/w".into(),
+            }
+            .into(),
+        };
+
+        assert_eq!(
+            json(sent),
+            r#"{"id":3,"kind":"CodexHooksNotTrusted","session":"7","worktree":"/w"}"#
+        );
     }
 
     #[test]

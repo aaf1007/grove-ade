@@ -25,6 +25,8 @@ import { PanelTabs, tabId } from "./PanelTabs";
 import type { ModelChoice } from "./Picker";
 import { ProfilePanel } from "./ProfilePanel";
 import { QuitGuard } from "./QuitGuard";
+import { matchesKeys, type Shortcut, type ShortcutId, SHORTCUTS } from "./shortcuts";
+import { ShortcutsDialog } from "./ShortcutsDialog";
 import {
   AGENT_NAMES,
   type AgentSession,
@@ -207,16 +209,32 @@ export function App({ bridge }: { bridge: Bridge }) {
     };
   }, [bridge]);
 
-  const onJumpKey = useEffectEvent((event: KeyboardEvent) => {
-    if (!isJumpKey(event)) return;
+  const [showingShortcuts, setShowingShortcuts] = useState(false);
+  const shortcutActions: Record<ShortcutId, () => void> = {
+    newSession: () => sidebarRef.current?.newSession(),
+    search: () => sidebarRef.current?.focusSearch(),
+    jump: () => jump(),
+    showShortcuts: () => setShowingShortcuts(true),
+  };
+  const onShortcutKey = useEffectEvent((event: KeyboardEvent, when: Shortcut["when"]) => {
+    if (event.defaultPrevented || document.querySelector('[aria-modal="true"]')) return;
+    const pressed = SHORTCUTS.find((shortcut) => shortcut.when === when && matchesKeys(shortcut.keys, event));
+    if (!pressed) return;
     event.preventDefault();
-    jump();
+    shortcutActions[pressed.id]();
   });
 
-  // In the capture phase, so the key works with focus in a terminal or an editor too.
+  // "anywhere" shortcuts go in the capture phase, before a terminal or an editor sees the key.
+  // The rest go after, so they skip a key the terminal or editor took.
   useEffect(() => {
-    window.addEventListener("keydown", onJumpKey, true);
-    return () => window.removeEventListener("keydown", onJumpKey, true);
+    const first = (event: KeyboardEvent) => onShortcutKey(event, "anywhere");
+    const last = (event: KeyboardEvent) => onShortcutKey(event, "unclaimed");
+    window.addEventListener("keydown", first, true);
+    window.addEventListener("keydown", last);
+    return () => {
+      window.removeEventListener("keydown", first, true);
+      window.removeEventListener("keydown", last);
+    };
   }, []);
 
   // A failed load says why, and the next change to the worktree tries again.
@@ -645,6 +663,7 @@ export function App({ bridge }: { bridge: Bridge }) {
   return (
     <>
       <div className={fullscreen ? "app fullscreen" : "app"}>
+        {showingShortcuts && <ShortcutsDialog onClose={() => setShowingShortcuts(false)} />}
         <QuitGuard
           bridge={bridge}
           agentStates={agentStates}
@@ -1005,11 +1024,4 @@ function startKey(kind: StartKind, worktree: string): string {
 
 function worktreeOfStartKey(key: string): string {
   return (JSON.parse(key) as [StartKind, string])[1];
-}
-
-/** Cmd-J, as the title bar shows it. Plain Ctrl-J is a newline in a terminal, so it stays free. */
-function isJumpKey(event: KeyboardEvent): boolean {
-  return (
-    event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "j"
-  );
 }
