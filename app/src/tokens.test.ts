@@ -132,21 +132,6 @@ const defaultThemes = {
   light: { ...defaultDark, ...declarations(tokens, ':root[data-theme="light"]') },
 };
 
-test.each(
-  Object.entries(defaultThemes).flatMap(([theme, values]) =>
-    textOnGrounds.flatMap(([text, grounds]) =>
-      grounds.map((ground) => ({ theme, text, ground, values })),
-    ),
-  ),
-)("$text on $ground has 4.5:1 contrast in $theme", ({ text, ground, values }) => {
-  expect(contrast(resolve(values, text), resolve(values, ground))).toBeGreaterThanOrEqual(4.5);
-});
-
-// The four surface steps: sidebar, chat area, raised (the panel area, dialogs and menus) and code.
-// Each must read as its own region, so sorted by lightness each step sits a set distance from the next.
-const surfaces = ["sidebar", "bg", "panel", "code-bg"];
-const minimumLightnessStep = 3;
-
 // Modern sets only some tokens. The rest come from the default palette in the same theme.
 const modern = declarations(tokens, ':root[data-palette="modern"]');
 const everyTheme = {
@@ -159,6 +144,21 @@ const everyTheme = {
     ...declarations(tokens, ':root[data-palette="modern"][data-theme="light"]'),
   },
 };
+
+test.each(
+  Object.entries(everyTheme).flatMap(([theme, values]) =>
+    textOnGrounds.flatMap(([text, grounds]) =>
+      grounds.map((ground) => ({ theme, text, ground, values })),
+    ),
+  ),
+)("$text on $ground has 4.5:1 contrast in $theme", ({ text, ground, values }) => {
+  expect(contrast(resolve(values, text), resolve(values, ground))).toBeGreaterThanOrEqual(4.5);
+});
+
+// The four surface steps: sidebar, chat area, raised (the panel area, dialogs and menus) and code.
+// Each must read as its own region, so sorted by lightness each step sits a set distance from the next.
+const surfaces = ["sidebar", "bg", "panel", "code-bg"];
+const minimumLightnessStep = 3;
 
 // --syn-fn is set by the default light block and by neither Modern block.
 test("Modern light takes the default light value of a token Modern does not set", () => {
@@ -185,21 +185,6 @@ function surfacesTooClose(values: Record<string, string>): string[] {
     .filter(({ lower, upper }) => upper.lightness - lower.lightness < minimumLightnessStep)
     .map(({ lower, upper }) => `${lower.surface} and ${upper.surface}`);
 }
-
-// The Modern pairs that met AA before the surfaces moved apart. The rest of Modern's text contrast is not checked yet.
-const modernTextOnGrounds: [keyof typeof everyTheme, string, string][] = [
-  ["modern light", "muted", "sidebar"],
-  ["modern light", "idle", "sidebar"],
-  ["modern light", "faint", "sidebar"],
-  ["modern light", "syn-kw", "code-bg"],
-  ["modern light", "syn-com", "code-bg"],
-  ["modern dark", "faint", "code-bg"],
-];
-
-test.each(modernTextOnGrounds)("in %s, %s on %s has 4.5:1 contrast", (theme, text, ground) => {
-  const values = everyTheme[theme];
-  expect(contrast(resolve(values, text), resolve(values, ground))).toBeGreaterThanOrEqual(4.5);
-});
 
 test("the chat area is the darkest surface in the default dark theme", () => {
   const chat = lightness(resolve(defaultDark, "bg"));
