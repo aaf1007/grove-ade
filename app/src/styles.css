@@ -666,6 +666,8 @@ svg {
   border-radius: var(--radius-xl);
   background: var(--panel);
   box-shadow: var(--shadow);
+  /* It opens from the top, where it sits. */
+  transform-origin: top center;
 }
 
 .dialog h3 {
@@ -802,7 +804,7 @@ svg {
 }
 
 .state.Working::before {
-  animation: pulse 1.4s ease-in-out infinite;
+  animation: pulse var(--dot-pulse);
 }
 
 .state.Failed {
@@ -1243,12 +1245,19 @@ svg {
   max-height: 60vh;
   justify-items: stretch;
   overflow-y: auto;
+  transform-origin: bottom right;
 }
 
 .picker-pop .note {
   margin: 0 0 var(--space-6);
   color: var(--faint);
   font-size: var(--text-meta-size);
+}
+
+/* Opened while the models load: one height until it closes, rows from the top (Picker.tsx). */
+.picker-pop-held {
+  height: min(60vh, 400px);
+  align-content: start;
 }
 
 .opt {
@@ -1303,7 +1312,7 @@ svg {
   background: var(--accent);
   box-shadow: var(--shadow-highlight);
   color: var(--accent-fg);
-  transition: transform 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform var(--duration-base) var(--ease-out);
 }
 
 .send svg {
@@ -2018,5 +2027,29 @@ svg {
 
   .send {
     transition: none;
+  }
+}
+
+/* A popover's enter transition, when a pointer opened it (motion.ts): it fades in and grows from
+   the corner nearest its trigger, which each popover sets with transform-origin. */
+.popover-enter {
+  animation: popover-enter var(--duration-base) var(--ease-out);
+}
+
+@keyframes popover-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+/* A dialog's backdrop fades in with it. */
+.overlay-enter {
+  animation: overlay-enter var(--duration-base) var(--ease-out);
+}
+
+@keyframes overlay-enter {
+  from {
+    opacity: 0;
   }
 }
