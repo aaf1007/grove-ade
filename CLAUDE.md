@@ -69,6 +69,23 @@ Each rule here can be checked against a diff. The Engineering rules below apply 
 - Logic goes in `grove-core`. `app/src-tauri` only maps commands to the Core API and forwards events (ADR 0002).
 - grove never writes hooks or MCP config into a worktree, and never reads or stores agent credentials.
 
+## Rule enforcement
+`correct` keeps this table in step with the rules above. Proposed here for the owner's approval.
+
+| Rule | Enforced by |
+|---|---|
+| Behavior change adds or changes a test | The reviewer |
+| Logic in `grove-core`, `src-tauri` only maps (ADR 0002) | The reviewer |
+| No hooks, MCP config or credentials in a worktree | The reviewer |
+| `cargo fmt`, `clippy`, `cargo test` | CI `rust` check |
+| `tsc`, `eslint`, `vitest` | CI `ts` check |
+| Diff parity | `fixtures/diff-repo/check.py` in CI |
+| No `unwrap()` in core outside tests | The reviewer. No lint yet |
+| Never block a tokio worker | The reviewer. Nothing yet |
+| 8 ms batching of PTY output | The reviewer. Nothing yet |
+| Only the owner merges | `.claude/hooks/block-merge.sh`, tested in CI |
+| Docs style, no em dashes | `unslop` pass. Nothing automatic |
+
 ## Engineering rules
 - Rust gates before saying "done": `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
 - TS gates: `tsc --noEmit`, `eslint`, `vitest run`.

@@ -17,6 +17,13 @@ Skill names below may differ slightly between versions. Check your `/` menu and 
 | Two equal approaches | pstack arena | Build both, compare against `acceptance.md` |
 | Cleanup | pstack `unslop` | Cuts AI filler from code and docs |
 | Understanding code | pstack `how` / `why` | Explains code paths when I review |
+| PR that touches PTY or acked streams, the socket protocol, agent state, or the Core API | pstack `interrogate` | Several models review the diff adversarially. The orchestrator runs it and passes the "Act on" items to the implementer as review comments |
+| PR when CodeRabbit hit its limit | pstack `thermos` | Optional second pass beside the reviewer. Not by default, for cost |
+| Before opening the PR | `verify` | The implementer runs its own "How to test it" steps through `verify` |
+| PR, before merge-ready | `qa` on `verify` | QA in the real app |
+| Milestone close, and risky PRs | pstack `swarm` on `verify` | Break-it gauntlet: one worker per feature file, told to break it. Each proven defect becomes an issue |
+| Weekly, before the Sunday retro | pstack `maintain-verification-skill` | Keeps the feature map true to the app. At most one PR of fixes. Product bugs become issues |
+| Sunday retro | pstack `correct` | Runs the rule promotion ladder |
 
 Do not run both stacks' planners on the same task. Matt plans, pstack executes and reviews.
 
@@ -59,7 +66,7 @@ Skipped on Oct 25.
 2. Implementer builds it in its own worktree, test first where testable, and commits there.
 3. Gates pass (two failures: escalate model or re-plan).
 4. `unslop` pass.
-5. The implementer pushes its branch and opens the PR on its own, named `#<issue> <type>: <what it does>` on a branch `<type>-<issue>-<slug>` (see the README). Once the PR is open, before QA, the orchestrator runs the `reviewer` agent on it (`.claude/skills/reviewer/SKILL.md`):
+5. Before the PR, the implementer proves its change through `verify`, using the "How to test it" steps it will put in the PR. The implementer then pushes its branch and opens the PR on its own, named `#<issue> <type>: <what it does>` on a branch `<type>-<issue>-<slug>` (see the README). Once the PR is open, before QA, the orchestrator runs the `reviewer` agent on it (`.claude/skills/reviewer/SKILL.md`). On a PR that touches PTY or acked streams, the socket protocol, agent state, or the Core API, it also runs pstack `interrogate` before QA. It passes the "Act on" items to the implementer as review comments:
    - CI checks, on every PR: the reviewer reads the `rust` and `ts` checks on the PR's head commit, waits while they run, and reports a failure with the failing step. A failed check ends the run.
    - Review, only when CodeRabbit did not review the head commit: its notice for that commit is "Review limit reached", or it posted nothing 15 minutes after the push. The reviewer then runs Anthropic's `code-review` plugin for bugs and `CLAUDE.md` breaks, checks the diff against the owner's private rules in `CLAUDE.local.md` when that file exists, and checks the change against its issue.
    - It posts from my GitHub login: a summary that names the commit reviewed, plus one thread per finding when it reviewed. When CodeRabbit reviewed, it posts only the check results.
@@ -100,6 +107,7 @@ Skipped on Oct 25.
 | Every commit | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `tsc --noEmit`, `eslint` |
 | Every PR | `cargo test` (includes diff parity), `vitest run` |
 | Every milestone | Full `docs/acceptance.md`, including manual terminal tests and the 8-session performance run |
+| Every milestone | The gauntlet: the orchestrator runs pstack `swarm` on `verify`, next to the `acceptance.md` run. Each proven defect becomes an issue |
 
 A ruleset protects `main`: changes land only by PR, every review thread must be resolved, the branch must be up to date with `main`, no force push, and the `rust` and `ts` CI checks must pass. CI runs on every PR and every push to `main`.
 
@@ -116,6 +124,9 @@ CI retries a failed Rust test twice. One that then passes is listed as flaky in 
 **Per-PR metrics** (PR template): gate failures before green, review findings by category, retries, models used. These show whether the routing works.
 
 **Weekly retro (30 min, Sunday):**
+- Run pstack `maintain-verification-skill` first. It keeps the feature map true to the app, opens at most one PR of fixes, and files product bugs as issues.
+- Read the eval tables in `evals/`.
+- Run pstack `correct`. It runs the ladder above and keeps the rule enforcement table in `CLAUDE.md`. It proposes changes in a PR for my approval.
 - Tally review findings and promote rules.
 - Apply a scope cut early if behind.
 
