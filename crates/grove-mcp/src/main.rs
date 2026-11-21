@@ -62,9 +62,10 @@ struct PanelCloseArguments {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct WorkspaceSetArguments {
     /// The whole new workspace, in the shape workspace_get returns: {"chat": [{"agent":
-    /// "claude"|"codex", "session": <id> or null, "shown": true|false}], "panels": [tabs from
-    /// "files", "diff", "browser", "logs", "profile"], "selected": one of the panels or null,
-    /// "terminal": true|false}. Keep the panel of every session that runs, with its id.
+    /// "claude"|"codex", "session": <id>, "shown": true|false}], "panels": [tabs from "files",
+    /// "diff", "browser", "logs", "profile"], "selected": one of the panels or null,
+    /// "terminal": true|false}. An agent panel names this workspace's session or a subagent
+    /// session below it. Keep the panel of every session that runs.
     workspace: Map<String, Value>,
 }
 
@@ -162,18 +163,20 @@ impl GroveTools {
     }
 
     #[tool(
-        description = "Read the workspace of this session's worktree as JSON: the agent panels \
-                       in the chat area, the panel area's tabs, the selected tab and whether the \
-                       terminal is open."
+        description = "Read this session's workspace as JSON: the agent panels in the chat \
+                       area, the panel area's tabs, the selected tab and whether the terminal is \
+                       open. A subagent session reads the workspace of the session that started \
+                       it, the one the user sees it in."
     )]
     async fn workspace_get(&self) -> CallToolResult {
         self.call(tools::workspace_get).await
     }
 
     #[tool(
-        description = "Replace the workspace of this session's worktree, such as to open the Logs \
-                       tab. Read it with workspace_get first and send it back changed. The user \
-                       sees a notice naming this session and can undo it."
+        description = "Replace this session's workspace, such as to open the Logs tab. Read it \
+                       with workspace_get first and send it back changed. A subagent session \
+                       changes the workspace workspace_get gave it. The user sees a notice \
+                       naming this session and can undo it."
     )]
     async fn workspace_set(
         &self,

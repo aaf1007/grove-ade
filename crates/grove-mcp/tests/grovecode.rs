@@ -500,10 +500,10 @@ fn workspace_and_profile_commands_act_on_the_shells_session_and_its_repo() {
     let set = shell.ok(&["workspace", "set", &workspace.to_string()]);
 
     assert_eq!(set, "Changed the workspace.\n");
-    let CoreEvent::WorkspaceChanged { worktree, by } = s.next_change() else {
+    let CoreEvent::WorkspaceChanged { session: owner, by } = s.next_change() else {
         panic!("not a workspace change");
     };
-    assert_eq!((worktree, by), (s.worktree.clone(), Some(session)));
+    assert_eq!((owner, by), (session, Some(session)));
     let got: Value = serde_json::from_str(&shell.ok(&["workspace", "get"])).unwrap();
     assert_eq!(got, workspace);
 
