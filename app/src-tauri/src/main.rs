@@ -749,8 +749,13 @@ impl From<TurnOutcome> for Outcome {
 #[serde(tag = "kind")]
 enum AgentChange {
     /// `session` is the agent session the workspace belongs to.
-    Workspace { session: String, by: String },
-    Profiles { by: String },
+    Workspace {
+        session: String,
+        by: String,
+    },
+    Profiles {
+        by: String,
+    },
 }
 
 impl AgentChange {
