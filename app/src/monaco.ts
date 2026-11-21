@@ -3,7 +3,7 @@ import * as monaco from "monaco-editor/editor";
 import "monaco-editor/features/register.all";
 import EditorWorker from "monaco-editor/editor/editor.worker?worker";
 
-import { buildOrReport, codeFont, colorScheme, monacoTheme, onAppearanceChange } from "./codeTheme";
+import { buildOrReport, codeFont, colorScheme, monacoTheme, onAppearanceChange, syntaxTokenOf } from "./codeTheme";
 
 // Everything comes from the app bundle, never a CDN, because WKWebView may be offline.
 // `features` adds the editor's own parts, such as icons, find and folding. The editor worker
@@ -68,4 +68,34 @@ export function languageOf(path: string): string | undefined {
     .getLanguages()
     .find((l) => l.filenames?.includes(name) || (extension && l.extensions?.includes(extension)))
     ?.id;
+}
+
+/** A run of code and the syntax token that colors it, if any. */
+export type CodeRun = { text: string; syntax?: string };
+
+/**
+ * `code` cut into colored runs, one list per line, by the language a fenced block's tag names, such
+ * as ts or rust. Undefined when Monaco has no such language.
+ */
+export async function colorRuns(code: string, tag: string): Promise<CodeRun[][] | undefined> {
+  const name = tag.toLowerCase();
+  const language = monaco.languages
+    .getLanguages()
+    .find((l) => l.id === name || l.aliases?.some((alias) => alias.toLowerCase() === name) || l.extensions?.includes(`.${name}`));
+  if (!language) return undefined;
+  // A language's tokenizer loads on first use. Colorize waits for it, and tokenize does not.
+  await monaco.editor.colorize("", language.id, {});
+  const lines = code.split(/\r\n|\r|\n/);
+  return monaco.editor.tokenize(code, language.id).map((tokens, index) => {
+    const line = lines[index];
+    const runs: CodeRun[] = [];
+    tokens.forEach((token, at) => {
+      const text = line.slice(token.offset, tokens[at + 1]?.offset ?? line.length);
+      const syntax = syntaxTokenOf(token.type);
+      const last = runs.at(-1);
+      if (last && last.syntax === syntax) last.text += text;
+      else runs.push(syntax ? { text, syntax } : { text });
+    });
+    return runs;
+  });
 }

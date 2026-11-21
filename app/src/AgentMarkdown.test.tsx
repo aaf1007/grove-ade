@@ -1,11 +1,16 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { AgentMarkdown } from "./AgentMarkdown";
+
+beforeEach(() => {
+  stubClipboard();
+});
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function shown(text: string, onOpenLink: (link: string) => void = () => {}) {
@@ -23,9 +28,25 @@ test("a list renders as list items", () => {
   ]);
 });
 
+// The clipboard the copy button writes to. Once code is colored, Monaco's services also write to
+// it on each click and key in WebKit, which jsdom claims to be, with a ClipboardItem, which jsdom
+// lacks. Monaco cancels the text it promised on the next event, so the item lets that go.
+function stubClipboard() {
+  const writeText = vi.fn(async (_text: string) => {});
+  Object.defineProperty(navigator, "clipboard", { value: { writeText, write: async () => {} }, configurable: true });
+  vi.stubGlobal(
+    "ClipboardItem",
+    class {
+      constructor(items: Record<string, Promise<string>>) {
+        Object.values(items).forEach((item) => item.catch(() => {}));
+      }
+    },
+  );
+  return writeText;
+}
+
 test("a fenced code block renders as preformatted code with a copy button that copies it", async () => {
-  const writeText = vi.fn(async () => {});
-  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  const writeText = stubClipboard();
   const container = shown("Run this:\n\n```sh\ncargo test -p grove-core\ncargo fmt --check\n```\n\nThen push.");
 
   const code = container.querySelector("pre > code");
@@ -34,6 +55,36 @@ test("a fenced code block renders as preformatted code with a copy button that c
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy code" })));
 
   expect(writeText).toHaveBeenCalledWith("cargo test -p grove-core\ncargo fmt --check\n");
+});
+
+test("a fenced ts block colors its syntax with the syntax tokens", async () => {
+  const container = shown('```ts\nconst name: string = "grove";\n```');
+
+  const keyword = await screen.findByText("const");
+  expect(keyword.tagName).toBe("SPAN");
+  expect(keyword.style.color).toBe("var(--syn-kw)");
+  expect(screen.getByText('"grove"').style.color).toBe("var(--syn-str)");
+  expect(container.querySelector("pre > code")?.textContent).toBe('const name: string = "grove";\n');
+});
+
+test("a block in a language Monaco does not know shows as plain text", async () => {
+  const container = shown("```nosuchlang\nconst name = 1;\n```\n\n```ts\nlet ready = true;\n```");
+  await screen.findByText("let");
+
+  const plain = container.querySelectorAll("pre > code")[0];
+  expect(plain.querySelector("span")).toBeNull();
+  expect(plain.textContent).toBe("const name = 1;\n");
+});
+
+test("the copy button copies the code as written, not the colored markup", async () => {
+  const writeText = stubClipboard();
+  const code = 'const greeting = `hi <b>${name}</b>`;\nexport default greeting;\n';
+  shown("```ts\n" + code + "```");
+  await screen.findByText("const");
+
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy code" })));
+
+  expect(writeText).toHaveBeenCalledWith(code);
 });
 
 test("clicking a link hands it to onOpenLink and does not navigate the window", () => {
@@ -81,6 +132,26 @@ test("a code fence still streaming renders as a code block, not stray backticks"
 
   expect(container.querySelector("pre > code")?.textContent).toBe("fn main() {\n    println!(\n");
   expect(container.textContent).not.toContain("```");
+});
+
+test.each(["`", "``", "  ``"])(
+  "a closing fence that has only partly streamed in (%s) shows no stray backticks",
+  (partial) => {
+    const container = shown("```ts\nconst done = true;\n" + partial);
+
+    expect(container.querySelector("pre > code")?.textContent).toBe("const done = true;\n");
+    expect(container.textContent).not.toContain("`");
+  },
+);
+
+test("a block is colored once its closing fence arrives, not while it streams", async () => {
+  const { container, rerender } = render(<AgentMarkdown text={"```ts\nconst a = 1;\n``"} onOpenLink={() => {}} />);
+  await act(async () => {});
+  expect(container.querySelector("pre span")).toBeNull();
+
+  rerender(<AgentMarkdown text={"```ts\nconst a = 1;\n```"} onOpenLink={() => {}} />);
+
+  expect((await screen.findByText("const")).style.color).toBe("var(--syn-kw)");
 });
 
 // The stylesheet shows a newline in a paragraph as a break, so a newline after a <br> would show

@@ -900,14 +900,14 @@ svg {
   padding: var(--space-12);
   border-radius: var(--radius-2xl);
   background: var(--message);
-  font: var(--text-body);
+  font: var(--text-transcript);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .msg-agent {
   padding: var(--space-2) var(--space-4);
-  font: var(--text-body);
+  font: var(--text-transcript);
   overflow-wrap: anywhere;
 }
 
@@ -988,7 +988,7 @@ svg {
   border-radius: var(--radius-sm);
   background: var(--hover);
   font-family: var(--font-mono);
-  font-size: var(--text-code-sm-size);
+  font-size: var(--text-transcript-code-size);
 }
 
 /* A wide table scrolls sideways inside the message, not the whole thread. */
@@ -1025,7 +1025,7 @@ svg {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--code-bg);
-  font: var(--text-code);
+  font: var(--text-transcript-code);
   overflow-wrap: normal;
 }
 
