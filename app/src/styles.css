@@ -750,6 +750,35 @@ svg {
   border-top: 1px solid var(--line-soft);
 }
 
+/* Keyboard shortcuts: a heading per group, then a row per shortcut with its keys at the end. */
+.shortcut-groups {
+  padding: 0 var(--space-16) var(--space-12);
+}
+
+.shortcut-groups h4 {
+  margin: var(--space-8) 0 var(--space-4);
+  color: var(--faint);
+  font-size: var(--text-label-size);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) 0;
+}
+
+.shortcut-row kbd {
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font: var(--text-code-meta);
+}
+
 /* A worktree's setup script state: a dot plus words, never color alone. */
 .state {
   color: var(--muted);
