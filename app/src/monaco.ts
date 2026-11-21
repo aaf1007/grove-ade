@@ -77,13 +77,15 @@ export type CodeRun = { text: string; syntax?: string };
 // full of slashes, so a block this long takes about 6 ms at most. A longer block stays plain.
 const MOST_CHARACTERS_TO_COLOR = 20_000;
 
-// The blocks colored so far, by tag and code, so a block shown again is not tokenized again. The
-// oldest goes first once there are this many.
+// The blocks colored so far, by tag and code, so a block shown again is not tokenized again. Past
+// this many, the oldest that has finished goes. One still waiting or coloring stays, and one whose
+// coloring failed goes at once, so it is tried again.
 const MOST_BLOCKS_KEPT = 200;
-const colorings = new Map<string, { runs?: CodeRun[][]; done: Promise<void> }>();
+type Coloring = { done: Promise<CodeRun[][] | undefined>; finished: boolean; runs?: CodeRun[][] };
+const colorings = new Map<string, Coloring>();
 
 // Blocks color one at a time, each in a task of its own, so the window paints between them.
-let lastColoring = Promise.resolve();
+let lastColoring: Promise<unknown> = Promise.resolve();
 const nextTask = () => new Promise<void>((resolve) => setTimeout(resolve));
 
 /** The colored runs of `code` in the language `tag` names, if `colorRuns` has finished them. */
@@ -92,22 +94,40 @@ export function coloredRuns(code: string, tag: string): CodeRun[][] | undefined 
 }
 
 /**
- * Colors `code` in the language a fenced block's tag names, such as ts or rust, for `coloredRuns`
- * to give. It stays plain when Monaco has no such language or the block is too long.
+ * The colored runs of `code` in the language a fenced block's tag names, such as ts or rust.
+ * Undefined when Monaco has no such language or the block is too long, and it stays plain.
  */
-export function colorRuns(code: string, tag: string): Promise<void> {
+export function colorRuns(code: string, tag: string): Promise<CodeRun[][] | undefined> {
   const key = `${tag}\n${code}`;
   const known = colorings.get(key);
   if (known) return known.done;
-  const coloring: { runs?: CodeRun[][]; done: Promise<void> } = {
-    done: lastColoring.then(nextTask).then(async () => {
-      coloring.runs = await runsOf(code, tag);
-    }),
+  const coloring: Coloring = {
+    finished: false,
+    done: lastColoring
+      .then(nextTask)
+      .then(() => runsOf(code, tag))
+      .then(
+        (runs) => {
+          Object.assign(coloring, { finished: true, runs });
+          forgetOldest();
+          return runs;
+        },
+        (error: unknown) => {
+          colorings.delete(key);
+          throw error;
+        },
+      ),
   };
   lastColoring = coloring.done.catch(() => {});
   colorings.set(key, coloring);
-  if (colorings.size > MOST_BLOCKS_KEPT) colorings.delete(colorings.keys().next().value!);
   return coloring.done;
+}
+
+function forgetOldest() {
+  for (const [key, coloring] of colorings) {
+    if (colorings.size <= MOST_BLOCKS_KEPT) return;
+    if (coloring.finished) colorings.delete(key);
+  }
 }
 
 async function runsOf(code: string, tag: string): Promise<CodeRun[][] | undefined> {

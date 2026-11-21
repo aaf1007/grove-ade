@@ -1,5 +1,5 @@
 import { Copy } from "lucide-react";
-import { Fragment, memo, useEffect, useReducer } from "react";
+import { Fragment, memo, useEffect, useState } from "react";
 import Markdown, { type Components, defaultUrlTransform, type UrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -162,19 +162,20 @@ function ColoredLine({ runs, last }: { runs: CodeRun[]; last: boolean }) {
 }
 
 // The colored runs of `code` in the language `tag` names. Undefined until they are ready, with no
-// tag, or when the block stays plain.
+// tag, or when the block stays plain. The block keeps its own runs, so the cache may let them go.
 function useColorRuns(code: string, tag: string | undefined): CodeRun[][] | undefined {
-  const [, colored] = useReducer((count: number) => count + 1, 0);
+  const [colored, setColored] = useState<{ code: string; tag: string; runs?: CodeRun[][] }>();
   useEffect(() => {
     if (!tag) return;
     let current = true;
     colorRuns(code, tag).then(
-      () => current && colored(),
+      (runs) => current && setColored({ code, tag, runs }),
       (error) => console.error(`grove could not color a ${tag} block:`, error),
     );
     return () => {
       current = false;
     };
   }, [code, tag]);
-  return tag ? coloredRuns(code, tag) : undefined;
+  if (!tag) return undefined;
+  return colored?.code === code && colored.tag === tag ? colored.runs : coloredRuns(code, tag);
 }

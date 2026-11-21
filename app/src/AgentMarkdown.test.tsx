@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { AgentMarkdown } from "./AgentMarkdown";
@@ -105,6 +105,58 @@ test("a block shown again is not colored again, and shows its colors at once", a
   expect(screen.getByText("const").style.color).toBe("var(--syn-kw)");
   await act(async () => {});
   expect(tokenize.mock.calls.filter(([code]) => code.includes("shownTwice"))).toHaveLength(1);
+});
+
+test("every block of a transcript with more blocks than the cache keeps ends up colored", async () => {
+  const blocks = Array.from({ length: 205 }, (_, at) => "```ts\nconst many" + at + " = " + at + ";\n```").join("\n\n");
+  const container = shown(blocks);
+
+  await waitFor(() => expect(container.querySelectorAll("pre > code:not(:has(span))")).toHaveLength(0), {
+    timeout: 20_000,
+  });
+}, 30_000);
+
+test("each block colors in a task of its own, so the window can paint between them", async () => {
+  let firstTaskOver = false;
+  const tokenize = monaco.editor.tokenize;
+  const tokenizedInFirstTask: boolean[] = [];
+  vi.spyOn(monaco.editor, "tokenize").mockImplementation((code, language) => {
+    if (code.includes("taskOne")) setTimeout(() => (firstTaskOver = true));
+    if (code.includes("taskTwo")) tokenizedInFirstTask.push(!firstTaskOver);
+    return tokenize(code, language);
+  });
+  shown("```ts\nconst taskOne = 1;\n```\n\n```ts\nconst taskTwo = 2;\n```");
+
+  await waitFor(() => expect(screen.getAllByText("const")).toHaveLength(2));
+  expect(tokenizedInFirstTask).toEqual([false]);
+});
+
+test("a block that goes away before its turn does not hold up the blocks after it", async () => {
+  const errors = vi.spyOn(console, "error");
+  shown("```ts\nconst goneSoon = 1;\n```");
+  cleanup();
+
+  shown("```ts\nconst stillColored = 1;\n```");
+
+  expect((await screen.findByText("const")).style.color).toBe("var(--syn-kw)");
+  expect(errors).not.toHaveBeenCalled();
+});
+
+test("a block whose coloring failed is colored when it shows again", async () => {
+  const tokenize = monaco.editor.tokenize;
+  vi.spyOn(monaco.editor, "tokenize").mockImplementationOnce(() => {
+    throw new Error("tokenizer broke");
+  });
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const text = "```ts\nconst failedOnce = 1;\n```";
+  shown(text);
+  await waitFor(() => expect(console.error).toHaveBeenCalled());
+  cleanup();
+  vi.mocked(monaco.editor.tokenize).mockImplementation(tokenize);
+
+  shown(text);
+
+  expect((await screen.findByText("const")).style.color).toBe("var(--syn-kw)");
 });
 
 test.each([
