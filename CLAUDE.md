@@ -80,6 +80,26 @@ Each rule here can be checked against a diff. The Engineering rules below apply 
 - Never cut: acceptance tests, diff parity, agent state from the agent's own signals (protocol in chat mode, hooks in terminal mode, with heuristics only as the terminal-mode fallback).
 - Writing style for docs and comments: plain and short, no em dashes.
 
+## Rule enforcement
+`correct` keeps this table in step with the rules in this file. A rule can have more than one enforcer. CodeRabbit and the reviewer only advise.
+
+| Rule | Enforced by |
+|---|---|
+| A behavior change adds or changes a test | The reviewer. Nothing automatic |
+| Logic in `grove-core`, `src-tauri` only maps (ADR 0002) | CodeRabbit path instructions in `.coderabbit.yaml`, and the reviewer |
+| No hooks, MCP config or credentials in a worktree | The reviewer. Nothing automatic |
+| Rust gates: `fmt`, `clippy`, `cargo test` | CI `rust` check |
+| TS gates: `tsc`, `eslint`, `vitest` | CI `ts` check |
+| `thiserror` in core, `anyhow` only in binaries | CodeRabbit path instructions. No lint |
+| No `unwrap()` in core outside tests | CodeRabbit path instructions, and the reviewer. No lint |
+| Never block a tokio worker | CodeRabbit path instructions, and the reviewer. No test |
+| 8 ms output batching | Core side: `crates/grove-core/tests/sessions.rs`, `chat.rs` and `config.rs`. App side: the CodeRabbit path rule for `app/src/**` ("PTY output reaches the UI only through a batched channel, never one event per chunk"). Nothing yet checks `tauri::ipc::Channel` in `app/src-tauri` or the 8 ms there |
+| Git CLI for worktrees, git2 for diffs | CodeRabbit path instructions. Diff results are checked by the parity tests below |
+| Diff parity | `crates/grove-core/tests/diff.rs` in the `rust` check. `fixtures/diff-repo/check.py` in the `ts` job checks the fixture builds the same each time |
+| One issue, one worktree, one PR | The owner's review. Nothing automatic |
+| Never cut: acceptance tests, diff parity, agent state from its own signals | Diff parity as above. The rest: the owner's review |
+| Docs and comments: plain and short, no em dashes | CodeRabbit path instructions for `*.md`, and the `unslop` pass |
+
 ## Commands
 Run from the repo root. `rust-toolchain.toml` pins the toolchain.
 - Format: `cargo fmt --check`
