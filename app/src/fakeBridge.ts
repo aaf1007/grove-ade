@@ -334,6 +334,11 @@ export function fakeBridge(
   const acks: FakeBridge["acks"] = [];
   const focused: SessionId[] = [];
   const agentStates = new Map<SessionId, AgentStateChanged>();
+  // Each agent session's title, start and the time it entered its state, as the core records them.
+  const titles = new Map<SessionId, string>();
+  const created = new Map<SessionId, number>();
+  const sinces = new Map<SessionId, number>();
+  const sessionsListeners = new Set<() => void>();
   // Attention queue (#53): each agent session's worktree, and when it entered its state, as a count.
   const agentWorktrees = new Map<SessionId, string>();
   const entered = new Map<SessionId, number>();
@@ -476,6 +481,9 @@ export function fakeBridge(
     if (last?.state !== change.state || attentionRank(last) !== attentionRank(change)) {
       entered.set(change.session, changesSoFar++);
     }
+    // As in the core: the same state from another source keeps the time it was entered.
+    const kind = (state: AgentStateChanged) => (state.state === "NeedsInput" ? state.kind : null);
+    if (last?.state !== change.state || kind(last) !== kind(change)) sinces.set(change.session, Date.now());
     agentStates.set(change.session, change);
     stateListeners.forEach((listener) => listener(change));
   }
@@ -521,6 +529,9 @@ export function fakeBridge(
     modes.set(session, "Chat");
     agentWorktrees.set(session, worktree);
     spawnedAgents.push({ session, worktree, agent });
+    created.set(session, Date.now());
+    sinces.set(session, Date.now());
+    sessionsListeners.forEach((listener) => listener());
     return session;
   }
 
@@ -669,6 +680,27 @@ export function fakeBridge(
       stateListeners.add(listener);
       return () => stateListeners.delete(listener);
     },
+    async agentSessions() {
+      return spawnedAgents.map(({ session, worktree, agent }) => {
+        const state = agentStates.get(session);
+        return {
+          session,
+          worktree,
+          agent,
+          mode: modes.get(session)!,
+          parent: null,
+          title: titles.get(session) ?? "New session",
+          createdUnixMs: created.get(session)!,
+          ended: !running.has(session) && !switching.has(session),
+          ...(state && (state.state === "NeedsInput" ? { state: state.state, kind: state.kind } : { state: state.state })),
+          sinceUnixMs: sinces.get(session)!,
+        };
+      });
+    },
+    onAgentSessionsChanged(listener) {
+      sessionsListeners.add(listener);
+      return () => sessionsListeners.delete(listener);
+    },
     onWarning(listener) {
       warningListeners.add(listener);
       warnings.forEach(listener);
@@ -761,6 +793,14 @@ export function fakeBridge(
       chat(session);
       sent.push({ session, text });
       addMessages(session, [{ type: "User", text }]);
+      const title = text
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line !== "");
+      if (title && !titles.has(session)) {
+        titles.set(session, title);
+        sessionsListeners.forEach((listener) => listener());
+      }
     },
     async interrupt(session) {
       chat(session);

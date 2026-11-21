@@ -577,7 +577,7 @@ export function App({ bridge }: { bridge: Bridge }) {
     if (!found) return null;
     const { mode, model } = sessionDetails[found.session] ?? {};
     return {
-      title: names[found.session],
+      session: found.session,
       agent: found.agent,
       model: mode === "Chat" ? model : undefined,
       mode,

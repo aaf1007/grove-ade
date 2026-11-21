@@ -10,6 +10,7 @@ afterEach(() => {
   cleanup();
   localStorage.clear();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 const main = "/code/grove";
@@ -57,7 +58,7 @@ async function setup({ runSessions = RUN_SESSIONS } = {}) {
 }
 
 const claude: FocusedSession = {
-  title: "Claude Code",
+  session: "0",
   agent: "Claude",
   model: { model: FAKE_MODELS.Claude[1], effort: null },
   mode: "Chat",
@@ -296,20 +297,29 @@ test("the servers row shows the port of each running run session that serves one
   expect(within(row("Servers")).getByText(":5173 dev")).toBeTruthy();
 });
 
-test("the session block shows the focused session's title, its state in words and where the state came from", async () => {
+test("the session block shows the focused session's title, its state in words since when, and where the state came from", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 10, 20, 9, 30));
   const bridge = await setup();
-  await renderCard(bridge, {
-    session: {
-      ...claude,
-      title: "Claude Code 2",
-      state: { session: "0", state: "NeedsInput", kind: "Approval", source: "Hook" },
-    },
-  });
+  const session = await bridge.spawnAgent(feature, "Claude", null);
+  await bridge.sendMessage(session, "Fix the login bug\nthen run the tests");
+  vi.setSystemTime(new Date(2026, 10, 20, 14, 5));
+  const approval = { session, state: "NeedsInput", kind: "Approval", source: "Hook" } as const;
+  bridge.agentStateChanged(approval);
+  const { rerender } = await renderCard(bridge, { session: { ...claude, session, state: approval } });
 
-  const block = within(card()).getByRole("group", { name: "Agent session" });
-  expect(within(block).getByRole("heading", { name: "Claude Code 2" })).toBeTruthy();
-  expect(within(block).getByText("Approval")).toBeTruthy();
-  expect(within(block).getByText("State from Hook")).toBeTruthy();
+  const block = () => within(card()).getByRole("group", { name: "Agent session" });
+  expect(within(block()).getByRole("heading", { name: "Fix the login bug" })).toBeTruthy();
+  expect(within(block()).getByText("Approval")).toBeTruthy();
+  expect(within(block()).getByText("since 14:05")).toBeTruthy();
+  expect(within(block()).getByText("State from Hook")).toBeTruthy();
+
+  vi.setSystemTime(new Date(2026, 10, 20, 14, 20));
+  const working = { session, state: "Working", source: "Protocol" } as const;
+  await act(async () => bridge.agentStateChanged(working));
+  await act(async () => rerender({ session: { ...claude, session, state: working } }));
+  expect(within(block()).getByText("Working")).toBeTruthy();
+  expect(within(block()).getByText("since 14:20")).toBeTruthy();
 });
 
 test("the session row shows the focused session's agent, model, effort and mode", async () => {

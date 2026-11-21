@@ -1904,13 +1904,14 @@ test("the Details card shows the focused agent session's name, state and where i
   await screen.findByRole("region", { name: "Panel 0" });
   startAgent();
   const second = await screen.findByRole("region", { name: "Panel 1" });
+  await act(() => bridge.sendMessage("1", "Second task"));
   act(() => bridge.agentStateChanged({ session: "1", state: "Working", source: "Protocol" }));
   fireEvent.focus(second);
 
   await clickButton("Details");
 
   const block = within(detailsCard()).getByRole("group", { name: "Agent session" });
-  expect(within(block).getByRole("heading", { name: "Claude Code 2" })).toBeTruthy();
+  expect(within(block).getByRole("heading", { name: "Second task" })).toBeTruthy();
   expect(within(block).getByText("Working")).toBeTruthy();
   expect(within(block).getByText("State from Protocol")).toBeTruthy();
 });

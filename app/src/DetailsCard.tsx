@@ -17,6 +17,7 @@ import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "rea
 
 import type {
   Agent,
+  AgentSessionRecord,
   AgentStateChanged,
   Bridge,
   DiffBase,
@@ -49,8 +50,7 @@ const EDITORS: [Editor, string][] = [
 
 /** The focused agent session, as the card shows it. */
 export interface FocusedSession {
-  /** What the session is called, as the title bar and the sidebar name it. */
-  title: string;
+  session: SessionId;
   agent: Agent;
   /** undefined until its panel knows it, and in terminal mode. null on the agent's own default. */
   model: ModelChoice | null | undefined;
@@ -131,6 +131,8 @@ export function DetailsCard({
   );
   const [diffChanges, setDiffChanges] = useState(0);
   const [changingBase, setChangingBase] = useState(false);
+  // The focused session as the core lists it, for its title and the time it entered its state.
+  const [record, setRecord] = useState<AgentSessionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const card = useRef<HTMLElement>(null);
   // Kept in the window's settings, so the card of each worktree opens as the last one was left.
@@ -173,6 +175,30 @@ export function DetailsCard({
       current = false;
     };
   }, [bridge, repo, settingsChanges]);
+
+  // Listed again when the list changes, as when the session gets its title, and on each new state.
+  // Only the answer to the latest ask counts, since an older one can arrive after it.
+  const focused = session?.session;
+  useEffect(() => {
+    if (focused === undefined) return;
+    let asks = 0;
+    let listening = true;
+    function list() {
+      const ask = ++asks;
+      bridge.agentSessions().then(
+        (all) => listening && ask === asks && setRecord(all.find((listed) => listed.session === focused) ?? null),
+        (e: unknown) => listening && setError(String(e)),
+      );
+    }
+    const stopSessions = bridge.onAgentSessionsChanged(list);
+    const stopStates = bridge.onAgentState((change) => change.session === focused && list());
+    list();
+    return () => {
+      listening = false;
+      stopSessions();
+      stopStates();
+    };
+  }, [bridge, focused]);
 
   useEffect(
     () => bridge.onDiffChanged((changed) => changed === worktree && setDiffChanges((n) => n + 1)),
@@ -293,6 +319,7 @@ export function DetailsCard({
   const changes = diff && diff.base === base ? diff.result : null;
   const diffError = changes && "error" in changes ? changes.error : null;
   const alert = error ?? diffError;
+  const focusedRecord = record?.session === focused ? record : null;
 
   return (
     <div className={pinned ? "details-holder details-pinned" : "details-holder"}>
@@ -308,13 +335,16 @@ export function DetailsCard({
         <div className="details-head">
           {session && (
             <div role="group" aria-label="Agent session" className="details-session">
-              <h2 className="details-title">
-                {session.title}
-              </h2>
+              {focusedRecord && <h2 className="details-title">{focusedRecord.title}</h2>}
               {session.state && (
                 <>
-                  <AgentState state={session.state} />
-                  <p className="details-source">State from {session.state.source}</p>
+                  <p className="details-state">
+                    <AgentState state={session.state} />
+                    {focusedRecord?.state && (
+                      <span className="details-muted">since {clockTime(focusedRecord.sinceUnixMs)}</span>
+                    )}
+                  </p>
+                  <p className="details-meta">State from {session.state.source}</p>
                 </>
               )}
             </div>
@@ -507,6 +537,14 @@ function Chevron() {
 function overlapsAcross(a: DOMRect, b: DOMRect): boolean {
   if (a.width === 0 || b.width === 0) return false;
   return a.left < b.right && b.left < a.right;
+}
+
+/** A time as "14:05" today, and as "Nov 19, 14:05" on another day. */
+function clockTime(unixMs: number): string {
+  const at = new Date(unixMs);
+  const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  if (at.toDateString() === new Date().toDateString()) return time;
+  return `${at.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
 }
 
 function sum(files: FileDiff[], field: "added" | "removed"): number {
