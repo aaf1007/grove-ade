@@ -595,6 +595,14 @@ export function App({ bridge }: { bridge: Bridge }) {
   const shownCount = workspace?.chat.filter((panel) => panel.shown).length ?? 0;
   const shownAgents = agents.filter((a) => places[a.session]?.shown).map((a) => a.session);
   const names = sessionNames(agents);
+  // The one agent panel shown, and its session once started. It draws no header: the title bar
+  // names its agent and state, and holds its Split.
+  const soleShownPanel = shownCount === 1 ? workspace?.chat.find((panel) => panel.shown) : undefined;
+  const soleShownAgent = soleShownPanel && agents.find((a) => places[a.session]?.shown);
+  const soleAgent = soleShownPanel && {
+    name: soleShownAgent ? names[soleShownAgent.session] : AGENT_NAMES[soleShownPanel.agent],
+    state: soleShownAgent && agentStates[soleShownAgent.session],
+  };
   const placeholder = PLACEHOLDER_TABS.find((tab) => tab === workspace?.selected);
   // The run session each worktree's terminal panel shows, by name. undefined shows the shell.
   const shownRunName = selected ? shownRuns[selected] : undefined;
@@ -642,6 +650,8 @@ export function App({ bridge }: { bridge: Bridge }) {
               onToggleTerminal={() => selected && toggleTerminal(selected)}
               detailsOpen={selected ? detailsOpen : null}
               onToggleDetails={toggleDetails}
+              soleAgent={soleAgent ?? null}
+              onSplit={soleShownAgent && (() => split(soleShownAgent))}
             />
             <Warnings bridge={bridge} />
           </div>
@@ -731,6 +741,7 @@ export function App({ bridge }: { bridge: Bridge }) {
                   session={started.session}
                   agent={started.agent}
                   sessionName={names[started.session]}
+                  showHeader={shownCount > 1}
                   worktree={started.worktree}
                   shown={places[started.session]?.shown ?? false}
                   order={places[started.session]?.at}
@@ -741,7 +752,9 @@ export function App({ bridge }: { bridge: Bridge }) {
                     if (path) setDiffReveal({ worktree: started.worktree, path });
                   }}
                   onChangeAgent={(agent) => changeAgent(started, agent)}
-                  onSplit={shownCount < MAX_SHOWN_AGENT_PANELS ? () => split(started) : undefined}
+                  onSplit={
+                    shownCount > 1 && shownCount < MAX_SHOWN_AGENT_PANELS ? () => split(started) : undefined
+                  }
                   onHide={
                     shownCount > 1
                       ? () => changeWorkspace(started.worktree, (w) => hideSession(w, started.session))
@@ -761,9 +774,11 @@ export function App({ bridge }: { bridge: Bridge }) {
                     panel.shown &&
                     panel.session === null && (
                       <div key={`unstarted ${at}`} className="chat-panel" style={{ order: at }}>
-                        <div className="pane-head">
-                          <b>{AGENT_NAMES[panel.agent]}</b>
-                        </div>
+                        {shownCount > 1 && (
+                          <div className="pane-head">
+                            <b>{AGENT_NAMES[panel.agent]}</b>
+                          </div>
+                        )}
                         <div className="empty-chat">
                           <h2>No agent session yet</h2>
                           <p>

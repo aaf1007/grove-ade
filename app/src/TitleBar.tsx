@@ -1,13 +1,17 @@
-import { NotebookText, PanelLeft } from "lucide-react";
+import { Columns2, NotebookText, PanelLeft } from "lucide-react";
 import type { Ref } from "react";
+
+import type { AgentStateChanged } from "./bridge";
 
 import { DETAILS_CARD_ID } from "./DetailsCard";
 import { PanelSwitches } from "./PanelSwitches";
+import { AgentState } from "./ui/AgentState";
 import { IconButton } from "./ui/IconButton";
 
 /**
  * The bar over the chat lane: the selected worktree's repo and name, and the switch that opens the
- * details card. While the panel area is closed, the terminal and panel area switches follow it.
+ * details card. With one agent panel shown, it also names that panel's agent and state, and holds
+ * its Split, since the panel then draws no header. While the panel area is closed, the terminal and panel area switches follow it.
  * It sits in the window's top row, so its empty part drags the window. While the sidebar is
  * collapsed it starts after the window controls and holds the sidebar switch, which the sidebar's
  * own top row holds otherwise.
@@ -24,6 +28,8 @@ export function TitleBar({
   onToggleTerminal,
   detailsOpen,
   onToggleDetails,
+  soleAgent,
+  onSplit,
 }: {
   /** The selected worktree's repo name. null while none is selected. */
   repo: string | null;
@@ -41,6 +47,10 @@ export function TitleBar({
   /** Whether the details card is open. null while no worktree is selected. */
   detailsOpen: boolean | null;
   onToggleDetails(): void;
+  /** The agent and state of the one agent panel shown. null while none or several are. */
+  soleAgent: { name: string; state: AgentStateChanged | undefined } | null;
+  /** Starts another agent session beside the one agent panel shown. No button without it. */
+  onSplit?: () => void;
 }) {
   return (
     <header className="titlebar" data-tauri-drag-region="deep">
@@ -67,7 +77,21 @@ export function TitleBar({
       ) : (
         <div className="crumbs">No worktree selected</div>
       )}
+      {soleAgent && (
+        <div className="titlebar-agent">
+          <span>{soleAgent.name}</span>
+          {soleAgent.state && <AgentState state={soleAgent.state} source={soleAgent.state.source} />}
+        </div>
+      )}
       <div className="switches">
+        {onSplit && (
+          <IconButton
+            icon={Columns2}
+            label="Split"
+            title="Start another agent session beside this one"
+            onClick={onSplit}
+          />
+        )}
         <IconButton
           icon={NotebookText}
           label="Details"

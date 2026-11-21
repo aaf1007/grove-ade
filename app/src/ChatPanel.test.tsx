@@ -874,12 +874,14 @@ test("a message the agent never got says so, with its text", async () => {
   expect(card.textContent).toContain("add a test");
 });
 
-test("the header shows the agent and its state with the source, and the strip shows Chat mode", async () => {
+test("the header shows the agent and its state, with the source only on hover, and the strip shows Chat mode", async () => {
   const bridge = await started();
   await shownPanel(bridge, { state: working("Working") });
 
   expect(document.querySelector(".pane-head b")!.textContent).toBe("Claude Code");
-  expect(document.querySelector(".pane-head .ui-agent-state")!.textContent).toBe("Working · Protocol");
+  const state = document.querySelector<HTMLElement>(".pane-head .ui-agent-state")!;
+  expect(state.textContent).toBe("Working");
+  expect(state.title).toBe("State from Protocol");
   expect(within(document.querySelector<HTMLElement>(".pane-head")!).queryByRole("group", { name: "Mode" })).toBeNull();
   const mode = within(strip()).getByRole("group", { name: "Mode" });
   expect(within(mode).getByRole("button", { name: "Chat" }).getAttribute("aria-pressed")).toBe("true");
