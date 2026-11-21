@@ -2,10 +2,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { App } from "./App";
-import { DEFAULT_WORKSPACE, fakeBridge, type FakeBridge } from "./fakeBridge";
+import { fakeBridge, type FakeBridge, STARTING_WORKSPACE } from "./fakeBridge";
 
-// Each worktree's workspace: its agent panels side by side, its panel-area tabs and its bottom
-// terminal. The agent panels are the real ones, so two of them streaming can be told apart.
+// Each agent session's workspace: its agent panel and those of its subagent sessions side by side,
+// its panel-area tabs and its bottom terminal. The agent panels are the real ones, so two of them
+// streaming can be told apart.
 vi.mock("./DiffView", () => ({ DiffView: () => <p>Diff</p> }));
 vi.mock("./FilesPanel", () => ({
   FilesPanel: ({ worktree }: { worktree: string }) => <p>Files of {worktree}</p>,
@@ -117,15 +118,21 @@ async function startClaudeCode() {
   await click(screen.getByRole("menuitem", { name: "Start Claude Code" }));
 }
 
-// Starts Claude Code in feat-36, then splits its panel from the title bar, which starts Codex
-// beside it.
+// Starts Claude Code in feat-36, which then starts a Codex subagent session there. Its panel shows
+// beside its parent's.
 async function twoPanels(bridge: FakeBridge) {
   await select("feat-36");
   await startClaudeCode();
   await screen.findByRole("region", { name: "Panel 0" });
-  await click(within(screen.getByRole("banner")).getByRole("button", { name: "Split" }));
+  await act(async () => void bridge.spawnSubagent(feature, "Codex", "0"));
   await screen.findByRole("region", { name: "Panel 1" });
   expect(bridge.spawnedAgents.map((s) => s.agent)).toEqual(["Claude", "Codex"]);
+}
+
+// Picks `place` in the sidebar's New session picker, which starts a session there and selects it.
+async function newSessionIn(place: string) {
+  fireEvent.click(await screen.findByRole("button", { name: "New session" }));
+  await click(screen.getByRole("menuitem", { name: place }));
 }
 
 // The agent the panel's header names.
@@ -164,21 +171,7 @@ test("with one agent panel the title bar names its agent and state, and the pane
   expect(panel("0").querySelector(".pane-head")).toBeNull();
 });
 
-test("with one agent panel, Split sits in the title bar before Details, and the panel has none", async () => {
-  const bridge = await trackedBridge();
-  render(<App bridge={bridge} />);
-  await select("feat-36");
-  await startClaudeCode();
-  await screen.findByRole("region", { name: "Panel 0" });
-
-  const switches = within(screen.getByRole("banner"))
-    .getAllByRole("button")
-    .map((button) => button.getAttribute("aria-label"));
-  expect(switches.indexOf("Split")).toBe(switches.indexOf("Details") - 1);
-  expect(within(panel("0")).queryByRole("button", { name: "Split" })).toBeNull();
-});
-
-test("splitting a panel starts the other agent beside it and saves both in the workspace", async () => {
+test("a subagent session's panel shows beside its parent's, in its parent's workspace", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
 
@@ -186,13 +179,54 @@ test("splitting a panel starts the other agent beside it and saves both in the w
 
   expect(shownPanels()).toEqual(["Panel 0", "Panel 1"]);
   expect(agentName(panel("1"))).toBe("Codex");
-  // With two panels, each splits from its own header.
-  expect(within(screen.getByRole("banner")).queryByRole("button", { name: "Split" })).toBeNull();
-  expect(within(panel("0")).getByRole("button", { name: "Split" })).toBeTruthy();
-  expect((await bridge.workspace(feature)).chat).toEqual([
+  expect((await bridge.workspace("0")).chat).toEqual([
     { agent: "Claude", session: "0", shown: true },
     { agent: "Codex", session: "1", shown: true },
   ]);
+  // The subagent reads the same workspace.
+  expect(await bridge.workspace("1")).toEqual(await bridge.workspace("0"));
+});
+
+test("the chat area shows the selected session and its subagents, not another session of its worktree", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await twoPanels(bridge);
+
+  await newSessionIn("feat-36");
+
+  await screen.findByRole("region", { name: "Panel 2" });
+  expect(shownPanels()).toEqual(["Panel 2"]);
+  expect((await bridge.workspace("2")).chat).toEqual([{ agent: "Claude", session: "2", shown: true }]);
+
+  await click(sessionRow("feat-36", 0)!);
+
+  expect(shownPanels()).toEqual(["Panel 0", "Panel 1"]);
+  expect(panel("2").hidden).toBe(true);
+  // The sidebar marks the sessions whose panels show.
+  expect([0, 1, 2].map((nth) => sessionRow("feat-36", nth)!.getAttribute("aria-current"))).toEqual([
+    "true",
+    "true",
+    "false",
+  ]);
+});
+
+test("selecting a subagent session shows its parent's workspace, with the Files of its own worktree", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  await startClaudeCode();
+  await screen.findByRole("region", { name: "Panel 0" });
+  await act(async () => void bridge.spawnSubagent(main, "Codex", "0"));
+  await screen.findByRole("region", { name: "Panel 1" });
+  expect(screen.getByRole("tabpanel", { name: "Files" }).textContent).toBe(`Files of ${feature}`);
+
+  await click(sessionRow("main")!);
+
+  expect(shownPanels()).toEqual(["Panel 0", "Panel 1"]);
+  // Each worktree visited keeps its Files panel. Only the selected one's shows.
+  const filesShown = (worktree: string) => !screen.getByText(`Files of ${worktree}`).closest<HTMLElement>(".files-holder")!.hidden;
+  expect([filesShown(main), filesShown(feature)]).toEqual([true, false]);
+  expect(panel("1").contains(document.activeElement)).toBe(true);
 });
 
 test("with two agent panels, each draws a header with its agent and state, and the title bar names neither", async () => {
@@ -217,18 +251,6 @@ test("with two agent panels, each draws a header with its agent and state, and t
   expect(screen.getByRole("banner").querySelector(".titlebar-agent")).toBeNull();
 });
 
-test("a third panel can be split off, but no fourth", async () => {
-  const bridge = await trackedBridge();
-  render(<App bridge={bridge} />);
-  await twoPanels(bridge);
-
-  await click(within(panel("1")).getByRole("button", { name: "Split" }));
-
-  expect(await screen.findByRole("region", { name: "Panel 2" })).toBeTruthy();
-  expect(bridge.spawnedAgents[2].agent).toBe("Claude");
-  expect(within(screen.getByRole("main")).queryByRole("button", { name: "Split" })).toBeNull();
-});
-
 test("hiding a panel keeps its session running, and its row in the sidebar shows it again", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
@@ -238,14 +260,14 @@ test("hiding a panel keeps its session running, and its row in the sidebar shows
 
   expect(panel("1").hidden).toBe(true);
   expect(bridge.killed).toEqual([]);
-  expect((await bridge.workspace(feature)).chat[1]).toEqual({ agent: "Codex", session: "1", shown: false });
+  expect((await bridge.workspace("0")).chat[1]).toEqual({ agent: "Codex", session: "1", shown: false });
   // The last shown panel has no Hide button.
   expect(within(panel("0")).queryByRole("button", { name: "Hide panel" })).toBeNull();
 
   await click(sessionRow("feat-36", 1)!);
 
   expect(shownPanels()).toEqual(["Panel 0", "Panel 1"]);
-  expect((await bridge.workspace(feature)).chat[1].shown).toBe(true);
+  expect((await bridge.workspace("0")).chat[1].shown).toBe(true);
 });
 
 test("focusing a panel calls focus for its own session", async () => {
@@ -278,7 +300,7 @@ test("two panels streaming at once each show only their own messages", async () 
   expect(within(panel("1")).queryByText(/Claude writes/)).toBeNull();
 });
 
-test("each worktree keeps its own layout", async () => {
+test("each agent session keeps its own layout, and a worktree with none shows the starting one", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await twoPanels(bridge);
@@ -299,10 +321,56 @@ test("each worktree keeps its own layout", async () => {
   expect(tab("Diff").getAttribute("aria-selected")).toBe("true");
   expect(terminalToggle().getAttribute("aria-pressed")).toBe("false");
   expect(screen.queryByRole("button", { name: "Open shell" })).toBeNull();
-  expect(bridge.workspacesSet.every((set) => set.worktree === feature)).toBe(true);
+  expect(bridge.workspacesSet.every((set) => set.session === "0")).toBe(true);
 });
 
-test("a reloaded window gets each worktree's layout back from the core", async () => {
+test("selecting another session of the same worktree switches the panel area and the terminal", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  await startClaudeCode();
+  await screen.findByRole("region", { name: "Panel 0" });
+  await click(screen.getByRole("button", { name: "Open shell" }));
+  const shell = await screen.findByLabelText("Panel 1");
+  await click(tab("Diff"));
+  await click(terminalToggle());
+  expect(shell.hidden).toBe(true);
+
+  // A second session there starts from the profile's layout, not from the first one's.
+  await newSessionIn("feat-36");
+  await screen.findByRole("region", { name: "Panel 2" });
+
+  expect(tab("Files").getAttribute("aria-selected")).toBe("true");
+  expect(terminalToggle().getAttribute("aria-pressed")).toBe("true");
+  // One shell per place: the second session shows the shell the first one opened.
+  expect(shell.hidden).toBe(false);
+  expect(screen.queryByRole("button", { name: "Open shell" })).toBeNull();
+  await openMenu();
+  await click(within(screen.getByRole("menu", { name: "Open a panel" })).getByRole("menuitemcheckbox", { name: "Logs" }));
+
+  await click(sessionRow("feat-36", 0)!);
+
+  expect(shownPanels()).toEqual(["Panel 0"]);
+  expect(tab("Diff").getAttribute("aria-selected")).toBe("true");
+  expect(screen.queryByRole("tab", { name: "Logs" })).toBeNull();
+  expect(terminalToggle().getAttribute("aria-pressed")).toBe("false");
+  expect(shell.hidden).toBe(true);
+
+  await click(sessionRow("feat-36", 1)!);
+
+  expect(shownPanels()).toEqual(["Panel 2"]);
+  expect(tab("Logs").getAttribute("aria-selected")).toBe("true");
+  expect(terminalToggle().getAttribute("aria-pressed")).toBe("true");
+  expect(shell.hidden).toBe(false);
+  expect(await bridge.workspace("0")).toMatchObject({ panels: ["Files", "Diff"], selected: "Diff", terminal: false });
+  expect(await bridge.workspace("2")).toMatchObject({
+    panels: ["Files", "Diff", "Logs"],
+    selected: "Logs",
+    terminal: true,
+  });
+});
+
+test("a reloaded window gets each agent session's layout back from the core", async () => {
   const bridge = await trackedBridge();
   const { unmount } = render(<App bridge={bridge} />);
   await twoPanels(bridge);
@@ -326,7 +394,7 @@ function pressedMode() {
 // A restart brings each agent session back in its mode, under the same id, before the window opens.
 test("after a restart a panel whose session runs in terminal mode opens in terminal mode", async () => {
   const bridge = await trackedBridge();
-  const session = await bridge.spawnAgent(feature, "Claude", 0);
+  const session = await bridge.spawnAgent(feature, "Claude");
   await bridge.setMode(session, "Terminal");
   render(<App bridge={bridge} />);
 
@@ -355,30 +423,49 @@ test("after a window reload a panel switched to terminal mode opens in terminal 
   expect(bridge.subscribed).toHaveLength(subscribes);
 });
 
-test("an unstarted panel starts its own agent", async () => {
+test("a new session runs the agent the core picks from the profile's layout, and starts from its tabs", async () => {
   const bridge = await trackedBridge();
-  await bridge.setWorkspace(feature, {
-    ...DEFAULT_WORKSPACE,
-    chat: [{ agent: "Codex", session: null, shown: true }],
-  });
+  bridge.setStartingWorkspace(feature, { ...STARTING_WORKSPACE, panels: ["Diff", "Logs"], selected: "Logs" }, "Codex");
   render(<App bridge={bridge} />);
   await select("feat-36");
-
-  // Alone, it draws no header: the title bar names its agent.
-  expect(within(screen.getByRole("banner")).getByText("Codex")).toBeTruthy();
-  expect(screen.getByRole("main").querySelector(".pane-head")).toBeNull();
+  expect(tab("Logs").getAttribute("aria-selected")).toBe("true");
 
   await click(screen.getByRole("button", { name: "Start session" }));
 
   expect(await screen.findByRole("region", { name: "Panel 0" })).toBeTruthy();
   expect(bridge.spawnedAgents).toEqual([{ session: "0", worktree: feature, agent: "Codex" }]);
-  expect((await bridge.workspace(feature)).chat).toEqual([{ agent: "Codex", session: "0", shown: true }]);
+  // Alone, it draws no header: the title bar names its agent.
+  expect(within(screen.getByRole("banner")).getByText("Codex")).toBeTruthy();
+  expect(screen.getByRole("main").querySelector(".pane-head")).toBeNull();
+  expect(await bridge.workspace("0")).toEqual({
+    chat: [{ agent: "Codex", session: "0", shown: true }],
+    panels: ["Diff", "Logs"],
+    selected: "Logs",
+    terminal: true,
+  });
+});
+
+test("a worktree with no agent session shows the starting layout, and a change to it is not saved", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+
+  await openMenu();
+  await click(within(screen.getByRole("menu", { name: "Open a panel" })).getByRole("menuitemcheckbox", { name: "Logs" }));
+  await click(terminalToggle());
+
+  expect(tab("Logs").getAttribute("aria-selected")).toBe("true");
+  expect(terminalToggle().getAttribute("aria-pressed")).toBe("false");
+  expect(bridge.workspacesSet).toEqual([]);
+  expect(await bridge.startingWorkspace(feature)).toEqual(STARTING_WORKSPACE);
 });
 
 test("the + menu opens a tab and selects it, and closing a tab selects the last one left", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
+  await startClaudeCode();
+  await screen.findByRole("region", { name: "Panel 0" });
 
   await openMenu();
   const menu = screen.getByRole("menu", { name: "Open a panel" });
@@ -389,7 +476,7 @@ test("the + menu opens a tab and selects it, and closing a tab selects the last 
   expect(screen.queryByRole("menu")).toBeNull();
   expect(tab("Logs").getAttribute("aria-selected")).toBe("true");
   expect(screen.getByText("The Logs panel is not available yet.")).toBeTruthy();
-  expect(await bridge.workspace(feature)).toMatchObject({ panels: ["Files", "Diff", "Logs"], selected: "Logs" });
+  expect(await bridge.workspace("0")).toMatchObject({ panels: ["Files", "Diff", "Logs"], selected: "Logs" });
 
   await click(screen.getByRole("button", { name: "Close Logs" }));
 
@@ -401,7 +488,7 @@ test("the + menu opens a tab and selects it, and closing a tab selects the last 
 
   expect(screen.queryByRole("tab")).toBeNull();
   expect(screen.getByText("No panel open. Use + to open one.")).toBeTruthy();
-  expect(await bridge.workspace(feature)).toMatchObject({ panels: [], selected: null });
+  expect(await bridge.workspace("0")).toMatchObject({ panels: [], selected: null });
 });
 
 test("the Profile tab shows the selected worktree's Profile panel, which stays while another tab shows", async () => {
@@ -533,6 +620,8 @@ test("the terminal switch toggles it, and the + menu's T opens it", async () => 
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
+  await startClaudeCode();
+  await screen.findByRole("region", { name: "Panel 0" });
   const toggle = terminalToggle();
   expect(toggle.getAttribute("aria-pressed")).toBe("true");
 
@@ -540,7 +629,7 @@ test("the terminal switch toggles it, and the + menu's T opens it", async () => 
 
   expect(toggle.getAttribute("aria-pressed")).toBe("false");
   expect(screen.queryByRole("button", { name: "Open shell" })).toBeNull();
-  expect((await bridge.workspace(feature)).terminal).toBe(false);
+  expect((await bridge.workspace("0")).terminal).toBe(false);
 
   await openMenu();
   await act(async () => fireEvent.keyDown(document.activeElement!, { key: "t" }));
@@ -579,25 +668,23 @@ test("opening the terminal shows a collapsed panel area", async () => {
 
 test("a workspace the core does not save says why", async () => {
   const bridge = await trackedBridge();
-  vi.spyOn(bridge, "setWorkspace").mockRejectedValueOnce("the state file is read-only");
   render(<App bridge={bridge} />);
   await select("feat-36");
+  await startClaudeCode();
+  await screen.findByRole("region", { name: "Panel 0" });
+  vi.spyOn(bridge, "setWorkspace").mockRejectedValueOnce("the state file is read-only");
 
   await click(tab("Diff"));
 
-  expect(screen.getByRole("alert").textContent).toBe(
-    "Could not save this worktree's layout: the state file is read-only",
-  );
+  expect(screen.getByRole("alert").textContent).toBe("Could not save this layout: the state file is read-only");
 });
 
 test("a layout that loads clears an earlier load error", async () => {
   const bridge = await trackedBridge();
-  vi.spyOn(bridge, "workspace").mockRejectedValueOnce("the state file is unreadable");
+  vi.spyOn(bridge, "startingWorkspace").mockRejectedValueOnce("the state file is unreadable");
   render(<App bridge={bridge} />);
   await select("feat-36");
-  expect(screen.getByRole("alert").textContent).toBe(
-    "Could not load this worktree's layout: the state file is unreadable",
-  );
+  expect(screen.getByRole("alert").textContent).toBe("Could not load this layout: the state file is unreadable");
 
   await select("main (main worktree)");
 
@@ -606,9 +693,9 @@ test("a layout that loads clears an earlier load error", async () => {
 
 test("a slow layout that loads late leaves another worktree's load error in place", async () => {
   const bridge = await trackedBridge();
-  const workspace = bridge.workspace.bind(bridge);
+  const workspace = bridge.startingWorkspace.bind(bridge);
   let loadFeature = () => {};
-  vi.spyOn(bridge, "workspace").mockImplementation((worktree) =>
+  vi.spyOn(bridge, "startingWorkspace").mockImplementation((worktree) =>
     worktree === feature
       ? new Promise((resolve) => (loadFeature = () => resolve(workspace(feature))))
       : Promise.reject("the state file is unreadable"),
@@ -619,32 +706,33 @@ test("a slow layout that loads late leaves another worktree's load error in plac
 
   await act(async () => loadFeature());
 
-  expect(screen.getByRole("alert").textContent).toBe(
-    "Could not load this worktree's layout: the state file is unreadable",
-  );
+  expect(screen.getByRole("alert").textContent).toBe("Could not load this layout: the state file is unreadable");
 });
 
-test("no agent session starts in a worktree whose layout does not load", async () => {
+// A session has a workspace of its own, so its start does not need its worktree's starting layout.
+test("an agent session starts in a worktree whose starting layout does not load", async () => {
   const bridge = await trackedBridge();
-  vi.spyOn(bridge, "workspace").mockRejectedValue("the state file is unreadable");
+  vi.spyOn(bridge, "startingWorkspace").mockRejectedValue("the state file is unreadable");
   render(<App bridge={bridge} />);
   await select("feat-36");
+  expect(screen.getByRole("alert").textContent).toBe("Could not load this layout: the state file is unreadable");
 
   await startClaudeCode();
 
-  expect(bridge.spawnedAgents).toEqual([]);
-  expect(screen.getByRole("alert").textContent).toBe(
-    "Could not load this worktree's layout: the state file is unreadable",
-  );
+  await waitFor(() => expect(shownPanels()).toEqual(["Panel 0"]));
+  expect(bridge.spawnedAgents).toHaveLength(1);
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 // Issue #204: the session runs, so only the layout failed.
-test("a session that starts when the core's copy then does not load shows as started, with a layout error", async () => {
+test("a session that starts when its layout then does not load shows as started, with a layout error", async () => {
   const bridge = await trackedBridge();
   const spawnAgent = bridge.spawnAgent.bind(bridge);
-  vi.spyOn(bridge, "spawnAgent").mockImplementation(async (worktree, agent, at) => {
-    const session = await spawnAgent(worktree, agent, at);
-    vi.spyOn(bridge, "workspace").mockRejectedValueOnce("the state file is unreadable");
+  let loads = () => {};
+  vi.spyOn(bridge, "spawnAgent").mockImplementation(async (worktree, agent) => {
+    const session = await spawnAgent(worktree, agent);
+    const failing = vi.spyOn(bridge, "workspace").mockRejectedValue("the state file is unreadable");
+    loads = () => failing.mockRestore();
     return session;
   });
   render(<App bridge={bridge} />);
@@ -652,43 +740,50 @@ test("a session that starts when the core's copy then does not load shows as sta
 
   await click(screen.getByRole("button", { name: "Start session" }));
 
-  await waitFor(() => expect(shownPanels()).toEqual(["Panel 0"]));
-  expect(bridge.spawnedAgents).toHaveLength(1);
-  expect(screen.getByRole("alert").textContent).toBe(
-    "Could not load this worktree's layout: the state file is unreadable",
+  await waitFor(() =>
+    expect(screen.getByRole("alert").textContent).toBe("Could not load this layout: the state file is unreadable"),
   );
+  expect(bridge.spawnedAgents).toHaveLength(1);
+  // It is selected, so the place no longer offers to start one.
+  expect(screen.queryByRole("button", { name: "Start session" })).toBeNull();
+  // Once it loads, selecting the session again shows its layout.
+  loads();
+  await click(await vi.waitFor(() => sessionRow("feat-36")!));
+  await waitFor(() => expect(shownPanels()).toEqual(["Panel 0"]));
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
-// The jump waits for the start, so the started session keeps the panel clicked and the jumped-to
-// one goes after it.
-test("a jump while a session starts gives both sessions a panel", async () => {
+// The user moved on while the session started, so it does not take the chat area from the session
+// they jumped to.
+test("a jump while a session starts keeps the session jumped to, and the started one has its own workspace", async () => {
   const bridge = await trackedBridge();
   const spawnAgent = bridge.spawnAgent.bind(bridge);
   let finishSpawn = () => {};
-  vi.spyOn(bridge, "spawnAgent").mockImplementation(
-    (worktree, agent, at) => new Promise((resolve) => (finishSpawn = () => resolve(spawnAgent(worktree, agent, at)))),
-  );
   render(<App bridge={bridge} />);
   await select("feat-36");
-  // Waiting on the user, as a subagent that has no panel yet.
-  const waiting = bridge.spawnAgentWithoutPanel(feature, "Claude");
+  // Waiting on the user, in a session the window has no panel for yet.
+  const waiting = await spawnAgent(main, "Claude");
   await act(async () =>
     bridge.agentStateChanged({ session: waiting, state: "NeedsInput", kind: "Approval", source: "Protocol" }),
+  );
+  vi.spyOn(bridge, "spawnAgent").mockImplementation(
+    (worktree, agent) => new Promise((resolve) => (finishSpawn = () => resolve(spawnAgent(worktree, agent)))),
   );
   await click(screen.getByRole("button", { name: "Start session" }));
 
   await click(screen.getByRole("button", { name: "Needs you 1" }));
   await act(async () => finishSpawn());
 
-  expect(shownPanels()).toEqual([`Panel ${waiting}`, "Panel 1"]);
-  await waitFor(async () =>
-    expect((await bridge.workspace(feature)).chat.map((panel) => panel.session)).toEqual(["1", waiting]),
-  );
+  expect(shownPanels()).toEqual([`Panel ${waiting}`]);
+  expect((await bridge.workspace("1")).chat).toEqual([{ agent: "Claude", session: "1", shown: true }]);
+  // Its row shows it.
+  await click(await vi.waitFor(() => sessionRow("feat-36")!));
+  await waitFor(() => expect(shownPanels()).toEqual(["Panel 1"]));
 });
 
-// Issue #158: the core places a new agent session in its panel as it starts it, so a reload
-// between the start and a save can never leave it without one.
-test("starting a session in an empty panel saves no workspace, and the core's change draws the panel", async () => {
+// Issue #158: the core gives a new agent session its workspace, with its panel, as it starts it,
+// so a reload between the start and a save can never leave it without one.
+test("starting a session saves no workspace, and the core's copy draws the panel", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
@@ -697,14 +792,14 @@ test("starting a session in an empty panel saves no workspace, and the core's ch
 
   await waitFor(() => expect(shownPanels()).toEqual(["Panel 0"]));
   expect(bridge.workspacesSet).toEqual([]);
-  expect((await bridge.workspace(feature)).chat).toEqual([{ agent: "Claude", session: "0", shown: true }]);
+  expect((await bridge.workspace("0")).chat).toEqual([{ agent: "Claude", session: "0", shown: true }]);
 });
 
 test("a session that ends before the window loads the core's copy keeps its panel", async () => {
   const bridge = await trackedBridge();
   const spawnAgent = bridge.spawnAgent.bind(bridge);
-  vi.spyOn(bridge, "spawnAgent").mockImplementation(async (worktree, agent, at) => {
-    const session = await spawnAgent(worktree, agent, at);
+  vi.spyOn(bridge, "spawnAgent").mockImplementation(async (worktree, agent) => {
+    const session = await spawnAgent(worktree, agent);
     bridge.exit(session);
     return session;
   });
@@ -730,14 +825,14 @@ test("a reload right after a start shows the session in its panel", async () => 
   await waitFor(() => expect(shownPanels()).toEqual(["Panel 0"]));
 });
 
-test("a start from the sidebar fills the first empty panel, and a split goes after the last", async () => {
+test("a subagent's panel goes after its parent's, and the window saves no workspace for it", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
 
   await twoPanels(bridge);
 
   expect(bridge.workspacesSet).toEqual([]);
-  expect((await bridge.workspace(feature)).chat).toEqual([
+  expect((await bridge.workspace("0")).chat).toEqual([
     { agent: "Claude", session: "0", shown: true },
     { agent: "Codex", session: "1", shown: true },
   ]);
@@ -747,8 +842,11 @@ test("a workspace changed outside the window is redrawn", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
+  await startClaudeCode();
+  await screen.findByRole("region", { name: "Panel 0" });
+  const shown = await bridge.workspace("0");
 
-  await act(() => bridge.setWorkspace(feature, { ...DEFAULT_WORKSPACE, panels: ["Files", "Logs"], selected: "Logs" }));
+  await act(() => bridge.setWorkspace("0", { ...shown, panels: ["Files", "Logs"], selected: "Logs" }));
 
   await waitFor(() => expect(tab("Logs").getAttribute("aria-selected")).toBe("true"));
 });
@@ -757,14 +855,17 @@ test("a change made while the core's change loads is kept on top of it", async (
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
+  await startClaudeCode();
+  await screen.findByRole("region", { name: "Panel 0" });
   const workspace = bridge.workspace.bind(bridge);
+  const shown = await workspace("0");
   let finishLoad = () => {};
   vi.spyOn(bridge, "workspace").mockImplementation(
-    (worktree) => new Promise((resolve) => (finishLoad = () => resolve(workspace(worktree)))),
+    (session) => new Promise((resolve) => (finishLoad = () => resolve(workspace(session)))),
   );
 
   // As an agent would, through grove-mcp: the terminal closes.
-  await act(() => bridge.setWorkspace(feature, { ...DEFAULT_WORKSPACE, terminal: false }));
+  await act(() => bridge.setWorkspace("0", { ...shown, terminal: false }));
   await openMenu();
   await click(within(screen.getByRole("menu", { name: "Open a panel" })).getByRole("menuitemcheckbox", { name: "Logs" }));
   await act(async () => finishLoad());
@@ -772,8 +873,8 @@ test("a change made while the core's change loads is kept on top of it", async (
   await waitFor(() => expect(tab("Logs").getAttribute("aria-selected")).toBe("true"));
   expect(terminalToggle().getAttribute("aria-pressed")).toBe("false");
   await waitFor(async () =>
-    expect(await workspace(feature)).toEqual({
-      ...DEFAULT_WORKSPACE,
+    expect(await workspace("0")).toEqual({
+      ...shown,
       panels: ["Files", "Diff", "Logs"],
       selected: "Logs",
       terminal: false,
@@ -799,64 +900,32 @@ test("an ended session keeps its panel through later workspace changes", async (
   expect(shownPanels()).toEqual(["Panel 0"]);
 });
 
-test("a panel after an ended session's panel starts its own agent there", async () => {
+test("a second session starts in a worktree whose first session ended", async () => {
   const bridge = await trackedBridge();
-  await bridge.setWorkspace(feature, {
-    ...DEFAULT_WORKSPACE,
-    chat: [
-      { agent: "Claude", session: null, shown: true },
-      { agent: "Codex", session: null, shown: true },
-    ],
-  });
   render(<App bridge={bridge} />);
   await select("feat-36");
   await click(startButtons()[0]);
-  await waitFor(() => expect(startButtons()).toHaveLength(1));
+  await waitFor(() => expect(shownPanels()).toEqual(["Panel 0"]));
   act(() => bridge.exit("0"));
 
-  await click(startButtons()[0]);
+  await newSessionIn("feat-36");
 
-  await waitFor(() => expect(shownPanels()).toEqual(["Panel 0", "Panel 1"]));
+  await waitFor(() => expect(shownPanels()).toEqual(["Panel 1"]));
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(bridge.spawnedAgents.map((s) => s.agent)).toEqual(["Claude", "Codex"]);
-  expect((await bridge.workspace(feature)).chat).toEqual([{ agent: "Codex", session: "1", shown: true }]);
+  expect((await bridge.workspace("1")).chat).toEqual([{ agent: "Claude", session: "1", shown: true }]);
+  // The ended session keeps its own workspace, with its panel.
+  expect((await bridge.workspace("0")).chat).toEqual([{ agent: "Claude", session: "0", shown: true }]);
 });
 
-test("a start lands in the panel clicked, not in the one after it, when an ended session's panel is before it", async () => {
-  const bridge = await trackedBridge();
-  await bridge.setWorkspace(feature, {
-    ...DEFAULT_WORKSPACE,
-    chat: [
-      { agent: "Claude", session: null, shown: true },
-      { agent: "Claude", session: null, shown: true },
-      { agent: "Codex", session: null, shown: true },
-    ],
-  });
-  render(<App bridge={bridge} />);
-  await select("feat-36");
-  await click(startButtons()[0]);
-  await waitFor(() => expect(startButtons()).toHaveLength(2));
-  act(() => bridge.exit("0"));
-
-  await click(startButtons()[0]);
-
-  await waitFor(async () =>
-    expect((await bridge.workspace(feature)).chat).toEqual([
-      { agent: "Claude", session: "1", shown: true },
-      { agent: "Codex", session: null, shown: true },
-    ]),
-  );
-});
-
-test("a change made while a session starts does not save over its panel", async () => {
+test("a change made while a session starts reaches its workspace, which keeps its panel", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
   const spawnAgent = bridge.spawnAgent.bind(bridge);
   let reply = () => {};
-  vi.spyOn(bridge, "spawnAgent").mockImplementation(async (worktree, agent, at) => {
-    // The core has placed it, and its reply and event are still on the way.
-    const session = await spawnAgent(worktree, agent, at);
+  vi.spyOn(bridge, "spawnAgent").mockImplementation(async (worktree, agent) => {
+    // The core has started it, and its reply and event are still on the way.
+    const session = await spawnAgent(worktree, agent);
     return new Promise((resolve) => (reply = () => resolve(session)));
   });
   const release = bridge.holdWorkspaceChanges();
@@ -868,7 +937,7 @@ test("a change made while a session starts does not save over its panel", async 
   await act(async () => release());
 
   await waitFor(async () => {
-    const saved = await bridge.workspace(feature);
+    const saved = await bridge.workspace("0");
     expect(saved.chat).toEqual([{ agent: "Claude", session: "0", shown: true }]);
     expect(saved.panels).toEqual(["Files", "Diff", "Logs"]);
   });
@@ -885,13 +954,13 @@ test("a second click while a session starts starts nothing more", async () => {
   const workspace = bridge.workspace.bind(bridge);
   let loaded: Promise<void> | null = null;
   let finishLoad = () => {};
-  vi.spyOn(bridge, "spawnAgent").mockImplementation(async (worktree, agent, at) => {
+  vi.spyOn(bridge, "spawnAgent").mockImplementation(async (worktree, agent) => {
     loaded = new Promise((resolve) => (finishLoad = resolve));
-    return spawnAgent(worktree, agent, at);
+    return spawnAgent(worktree, agent);
   });
-  vi.spyOn(bridge, "workspace").mockImplementation(async (worktree) => {
+  vi.spyOn(bridge, "workspace").mockImplementation(async (session) => {
     if (loaded) await loaded;
-    return workspace(worktree);
+    return workspace(session);
   });
 
   await click(startButtons()[0]);
@@ -904,33 +973,6 @@ test("a second click while a session starts starts nothing more", async () => {
   expect(startButtons()).toEqual([]);
 });
 
-test("a start counts two ended sessions' panels before the one clicked", async () => {
-  const bridge = await trackedBridge();
-  await bridge.setWorkspace(feature, {
-    ...DEFAULT_WORKSPACE,
-    chat: [
-      { agent: "Claude", session: null, shown: true },
-      { agent: "Claude", session: null, shown: true },
-      { agent: "Codex", session: null, shown: true },
-    ],
-  });
-  render(<App bridge={bridge} />);
-  await select("feat-36");
-  await click(startButtons()[0]);
-  await waitFor(() => expect(startButtons()).toHaveLength(2));
-  await click(startButtons()[0]);
-  await waitFor(() => expect(startButtons()).toHaveLength(1));
-  act(() => bridge.exit("0"));
-  act(() => bridge.exit("1"));
-
-  await click(startButtons()[0]);
-
-  await waitFor(async () =>
-    expect((await bridge.workspace(feature)).chat).toEqual([{ agent: "Codex", session: "2", shown: true }]),
-  );
-  expect(shownPanels()).toEqual(["Panel 0", "Panel 1", "Panel 2"]);
-});
-
 test("a running session whose panel the core no longer lists loses it, even after a mode switch", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
@@ -941,8 +983,8 @@ test("a running session whose panel the core no longer lists loses it, even afte
   act(() => bridge.exit("0"));
   await act(() => bridge.setMode("0", "Terminal"));
 
-  // As an agent would, through grove-mcp.
-  await act(() => bridge.setWorkspace(feature, { ...DEFAULT_WORKSPACE, chat: [] }));
+  // As a change from outside the window.
+  await act(async () => bridge.setWorkspace("0", { ...(await bridge.workspace("0")), chat: [] }));
 
   await waitFor(() => expect(shownPanels()).toEqual([]));
 });
@@ -991,21 +1033,16 @@ test("an ended session keeps its panel when the core's copy comes before the win
 
 test("the fake core keeps an ended session's panel when it places another, as the core does", async () => {
   const bridge = await trackedBridge();
-  const ended = await bridge.spawnAgent(feature, "Claude", 0);
-  await bridge.setWorkspace(feature, {
-    ...DEFAULT_WORKSPACE,
-    chat: [
-      { agent: "Claude", session: ended, shown: true },
-      { agent: "Codex", session: null, shown: true },
-    ],
-  });
+  const parent = await bridge.spawnAgent(feature, "Claude");
+  const ended = bridge.spawnSubagent(feature, "Codex", parent);
   bridge.exit(ended);
 
-  const placed = await bridge.spawnAgent(feature, "Codex", 0);
+  const placed = bridge.spawnSubagent(feature, "Codex", parent);
   await bridge.setMode(ended, "Terminal");
 
-  expect((await bridge.workspace(feature)).chat).toEqual([
-    { agent: "Claude", session: ended, shown: true },
+  expect((await bridge.workspace(parent)).chat).toEqual([
+    { agent: "Claude", session: parent, shown: true },
+    { agent: "Codex", session: ended, shown: true },
     { agent: "Codex", session: placed, shown: true },
   ]);
 });

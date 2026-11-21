@@ -90,7 +90,8 @@ export async function addGallerySessions(bridge: FakeBridge) {
   for (const [at, state] of STATES.entries()) {
     const worktree = state.state === "Idle" ? MAIN : FEATURE;
     const parent = state.state === "NeedsInput" && state.kind === "Question" ? first : undefined;
-    const session = bridge.spawnAgentWithoutPanel(worktree, at % 3 === 2 ? "Codex" : "Claude", parent);
+    const agent = at % 3 === 2 ? "Codex" : "Claude";
+    const session = parent ? bridge.spawnSubagent(worktree, agent, parent) : await bridge.spawnAgent(worktree, agent);
     first ??= session;
     await bridge.sendMessage(session, TITLES[at]);
     bridge.agentStateChanged({ session, ...state, source: "Protocol" });
@@ -115,7 +116,7 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
   // A real agent session on the fake bridge, for the pane head.
   useEffect(() => {
     let current = true;
-    bridge.spawnAgent(FEATURE, "Claude", null).then((session) => {
+    bridge.spawnAgent(FEATURE, "Claude").then((session) => {
       if (!current) return;
       bridge.agentStateChanged({ session, state: "Working", source: "Protocol" });
       setPane(session);
@@ -346,7 +347,6 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
               state={{ session: pane, state: "Working", source: "Protocol" }}
               focusRequest={0}
               onOpenDiff={() => {}}
-              onSplit={() => {}}
               onHide={() => {}}
             />
           )}

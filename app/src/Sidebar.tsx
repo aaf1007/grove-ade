@@ -106,6 +106,7 @@ export function Sidebar({
   onDeleting,
   onRemoved,
   onWorktrees,
+  onSessions,
   waiting,
   onJump,
   onOpenProfiles,
@@ -141,6 +142,8 @@ export function Sidebar({
   onRemoved(path: string): void;
   /** Called with each new list of worktrees, from the core's first one on. */
   onWorktrees?(worktrees: Worktree[]): void;
+  /** Called with every agent session's record each time the core's list arrives. */
+  onSessions?(sessions: AgentSessionRecord[]): void;
   /** How many agent sessions are in the attention queue. */
   waiting: number;
   /** Focuses the head of the attention queue. */
@@ -176,6 +179,10 @@ export function Sidebar({
   useEffect(() => {
     if (listed) reportWorktrees(worktrees);
   }, [listed, worktrees]);
+  const reportSessions = useEffectEvent((records: AgentSessionRecord[]) => onSessions?.(records));
+  useEffect(() => {
+    if (listed) reportSessions(sessions);
+  }, [listed, sessions]);
 
   useEffect(
     () => bridge.onSetup(({ worktree, setup }) => setSetups((known) => ({ ...known, [worktree]: setup }))),

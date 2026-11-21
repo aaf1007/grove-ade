@@ -298,7 +298,7 @@ test("the session block shows the focused session's title, its state in words si
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(2026, 10, 20, 9, 30));
   const bridge = await setup();
-  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const session = await bridge.spawnAgent(feature, "Claude");
   await bridge.sendMessage(session, "Fix the login bug\nthen run the tests");
   vi.setSystemTime(new Date(2026, 10, 20, 14, 5));
   const approval = { session, state: "NeedsInput", kind: "Approval", source: "Hook" } as const;
@@ -324,7 +324,7 @@ test("before any new state reaches the window, the session block shows the state
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(2026, 10, 20, 14, 5));
   const bridge = await setup();
-  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const session = await bridge.spawnAgent(feature, "Claude");
   bridge.agentStateChanged({ session, state: "Working", source: "Protocol" });
   await renderCard(bridge, { session: { ...claude, session, state: undefined } });
 
@@ -336,7 +336,7 @@ test("before any new state reaches the window, the session block shows the state
 
 test("a new state shows no since time until the core lists the time it was entered", async () => {
   const bridge = await setup();
-  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const session = await bridge.spawnAgent(feature, "Claude");
   const working = { session, state: "Working", source: "Protocol" } as const;
   bridge.agentStateChanged(working);
   const { rerender } = await renderCard(bridge, { session: { ...claude, session, state: working } });
@@ -356,7 +356,7 @@ test("a state entered on another day shows its date with its time", async () => 
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(2026, 10, 19, 14, 5));
   const bridge = await setup();
-  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const session = await bridge.spawnAgent(feature, "Claude");
   const idle = { session, state: "Idle", source: "Protocol" } as const;
   bridge.agentStateChanged(idle);
   vi.setSystemTime(new Date(2026, 10, 20, 9, 30));
@@ -369,7 +369,7 @@ test("a state entered on another day shows its date with its time", async () => 
 
 test("a listing of the agent sessions that fails after a later one succeeded says nothing", async () => {
   const bridge = await setup();
-  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const session = await bridge.spawnAgent(feature, "Claude");
   const listings: { resolve: () => void; reject: () => void }[] = [];
   const list = bridge.agentSessions.bind(bridge);
   vi.spyOn(bridge, "agentSessions").mockImplementation(

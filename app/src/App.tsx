@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import type {
   Account,
   Agent,
+  AgentSessionRecord,
   AgentStateChanged,
   AttentionEntry,
   Bridge,
@@ -42,18 +43,20 @@ import { Warnings } from "./Warnings";
 import {
   closeTab,
   hideSession,
-  MAX_SHOWN_AGENT_PANELS,
   type MenuPanel,
   openPanel,
   showSession,
   useWorkspaces,
+  workspaceKey,
+  type WorkspaceOwner,
 } from "./workspace";
 import { Button } from "./ui/Button";
 
 /**
- * The window: a title bar over the sidebar, the chat area and the panel area. The selected
- * worktree's workspace says which agent panels the chat area shows side by side, which tabs the
- * panel area has, and whether its terminal is open.
+ * The window: a title bar over the sidebar, the chat area and the panel area. The selected agent
+ * session's workspace says which agent panels the chat area shows side by side (its own and those
+ * of the subagent sessions below it), which tabs the panel area has, and whether the terminal is
+ * open. Files, Diff and the shell are those of the selected place.
  */
 export function App({ bridge }: { bridge: Bridge }) {
   const { layout, sidebar, panels, toggleSidebar, togglePanels, resizeSidebar, resizePanels } =
@@ -82,7 +85,19 @@ export function App({ bridge }: { bridge: Bridge }) {
     if (request.inFlight) request.waiting = dockIcon;
     else apply(dockIcon);
   }, [bridge, dockIcon]);
+  // The selected place: a worktree's path.
   const [selected, setSelected] = useState<string | null>(null);
+  // The selected agent session, which runs in the selected place. null shows the place alone.
+  const [selectedSession, setSelectedSession] = useState<SessionId | null>(null);
+  // Both, as the last `select` left them, for what runs after an await.
+  const selection = useRef<{ place: string | null; session: SessionId | null }>({ place: null, session: null });
+  function select(place: string | null, session: SessionId | null = null) {
+    selection.current = { place, session };
+    setSelected(place);
+    setSelectedSession(session);
+  }
+  // Every agent session's record, as the sidebar last listed them.
+  const [records, setRecords] = useState<AgentSessionRecord[]>([]);
   // A file the chat asked the Diff panel to show, until the panel took it.
   const [diffReveal, setDiffReveal] = useState<{ worktree: string; path: string } | null>(null);
   // Every tracked worktree, as the sidebar last listed them.
@@ -105,7 +120,8 @@ export function App({ bridge }: { bridge: Bridge }) {
     load: loadWorkspace,
     change: changeWorkspace,
     forget: forgetWorkspace,
-    startAgent: startAgentInWorkspace,
+    dropSessions: dropSessionWorkspaces,
+    current: currentWorkspace,
   } = useWorkspaces(bridge);
   // Every worktree selected so far. Each keeps its Files panel, with its open files and edits.
   const [visited, setVisited] = useState<string[]>([]);
@@ -140,14 +156,31 @@ export function App({ bridge }: { bridge: Bridge }) {
   const removals = useRef(new Map<string, number>());
   // The latest ask for each worktree's sessions, by worktree. An answer to an older ask is stale.
   const listing = useRef(new Map<string, object>());
-  // A workspace can hold sessions started before the window reloaded. Each gets its panel.
-  const unknown = Object.entries(workspaces).flatMap(([worktree, workspace]) =>
-    workspace.chat.flatMap(({ agent, session }) =>
-      session !== null && !agents.some((started) => started.session === session)
-        ? [{ session, worktree, agent, panel: session }]
-        : [],
-    ),
-  );
+  // The agent session whose workspace `session` shows in: the last one up its parents that the
+  // core lists, as in the core.
+  function ownerOf(session: SessionId): SessionId {
+    const parents = new Map(records.map((record) => [record.session, record.parent]));
+    let top = session;
+    for (let above = parents.get(top); above != null && parents.has(above); above = parents.get(top)) top = above;
+    return top;
+  }
+  // The workspace shown: the selected session's, or else the one a session in the selected place
+  // would start from.
+  const shownOwner: WorkspaceOwner | null = selectedSession
+    ? { session: ownerOf(selectedSession) }
+    : selected
+      ? { worktree: selected }
+      : null;
+  const shownKey = shownOwner && workspaceKey(shownOwner);
+  const workspace = shownKey ? workspaces[shownKey] : undefined;
+  // The workspace shown can hold sessions the window has no panel for yet: a subagent session, or
+  // one started before the window reloaded. Each gets its panel once the sidebar has listed it.
+  const unknown = (workspace?.chat ?? []).flatMap(({ agent, session }) => {
+    const record = records.find((listed) => listed.session === session);
+    return record && !agents.some((started) => started.session === session)
+      ? [{ session, worktree: record.worktree, agent, panel: session }]
+      : [];
+  });
   if (unknown.length > 0) setAgents([...agents, ...unknown]);
   // The agent session whose panel has focus.
   const focusedAgent = useRef<SessionId | null>(null);
@@ -219,15 +252,16 @@ export function App({ bridge }: { bridge: Bridge }) {
     return () => window.removeEventListener("keydown", onJumpKey, true);
   }, []);
 
-  // A failed load says why, and the next change to the worktree tries again.
-  const onSelected = useEffectEvent((worktree: string) => {
-    void loadWorkspace(worktree).catch(() => {});
-    findSessions(worktree);
-  });
-
+  const onSelected = useEffectEvent(findSessions);
   useEffect(() => {
-    if (selected) void onSelected(selected);
+    if (selected) onSelected(selected);
   }, [selected]);
+
+  // A failed load says why, and the next change to the workspace tries again.
+  const onShown = useEffectEvent(() => {
+    if (shownOwner) void loadWorkspace(shownOwner).catch(() => {});
+  });
+  useEffect(() => onShown(), [shownKey]);
 
   // A run session that exits keeps its tab, which says it stopped.
   useEffect(
@@ -328,10 +362,11 @@ export function App({ bridge }: { bridge: Bridge }) {
     );
   }
 
-  // Shows the run session's tab in the worktree's terminal panel, and the panel too.
+  // Shows the run session's tab in the worktree's terminal panel, and the panel too while the
+  // worktree is the selected place.
   function showRun(worktree: string, name: string) {
     setShownRuns((shown) => ({ ...shown, [worktree]: name }));
-    open(worktree, "Terminal");
+    if (selection.current.place === worktree) open("Terminal");
   }
 
   // The port the repo's settings give the worktree's run session `name`. The tab keeps it, so the
@@ -386,74 +421,55 @@ export function App({ bridge }: { bridge: Bridge }) {
     });
   }
 
-  // The core puts the new session in agent panel `at` (a new one after the last when null), and
-  // its panel is drawn before the start ends, so a second click starts nothing more. Without the
-  // workspace the panel could not be drawn, so none starts. `started` gets the session once it runs.
-  async function startAgent(
-    worktree: string,
-    agent: Agent,
-    at: (workspace: Workspace) => number | null,
-    afterSetup = false,
-    started: (session: SessionId) => void = () => {},
-  ) {
-    try {
-      await loadWorkspace(worktree);
-    } catch {
-      // The load has said why.
-      return;
-    }
-    const spawn = (panel: number | null) =>
-      afterSetup ? bridge.spawnAgentAfterSetup(worktree, agent, panel) : bridge.spawnAgent(worktree, agent, panel);
+  // Starts an agent session in the place. The core picks its agent and gives it a workspace of its
+  // own. The session is selected once it runs, unless the user selected something else meanwhile:
+  // a start after setup may wait minutes. With `focus`, its panel takes focus too.
+  function startSession(worktree: string, { afterSetup = false, focus = false } = {}) {
+    const removalsBefore = removals.current.get(worktree) ?? 0;
+    const asked = selection.current;
+    // The new session's workspace, which names the agent the core picked. A failed load says why.
+    let own: Workspace | undefined;
     return start(
       "agent",
       worktree,
-      () => startAgentInWorkspace(worktree, agent, at, spawn, { afterSetup }),
-      started,
+      async () => {
+        const session = await (afterSetup
+          ? bridge.spawnAgentAfterSetup(worktree, null)
+          : bridge.spawnAgent(worktree, null));
+        own = await loadWorkspace({ session }).catch(() => undefined);
+        return session;
+      },
+      (session) => {
+        if ((removals.current.get(worktree) ?? 0) !== removalsBefore || selection.current !== asked) return;
+        // Where its place showed no session, the new one takes the layout the place showed, so a
+        // tab opened there stays open.
+        const shown = own && asked.session === null ? currentWorkspace({ worktree }) : undefined;
+        const agent = own?.chat.find((panel) => panel.session === session)?.agent;
+        if (focus) focusSession({ session, worktree, agent });
+        else showAgent(known({ session, worktree, agent: agent ?? "Claude", panel: session }));
+        if (!own || !shown) return;
+        if (!sameLayout(shown, own)) void changeWorkspace({ session }, (now) => ({ ...shown, chat: now.chat }));
+        forgetWorkspace({ worktree });
+      },
     );
   }
 
-  // From the sidebar: the first shown panel not started yet, or else a new one.
-  function firstEmptyPanel(workspace: Workspace) {
-    const at = workspace.chat.findIndex((panel) => panel.shown && panel.session === null);
-    return at < 0 ? null : at;
-  }
-
-  // Splitting starts the other agent, so one can implement while the other reviews.
-  function split({ worktree, agent }: AgentSession) {
-    const other: Agent = agent === "Claude" ? "Codex" : "Claude";
-    return startAgent(worktree, other, () => null);
-  }
-
-  // Something else may have filled the panel while the session started. Then the core puts it in a
-  // new one.
-  function startPanel(worktree: string, at: number, agent: Agent) {
-    return startAgent(worktree, agent, () => at);
-  }
-
   // Before the first message the panel can take another agent: a new session takes its place,
-  // and the old one is deleted, so the sidebar does not list it ended. The panel stays, with its
-  // draft. The core starts the new session in a panel of its own, which goes.
+  // with its tabs and terminal, and the old one is deleted, so the sidebar does not list it ended.
+  // The panel stays, with its draft.
   function changeAgent(old: AgentSession, agent: Agent) {
     return start(
       "agent",
       old.worktree,
-      () =>
-        startAgentInWorkspace(old.worktree, agent, () => null, (panel) => bridge.spawnAgent(old.worktree, agent, panel)),
+      () => bridge.spawnAgent(old.worktree, agent),
       (session) => {
-        // The start drew the new session in a panel of its own.
-        setAgents((started) =>
-          started.flatMap((a) =>
-            a.session === session ? [] : a.session === old.session ? [{ ...a, session, agent }] : [a],
-          ),
-        );
-        void changeWorkspace(old.worktree, (workspace) => ({
-          ...workspace,
-          chat: workspace.chat.flatMap((panel) =>
-            panel.session === session ? [] : panel.session === old.session ? [{ ...panel, agent, session }] : [panel],
-          ),
-        }));
+        setAgents((started) => started.map((a) => (a.session === old.session ? { ...a, session, agent } : a)));
+        const before = currentWorkspace({ session: old.session });
+        if (before) void changeWorkspace({ session }, (own) => ({ ...before, chat: own.chat }));
+        if (selection.current.session === old.session) select(old.worktree, session);
         // The panel keeps focus through the swap, so no focus event tells the core.
         if (focusedAgent.current === old.session) focus(session, old.worktree);
+        forgetWorkspace({ session: old.session });
         // Fails only when its process did not exit in time. Then the sidebar lists it, and the
         // user can delete it there.
         bridge.deleteAgentSession(old.session).catch(() => {});
@@ -461,44 +477,46 @@ export function App({ bridge }: { bridge: Bridge }) {
     );
   }
 
-  function showAgent({ session, worktree, agent }: AgentSession) {
-    setSelected(worktree);
-    void changeWorkspace(worktree, (workspace) => showSession(workspace, session, agent));
+  // The window's panel for the session, which it gets now when it has none.
+  function known(session: AgentSession): AgentSession {
+    const started = agents.find((other) => other.session === session.session);
+    if (!started) setAgents((all) => [...all, session]);
+    return started ?? session;
   }
 
-  // Shows agent session `session` and puts focus in its panel, which calls `focus`. A session
-  // started before the window reloaded, or a subagent, has no panel yet, so it gets one here.
-  // When the caller does not say which agent the session runs, its panel is named Claude.
+  // Selects the session, and its place with it, and shows its panel in the workspace it shows in.
+  function showAgent({ session, worktree, agent }: AgentSession) {
+    select(worktree, session);
+    void changeWorkspace({ session: ownerOf(session) }, (shown) => showSession(shown, session, agent));
+  }
+
+  // Selects agent session `session` and puts focus in its panel, which calls `focus`. When the
+  // caller does not say which agent the session runs, its record does, or else its panel is named
+  // Claude.
   function focusSession({
     session,
     worktree,
-    agent: runs = "Claude",
+    agent: runs,
   }: {
     session: SessionId;
     worktree: string;
     agent?: Agent;
   }) {
-    const known = agents.find((started) => started.session === session);
-    const agent: AgentSession = known ?? { session, worktree, agent: runs, panel: session };
-    if (!known) setAgents((started) => [...started, agent]);
-    showAgent(agent);
+    const agent = runs ?? records.find((record) => record.session === session)?.agent ?? "Claude";
+    showAgent(known({ session, worktree, agent, panel: session }));
     setJumped(({ request }) => ({ session, request: request + 1 }));
   }
 
-  // Deleted sessions lose their panels, with what the window kept for them. The window keeps the
-  // panel of a session that is not running, so it drops the panel itself.
+  // Deleted sessions lose their panels, with what the window kept for them. A place whose selected
+  // session is gone shows no session.
   function dropSessions(deleted: SessionId[]) {
-    for (const [worktree, { chat }] of Object.entries(workspaces)) {
-      if (!chat.some((panel) => panel.session !== null && deleted.includes(panel.session))) continue;
-      void changeWorkspace(worktree, (workspace) => ({
-        ...workspace,
-        chat: workspace.chat.filter((panel) => panel.session === null || !deleted.includes(panel.session)),
-      }));
-    }
+    dropSessionWorkspaces(deleted);
     setAgents((started) => started.filter((agent) => !deleted.includes(agent.session)));
     setAgentStates((states) =>
       Object.fromEntries(Object.entries(states).filter(([session]) => !deleted.includes(session))),
     );
+    const { place, session } = selection.current;
+    if (session !== null && deleted.includes(session)) select(place);
   }
 
   // Focuses the head of the attention queue.
@@ -523,18 +541,22 @@ export function App({ bridge }: { bridge: Bridge }) {
     bridge.focus(session).catch(() => {});
   }
 
+  // Changes the workspace shown.
+  function changeShown(update: (shown: Workspace) => Workspace) {
+    const { place, session } = selection.current;
+    if (session) void changeWorkspace({ session: ownerOf(session) }, update);
+    else if (place) void changeWorkspace({ worktree: place }, update);
+  }
+
   // Opening a panel shows the panel area too.
-  function open(worktree: string, panel: MenuPanel) {
-    void changeWorkspace(worktree, (workspace) => openPanel(workspace, panel));
+  function open(panel: MenuPanel) {
+    changeShown((shown) => openPanel(shown, panel));
     if (!layout.panelsOpen) togglePanels();
   }
 
-  function toggleTerminal(worktree: string) {
-    if (workspaces[worktree]?.terminal) {
-      void changeWorkspace(worktree, (workspace) => ({ ...workspace, terminal: false }));
-    } else {
-      open(worktree, "Terminal");
-    }
+  function toggleTerminal() {
+    if (workspace?.terminal) changeShown((shown) => ({ ...shown, terminal: false }));
+    else open("Terminal");
   }
 
   // Closing kills the shell, since nothing else can reach it yet. Kill fails only when the shell
@@ -552,7 +574,9 @@ export function App({ bridge }: { bridge: Bridge }) {
   // worktree means one made again at its path starts empty.
   function clearRemovedWorktree(worktree: string) {
     removals.current.set(worktree, (removals.current.get(worktree) ?? 0) + 1);
-    const ended = new Set(agents.filter((agent) => agent.worktree === worktree).map((agent) => agent.session));
+    const ended = new Set(
+      [...agents, ...records].filter((agent) => agent.worktree === worktree).map((agent) => agent.session),
+    );
     setAgents((started) => started.filter((agent) => agent.worktree !== worktree));
     setAgentStates((states) =>
       Object.fromEntries(Object.entries(states).filter(([session]) => !ended.has(session))),
@@ -573,20 +597,21 @@ export function App({ bridge }: { bridge: Bridge }) {
     );
     setVisited((seen) => seen.filter((path) => path !== worktree));
     listing.current.delete(worktree);
-    forgetWorkspace(worktree);
+    forgetWorkspace({ worktree });
+    dropSessionWorkspaces([...ended]);
+    const { place, session } = selection.current;
+    if (session !== null && ended.has(session)) select(place);
   }
 
   function reportDetails(session: SessionId, details: { mode?: Mode; model?: ModelChoice | null }) {
     setSessionDetails((known) => ({ ...known, [session]: { ...known[session], ...details } }));
   }
 
-  // The worktree's agent session whose panel last had focus, or else its first shown one. Its model
-  // shows only in chat mode, where the panel knows it.
+  // Of the worktree's agent sessions whose panels show, the one whose panel last had focus, or else
+  // the first. Its model shows only in chat mode, where the panel knows it.
   function focusedSession(worktree: string): FocusedSession | null {
-    const inWorktree = agents.filter((started) => started.worktree === worktree);
-    const found =
-      inWorktree.find((started) => started.session === lastFocused[worktree]) ??
-      inWorktree.find((started) => places[started.session]?.shown);
+    const shown = agents.filter((started) => started.worktree === worktree && places[started.session]?.shown);
+    const found = shown.find((started) => started.session === lastFocused[worktree]) ?? shown[0];
     if (!found) return null;
     const { mode, model } = sessionDetails[found.session] ?? {};
     return {
@@ -598,25 +623,20 @@ export function App({ bridge }: { bridge: Bridge }) {
     };
   }
 
-  const workspace = selected ? workspaces[selected] : undefined;
-  // Each agent session's place in its worktree's chat area, by session.
+  // Each agent session's place in the chat area, by session, for those in the workspace shown.
   const places: Record<SessionId, { at: number; shown: boolean }> = {};
-  for (const [worktree, { chat }] of Object.entries(workspaces)) {
-    chat.forEach(({ session, shown }, at) => {
-      if (session !== null) places[session] = { at, shown: shown && worktree === selected };
-    });
-  }
+  workspace?.chat.forEach(({ session, shown }, at) => {
+    places[session] = { at, shown };
+  });
   const shownCount = workspace?.chat.filter((panel) => panel.shown).length ?? 0;
   const detailsRoom = useDetailsRoom(chatLane, shownCount);
   const shownAgents = agents.filter((a) => places[a.session]?.shown).map((a) => a.session);
   const names = sessionNames(agents);
-  // The one agent panel shown, and its session once started. It draws no header: the title bar
-  // names its agent and state, and holds its Split.
+  // The one agent panel shown draws no header: the title bar names its agent and state.
   const soleShownPanel = shownCount === 1 ? workspace?.chat.find((panel) => panel.shown) : undefined;
-  const soleShownAgent = soleShownPanel && agents.find((a) => places[a.session]?.shown);
   const soleAgent = soleShownPanel && {
-    name: soleShownAgent ? names[soleShownAgent.session] : AGENT_NAMES[soleShownPanel.agent],
-    state: soleShownAgent && agentStates[soleShownAgent.session],
+    name: names[soleShownPanel.session] ?? AGENT_NAMES[soleShownPanel.agent],
+    state: agentStates[soleShownPanel.session],
   };
   const placeholder = PLACEHOLDER_TABS.find((tab) => tab === workspace?.selected);
   // The run session each worktree's terminal panel shows, by name. undefined shows the shell.
@@ -630,7 +650,17 @@ export function App({ bridge }: { bridge: Bridge }) {
   if (shownRunName && !shownRun) runTabs.push({ name: shownRunName, running: false });
   const terminalShown = (worktree: string) => worktree === selected && layout.panelsOpen && !!workspace?.terminal;
   const agentError = selected && startErrors[startKey("agent", selected)];
-  const workspaceError = selected && workspaceErrors[selected];
+  const workspaceError = shownKey && workspaceErrors[shownKey];
+  // Each place with the Profile tab open in a workspace the window holds keeps its panel.
+  const profilePlaces = visited.filter(
+    (worktree) =>
+      workspaces[workspaceKey({ worktree })]?.panels.includes("Profile") ||
+      agents.some(
+        (started) =>
+          started.worktree === worktree &&
+          workspaces[workspaceKey({ session: started.session })]?.panels.includes("Profile"),
+      ),
+  );
   const detailsSession = selected ? focusedSession(selected) : null;
   const selectedRepo = byRepo(worktrees ?? []).find((repo) => repo.some((w) => w.path === selected));
   const selectedWorktree = selectedRepo?.find((w) => w.path === selected);
@@ -662,11 +692,10 @@ export function App({ bridge }: { bridge: Bridge }) {
               onShowSidebar={showSidebarFromSwitch}
               sidebarSwitch={titleBarSidebarSwitch}
               onTogglePanels={togglePanels}
-              onToggleTerminal={() => selected && toggleTerminal(selected)}
+              onToggleTerminal={toggleTerminal}
               detailsOpen={selected && detailsRoom ? detailsOpen : null}
               onToggleDetails={() => setDetailsOpen((open) => !open)}
               soleAgent={soleAgent ?? null}
-              onSplit={soleShownAgent && (() => split(soleShownAgent))}
             />
             <Warnings bridge={bridge} />
           </div>
@@ -675,7 +704,8 @@ export function App({ bridge }: { bridge: Bridge }) {
             <Sidebar
               bridge={bridge}
               selected={selected}
-              onSelect={setSelected}
+              // Selecting the place a session is selected in keeps that session.
+              onSelect={(place) => place === selection.current.place || select(place)}
               onDeleting={(worktree, running) =>
                 setDeleting((all) =>
                   running ? [...all, worktree] : all.filter((other) => other.path !== worktree.path),
@@ -684,22 +714,17 @@ export function App({ bridge }: { bridge: Bridge }) {
               onRemoved={clearRemovedWorktree}
               agentStates={agentStates}
               shownAgents={shownAgents}
-              onStartAgent={(worktree) => startAgent(worktree, "Claude", firstEmptyPanel)}
-              onStartAgentAfterSetup={(worktree) =>
-                startAgent(worktree, "Claude", firstEmptyPanel, true)
-              }
-              onNewSession={(worktree) =>
-                startAgent(worktree, "Claude", firstEmptyPanel, false, (session) =>
-                  focusSession({ session, worktree, agent: "Claude" }),
-                )
-              }
+              onStartAgent={(worktree) => startSession(worktree)}
+              onStartAgentAfterSetup={(worktree) => startSession(worktree, { afterSetup: true })}
+              onNewSession={(worktree) => startSession(worktree, { focus: true })}
               onFocusAgent={focusSession}
+              onSessions={setRecords}
               onSessionResumed={(session) => setResumes((counts) => ({ ...counts, [session]: (counts[session] ?? 0) + 1 }))}
               onSessionsDeleted={dropSessions}
               onWorktrees={setWorktrees}
               waiting={attentionQueue.length}
               onJump={jump}
-              onOpenProfiles={() => selected && open(selected, "Profile")}
+              onOpenProfiles={() => open("Profile")}
               onShowSidebar={() => layout.sidebarOpen || toggleSidebar()}
               onHideSidebar={hideSidebarFromSwitch}
               accounts={accounts}
@@ -730,9 +755,9 @@ export function App({ bridge }: { bridge: Bridge }) {
                     ...asks,
                     [selected]: { base, request: (asks[selected]?.request ?? 0) + 1 },
                   }));
-                  open(selected, "Diff");
+                  open("Diff");
                 }}
-                onOpenProfile={() => open(selected, "Profile")}
+                onOpenProfile={() => open("Profile")}
               />
             )}
             {(agentError || workspaceError) && (
@@ -751,24 +776,20 @@ export function App({ bridge }: { bridge: Bridge }) {
                   sessionName={names[started.session]}
                   showHeader={shownCount > 1}
                   worktree={started.worktree}
+                  workspaceSession={ownerOf(started.session)}
                   shown={places[started.session]?.shown ?? false}
                   order={places[started.session]?.at}
                   state={agentStates[started.session]}
                   resumes={resumes[started.session]}
                   focusRequest={jumped.session === started.session ? jumped.request : 0}
                   onOpenDiff={(path) => {
-                    open(started.worktree, "Diff");
+                    // The Diff is its place's, so the panel's session is selected first.
+                    select(started.worktree, started.session);
+                    open("Diff");
                     if (path) setDiffReveal({ worktree: started.worktree, path });
                   }}
                   onChangeAgent={(agent) => changeAgent(started, agent)}
-                  onSplit={
-                    shownCount > 1 && shownCount < MAX_SHOWN_AGENT_PANELS ? () => split(started) : undefined
-                  }
-                  onHide={
-                    shownCount > 1
-                      ? () => changeWorkspace(started.worktree, (w) => hideSession(w, started.session))
-                      : undefined
-                  }
+                  onHide={shownCount > 1 ? () => changeShown((w) => hideSession(w, started.session)) : undefined}
                   onMode={(mode) => reportDetails(started.session, { mode })}
                   onModelChoice={(model) => reportDetails(started.session, { model })}
                   onFocus={() => focus(started.session, started.worktree)}
@@ -777,28 +798,6 @@ export function App({ bridge }: { bridge: Bridge }) {
                   }}
                 />
               ))}
-              {selected &&
-                workspace?.chat.map(
-                  (panel, at) =>
-                    panel.shown &&
-                    panel.session === null && (
-                      <div key={`unstarted ${at}`} className="chat-panel" style={{ order: at }}>
-                        {shownCount > 1 && (
-                          <div className="pane-head">
-                            <b>{AGENT_NAMES[panel.agent]}</b>
-                          </div>
-                        )}
-                        <div className="empty-chat">
-                          <h2>No agent session yet</h2>
-                          <p>
-                            <Button size="sm" onClick={() => startPanel(selected, at, panel.agent)}>
-                              Start session
-                            </Button>
-                          </p>
-                        </div>
-                      </div>
-                    ),
-                )}
             </div>
             {worktrees?.length === 0 && (
               <div className="empty-chat">
@@ -810,14 +809,26 @@ export function App({ bridge }: { bridge: Bridge }) {
                 </p>
               </div>
             )}
-            {!!worktrees?.length && (!selected || workspace?.chat.every((panel) => !panel.shown)) && (
+            {!!worktrees?.length && !selected && (
               <div className="empty-chat">
-                <h2>{selected ? "No agent session in this worktree" : "No worktree selected"}</h2>
+                <h2>No worktree selected</h2>
+                <p>Pick a worktree in the sidebar.</p>
+              </div>
+            )}
+            {!!worktrees?.length && selected && !selectedSession && (
+              <div className="empty-chat">
+                <h2>No agent session yet</h2>
                 <p>
-                  {selected
-                    ? "Start Claude Code from the worktree's menu in the sidebar."
-                    : "Pick a worktree in the sidebar."}
+                  <Button size="sm" onClick={() => startSession(selected, { focus: true })}>
+                    Start session
+                  </Button>
                 </p>
+              </div>
+            )}
+            {selectedSession && workspace && shownCount === 0 && (
+              <div className="empty-chat">
+                <h2>No agent panel shown</h2>
+                <p>Pick an agent session in the sidebar to show its panel.</p>
               </div>
             )}
           </main>
@@ -832,10 +843,10 @@ export function App({ bridge }: { bridge: Bridge }) {
           <section className="panel-area" aria-label="Panel area" hidden={!layout.panelsOpen}>
             <PanelTabs
               workspace={workspace ?? null}
-              onSelect={(tab) => selected && changeWorkspace(selected, (w) => ({ ...w, selected: tab }))}
-              onClose={(tab) => selected && changeWorkspace(selected, (w) => closeTab(w, tab))}
-              onOpen={(panel) => selected && open(selected, panel)}
-              onToggleTerminal={() => selected && toggleTerminal(selected)}
+              onSelect={(tab) => changeShown((w) => ({ ...w, selected: tab }))}
+              onClose={(tab) => changeShown((w) => closeTab(w, tab))}
+              onOpen={open}
+              onToggleTerminal={toggleTerminal}
               onTogglePanels={togglePanels}
             />
             <div
@@ -884,17 +895,11 @@ export function App({ bridge }: { bridge: Bridge }) {
               hidden={workspace?.selected !== "Profile"}
             >
               {/* Each worktree with the tab open keeps its panel, with its unsaved edits. */}
-              {visited
-                .filter((worktree) => workspaces[worktree]?.panels.includes("Profile"))
-                .map((worktree) => (
-                  <div key={worktree} className="files-holder" hidden={worktree !== selected}>
-                    <ProfilePanel
-                      bridge={bridge}
-                      worktree={worktree}
-                      onStartRun={(name) => void startRun(worktree, name)}
-                    />
-                  </div>
-                ))}
+              {profilePlaces.map((worktree) => (
+                <div key={worktree} className="files-holder" hidden={worktree !== selected}>
+                  <ProfilePanel bridge={bridge} worktree={worktree} onStartRun={(name) => void startRun(worktree, name)} />
+                </div>
+              ))}
             </div>
             {placeholder && (
               <div
@@ -991,6 +996,12 @@ export function App({ bridge }: { bridge: Bridge }) {
       </div>
     </>
   );
+}
+
+// Whether two workspaces have the same tabs, selected tab and terminal.
+function sameLayout(a: Workspace, b: Workspace): boolean {
+  const layout = ({ panels, selected, terminal }: Workspace) => JSON.stringify([panels, selected, terminal]);
+  return layout(a) === layout(b);
 }
 
 // Tabs that show only a placeholder until their own issues.

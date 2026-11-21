@@ -15,17 +15,23 @@ export const MENU_PANELS: { panel: MenuPanel; letter: string }[] = [
   { panel: "Profile", letter: "P" },
 ];
 
-/** Split stops offering another agent panel once this many are shown. */
-export const MAX_SHOWN_AGENT_PANELS = 3;
+/** Whose workspace: an agent session's own, or the one a new agent session in a worktree starts from. */
+export type WorkspaceOwner = { session: SessionId } | { worktree: string };
+
+/** The key of `owner`'s workspace in what `useWorkspaces` holds. */
+export function workspaceKey(owner: WorkspaceOwner): string {
+  return "session" in owner ? `session ${owner.session}` : `worktree ${owner.worktree}`;
+}
 
 /**
- * Each worktree's workspace, by worktree path: what the core last gave, with every `change` not
- * saved yet on top. Each worktree has one queue for its saves, its loads of the core's copy and
- * its agent session starts, so none of them saves over another. A save sends what the window then
- * shows. When the core's copy changes, as when it places a new agent session, it is loaded again.
- * The panel of a session that ended stays, though the core leaves it out, until the window
- * reloads. A running session's panel that the core leaves out goes. `errors` says, by worktree,
- * why its last load or save failed.
+ * Each workspace the window showed, by `workspaceKey`: what the core last gave, with every `change`
+ * not saved yet on top. An agent session's workspace is saved with each change, and loaded again
+ * when the core's copy changes, as when a subagent session starts. Each has one queue for its saves
+ * and its loads, so none of them saves over another. A save sends what the window then shows.
+ *
+ * A worktree's starting workspace is what a place with no agent session selected shows. Only a
+ * session's workspace is saved, so a change to it stays in the window. `errors` says, by
+ * `workspaceKey`, why a workspace's last load or save failed.
  */
 export function useWorkspaces(bridge: Bridge) {
   const [workspaces, setWorkspaces] = useState<Record<string, Workspace>>({});
@@ -33,207 +39,156 @@ export function useWorkspaces(bridge: Bridge) {
   // Ahead of `workspaces` until React renders, so changes made in one event build on each other.
   const latest = useRef(workspaces);
   const loads = useRef(new Map<string, Promise<Workspace>>());
-  // How many times each worktree was forgotten. A load that started before the latest is stale.
+  // How many times each workspace was forgotten. A load that started before the latest is stale.
   const forgets = useRef(new Map<string, number>());
-  // Each worktree's queue, by worktree path.
+  // Each workspace's queue.
   const queues = useRef(new Map<string, Promise<unknown>>());
   // The changes not saved yet, in order.
-  const unsaved = useRef<{ worktree: string; update: (workspace: Workspace) => Workspace }[]>([]);
+  const unsaved = useRef<{ key: string; update: (workspace: Workspace) => Workspace }[]>([]);
 
-  function setError(worktree: string, error: string | null) {
+  function setError(key: string, error: string | null) {
     setErrors((known) => {
       const rest = { ...known };
-      if (error === null) delete rest[worktree];
-      else rest[worktree] = error;
+      if (error === null) delete rest[key];
+      else rest[key] = error;
       return rest;
     });
   }
 
-  function put(worktree: string, workspace: Workspace) {
-    latest.current = { ...latest.current, [worktree]: workspace };
+  function put(key: string, workspace: Workspace) {
+    latest.current = { ...latest.current, [key]: workspace };
     setWorkspaces(latest.current);
   }
 
-  // Runs `step` once the worktree's earlier steps are done, failed or not.
-  function enqueue<T>(worktree: string, step: () => Promise<T>): Promise<T> {
-    const done = (queues.current.get(worktree) ?? Promise.resolve()).then(step);
+  // Runs `step` once the workspace's earlier steps are done, failed or not.
+  function enqueue<T>(key: string, step: () => Promise<T>): Promise<T> {
+    const done = (queues.current.get(key) ?? Promise.resolve()).then(step);
     queues.current.set(
-      worktree,
+      key,
       done.catch(() => {}),
     );
     return done;
   }
 
-  // Whether the worktree was forgotten since `forgotten` was read.
-  function forgottenSince(worktree: string, forgotten: number) {
-    return (forgets.current.get(worktree) ?? 0) !== forgotten;
+  // Whether the workspace was forgotten since `forgotten` was read.
+  function forgottenSince(key: string, forgotten: number) {
+    return (forgets.current.get(key) ?? 0) !== forgotten;
   }
 
-  // Loads the core's copy and puts it, with the panels the window shows of sessions that no longer
-  // run put back where they were, and the unsaved changes on top. Nothing is put once the worktree
-  // was forgotten since `forgotten`.
-  async function loadFromCore(worktree: string, forgotten: number) {
-    const core = await bridge.workspace(worktree);
-    const listed = new Set(core.chat.map((panel) => panel.session));
-    const leftOut = (panel: Workspace["chat"][number]) => panel.session !== null && !listed.has(panel.session);
-    // Asked only when the core leaves out a panel the window shows.
-    const running = latest.current[worktree]?.chat.some(leftOut)
-      ? new Set((await bridge.sessions(worktree)).filter((info) => info.running).map((info) => info.session))
-      : new Set<SessionId>();
-    if (forgottenSince(worktree, forgotten)) return;
-    const chat = [...core.chat];
-    latest.current[worktree]?.chat.forEach((panel, at) => {
-      if (leftOut(panel) && !running.has(panel.session!)) chat.splice(Math.min(at, chat.length), 0, panel);
-    });
-    const mine = unsaved.current.filter((other) => other.worktree === worktree);
-    put(
-      worktree,
-      mine.reduce((next, { update }) => update(next), { ...core, chat }),
-    );
-  }
+  const fromCore = (owner: WorkspaceOwner) =>
+    "session" in owner ? bridge.workspace(owner.session) : bridge.startingWorkspace(owner.worktree);
 
-  function load(worktree: string): Promise<Workspace> {
-    let loading = loads.current.get(worktree);
+  function load(owner: WorkspaceOwner): Promise<Workspace> {
+    const key = workspaceKey(owner);
+    let loading = loads.current.get(key);
     if (!loading) {
-      const forgotten = forgets.current.get(worktree) ?? 0;
-      const stale = () => forgottenSince(worktree, forgotten);
-      loading = bridge.workspace(worktree).then(
+      const forgotten = forgets.current.get(key) ?? 0;
+      const stale = () => forgottenSince(key, forgotten);
+      loading = fromCore(owner).then(
         (workspace) => {
-          if (stale()) throw `grove stopped tracking ${worktree} while its layout loaded`;
-          setError(worktree, null);
-          if (!latest.current[worktree]) put(worktree, workspace);
-          return latest.current[worktree];
+          if (stale()) throw `grove dropped this layout while it loaded`;
+          setError(key, null);
+          if (!latest.current[key]) put(key, workspace);
+          return latest.current[key];
         },
         (e: unknown) => {
           if (stale()) throw e;
-          loads.current.delete(worktree);
-          setError(worktree, `Could not load this worktree's layout: ${String(e)}`);
+          loads.current.delete(key);
+          setError(key, `Could not load this layout: ${String(e)}`);
           throw e;
         },
       );
-      loads.current.set(worktree, loading);
+      loads.current.set(key, loading);
     }
     return loading;
   }
 
-  async function change(worktree: string, update: (workspace: Workspace) => Workspace) {
-    if (!latest.current[worktree]) {
+  async function change(owner: WorkspaceOwner, update: (workspace: Workspace) => Workspace) {
+    const key = workspaceKey(owner);
+    if (!latest.current[key]) {
       try {
-        await load(worktree);
+        await load(owner);
       } catch {
         // `load` has said why.
         return;
       }
     }
-    const unsavedChange = { worktree, update };
+    const next = update(latest.current[key]);
+    // A change that changes nothing saves nothing.
+    if (JSON.stringify(next) === JSON.stringify(latest.current[key])) return;
+    if (!("session" in owner)) return put(key, next);
+    const unsavedChange = { key, update };
     unsaved.current.push(unsavedChange);
-    put(worktree, update(latest.current[worktree]));
-    await enqueue(worktree, () => {
+    put(key, next);
+    await enqueue(key, () => {
       unsaved.current = unsaved.current.filter((other) => other !== unsavedChange);
-      return bridge.setWorkspace(worktree, latest.current[worktree]);
+      return bridge.setWorkspace(owner.session, latest.current[key]);
     }).then(
-      () => setError(worktree, null),
-      (e: unknown) => setError(worktree, `Could not save this worktree's layout: ${String(e)}`),
+      () => setError(key, null),
+      (e: unknown) => setError(key, `Could not save this layout: ${String(e)}`),
     );
   }
 
-  // A worktree not loaded yet loads when it is first shown.
-  function reload(worktree: string) {
-    if (!latest.current[worktree]) return;
-    const forgotten = forgets.current.get(worktree) ?? 0;
-    enqueue(worktree, () => loadFromCore(worktree, forgotten)).catch((e: unknown) =>
-      setError(worktree, `Could not load this worktree's layout: ${String(e)}`),
-    );
-  }
-
-  /**
-   * Starts an agent session of `agent` with `spawn`, in the agent panel `at` picks from the
-   * workspace the window shows now (null for a new panel after the last one). The core places it.
-   * It starts once the worktree's earlier changes are saved, and later ones wait for it, then go on
-   * top of the core's copy, which is loaded as soon as the session starts.
-   *
-   * A start after setup may wait minutes, so it holds back no save. A change saved meanwhile may
-   * leave out the session's panel, which then goes back where it was asked for. A session that
-   * ends before the core's copy is loaded keeps its panel too, until the window reloads.
-   */
-  async function startAgent(
-    worktree: string,
-    agent: Agent,
-    at: (workspace: Workspace) => number | null,
-    spawn: (panel: number | null) => Promise<SessionId>,
-    { afterSetup = false } = {},
-  ): Promise<SessionId> {
-    const shown = latest.current[worktree] ?? (await load(worktree));
-    const panel = at(shown);
-    const forgotten = forgets.current.get(worktree) ?? 0;
-    // The core counts only the panels it lists, which leave out those of ended sessions.
-    const panelForCore = async () => {
-      if (panel === null) return null;
-      const listed = new Set((await bridge.workspace(worktree)).chat.map((p) => p.session));
-      const unlisted = shown.chat.slice(0, panel).filter((p) => p.session !== null && !listed.has(p.session));
-      return panel - unlisted.length;
-    };
-    // Loads the core's copy, then puts the session back where it was asked for if that copy left
-    // it out. Says whether it did.
-    const loadKeeping = async (session: SessionId) => {
-      await loadFromCore(worktree, forgotten);
-      const now = latest.current[worktree];
-      if (forgottenSince(worktree, forgotten) || !now || now.chat.some((p) => p.session === session)) return false;
-      const chat = [...now.chat];
-      const placed = { agent, session, shown: true };
-      if (panel !== null && chat[panel]?.session === null) chat[panel] = placed;
-      else chat.push(placed);
-      put(worktree, { ...now, chat });
-      return true;
-    };
-    // Once the session runs, a failed load or save is the layout's error, not the start's.
-    const layoutFailed = (failed: "load" | "save") => (e: unknown) => {
-      if (!forgottenSince(worktree, forgotten)) setError(worktree, `Could not ${failed} this worktree's layout: ${String(e)}`);
-    };
-    if (!afterSetup) {
-      return enqueue(worktree, async () => {
-        const session = await spawn(await panelForCore());
-        // Left out only when it already ended, and the core leaves its panel out anyway.
-        await loadKeeping(session).catch(layoutFailed("load"));
-        return session;
-      });
-    }
-    const session = await spawn(await enqueue(worktree, panelForCore));
-    await enqueue(worktree, async () => {
-      const kept = await loadKeeping(session).catch(layoutFailed("load"));
-      if (kept) await bridge.setWorkspace(worktree, latest.current[worktree]).catch(layoutFailed("save"));
+  // Loads the core's copy of the session's workspace again, and puts the unsaved changes on top.
+  // A workspace not loaded yet loads when it is first shown.
+  function reload(session: SessionId) {
+    const key = workspaceKey({ session });
+    if (!latest.current[key]) return;
+    const forgotten = forgets.current.get(key) ?? 0;
+    enqueue(key, async () => {
+      const core = await bridge.workspace(session);
+      if (forgottenSince(key, forgotten)) return;
+      const mine = unsaved.current.filter((other) => other.key === key);
+      put(
+        key,
+        mine.reduce((next, { update }) => update(next), core),
+      );
+    }).catch((e: unknown) => {
+      if (!forgottenSince(key, forgotten)) setError(key, `Could not load this layout: ${String(e)}`);
     });
-    return session;
   }
 
   const onWorkspaceChanged = useEffectEvent(reload);
   useEffect(() => bridge.onWorkspaceChanged(onWorkspaceChanged), [bridge]);
 
-  // Drops a forgotten or deleted worktree's workspace, so one made again at its path loads fresh.
-  function forget(worktree: string) {
+  // Drops a workspace, so one that gets its key again loads fresh.
+  function forget(owner: WorkspaceOwner) {
+    const key = workspaceKey(owner);
     const rest = { ...latest.current };
-    delete rest[worktree];
+    delete rest[key];
     latest.current = rest;
     setWorkspaces(rest);
-    unsaved.current = unsaved.current.filter((other) => other.worktree !== worktree);
-    loads.current.delete(worktree);
-    forgets.current.set(worktree, (forgets.current.get(worktree) ?? 0) + 1);
-    setError(worktree, null);
+    unsaved.current = unsaved.current.filter((other) => other.key !== key);
+    loads.current.delete(key);
+    forgets.current.set(key, (forgets.current.get(key) ?? 0) + 1);
+    setError(key, null);
   }
 
-  return { workspaces, errors, load, change, forget, startAgent };
+  /**
+   * Drops what the window holds of agent sessions the core no longer lists: their workspaces, and
+   * their panels in other workspaces. The core dropped those panels too, so nothing is saved.
+   */
+  function dropSessions(gone: SessionId[]) {
+    for (const session of gone) forget({ session });
+    const kept = Object.entries(latest.current).map(([key, workspace]) => {
+      const chat = workspace.chat.filter((panel) => !gone.includes(panel.session));
+      return [key, chat.length === workspace.chat.length ? workspace : { ...workspace, chat }] as const;
+    });
+    latest.current = Object.fromEntries(kept);
+    setWorkspaces(latest.current);
+  }
+
+  /** The workspace as the window shows it now, with the changes React has not rendered yet. */
+  const current = (owner: WorkspaceOwner): Workspace | undefined => latest.current[workspaceKey(owner)];
+
+  return { workspaces, errors, load, change, forget, dropSessions, current };
 }
 
-/**
- * Shows the session's panel. A session with no panel takes the first shown panel not started yet,
- * or else a new one at the end.
- */
+/** Shows the session's panel. A session with no panel gets one after the last. */
 export function showSession(workspace: Workspace, session: SessionId, agent: Agent): Workspace {
   const chat = [...workspace.chat];
-  let at = chat.findIndex((panel) => panel.session === session);
-  if (at < 0) at = chat.findIndex((panel) => panel.shown && panel.session === null);
-  if (at < 0) at = chat.length;
-  chat[at] = { agent, session, shown: true };
+  const at = chat.findIndex((panel) => panel.session === session);
+  chat[at < 0 ? chat.length : at] = { agent, session, shown: true };
   return { ...workspace, chat };
 }
 
