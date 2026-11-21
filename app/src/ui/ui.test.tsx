@@ -1,5 +1,6 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { Plus } from "lucide-react";
+import { createRef } from "react";
 import { afterEach, expect, test } from "vitest";
 
 import type { AgentState as State } from "../bridge";
@@ -7,7 +8,7 @@ import { AgentState } from "./AgentState";
 import { Button } from "./Button";
 import { Card } from "./Card";
 import { IconButton } from "./IconButton";
-import { Menu } from "./Menu";
+import { Menu, type MenuHandle } from "./Menu";
 import { Segmented } from "./Segmented";
 
 afterEach(cleanup);
@@ -162,6 +163,45 @@ test("a menu opened by a pointer plays its enter transition, and by a key it doe
 
   fireEvent.keyDown(trigger, { key: "Enter" });
   fireEvent.click(trigger);
+  expect(screen.getByRole("menu").classList.contains("popover-enter")).toBe(false);
+});
+
+test("a full-width menu takes its trigger's attributes, and its owner can open it", () => {
+  const menu = createRef<MenuHandle>();
+  render(
+    <Menu
+      ref={menu}
+      label="New session"
+      icon={Plus}
+      items={[{ key: "local", label: "Local checkout", onSelect() {} }]}
+      trigger="New session"
+      triggerProps={{ className: "nav-row", "aria-keyshortcuts": "Meta+N" }}
+    />,
+  );
+  const trigger = screen.getByRole("button", { name: "New session" });
+  expect(trigger.className).toBe("nav-row");
+  expect(trigger.getAttribute("aria-keyshortcuts")).toBe("Meta+N");
+
+  act(() => menu.current!.open());
+  act(() => menu.current!.open());
+
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Local checkout" }));
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+});
+
+test("a menu its owner opens on a shortcut appears at once, even after a pointer opened it", () => {
+  const menu = createRef<MenuHandle>();
+  render(
+    <Menu ref={menu} label="New session" icon={Plus} items={[{ key: "local", label: "Local checkout", onSelect() {} }]} />,
+  );
+  const trigger = screen.getByRole("button", { name: "New session" });
+  fireEvent.pointerDown(trigger);
+  fireEvent.click(trigger);
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+
+  fireEvent.keyDown(document.body, { key: "n", metaKey: true });
+  act(() => menu.current!.open());
+
   expect(screen.getByRole("menu").classList.contains("popover-enter")).toBe(false);
 });
 

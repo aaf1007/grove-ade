@@ -1,6 +1,15 @@
 import type { LucideIcon } from "lucide-react";
 import { Check } from "lucide-react";
-import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "react";
+import {
+  type ButtonHTMLAttributes,
+  type ReactNode,
+  type Ref,
+  useEffect,
+  useEffectEvent,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 
 import { openedByPointer } from "../motion";
 import { IconButton } from "./IconButton";
@@ -18,6 +27,12 @@ export interface MenuItem {
   onSelect(): void;
 }
 
+/** What the menu's owner can ask of it. */
+export interface MenuHandle {
+  /** Opens the list with focus on its first item, as a click on the button does. An open list stays open. */
+  open(): void;
+}
+
 /**
  * An icon button that opens a list of actions under it. With `trigger`, a full-width button holding
  * it opens the list instead. Opening focuses the first item, Up and Down move through the items,
@@ -30,6 +45,8 @@ export function Menu({
   items,
   align = "start",
   trigger,
+  triggerProps,
+  ref,
 }: {
   /** Names the button and the menu. */
   label: string;
@@ -41,12 +58,21 @@ export function Menu({
   align?: "start" | "end";
   /** What a full-width trigger shows, in place of the icon button. */
   trigger?: ReactNode;
+  /** More attributes for the full-width trigger. Its own class replaces `ui-menu-trigger`. */
+  triggerProps?: Omit<ButtonHTMLAttributes<HTMLButtonElement>, "type" | "onClick">;
+  ref?: Ref<MenuHandle>;
 }) {
   const [open, setOpen] = useState(false);
   const [entering, setEntering] = useState(false);
   const holder = useRef<HTMLSpanElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
+  useImperativeHandle(ref, () => ({
+    open: () => {
+      if (!open) setEntering(openedByPointer());
+      setOpen(true);
+    },
+  }));
 
   // The item with focus goes away, so focus goes back to the button, where a dialog finds it.
   function close() {
@@ -121,9 +147,10 @@ export function Menu({
         />
       ) : (
         <button
+          className="ui-menu-trigger"
+          {...triggerProps}
           ref={button}
           type="button"
-          className="ui-menu-trigger"
           aria-label={label}
           aria-haspopup="menu"
           aria-expanded={open}
