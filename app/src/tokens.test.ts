@@ -180,6 +180,21 @@ function surfacesTooClose(values: Record<string, string>): string[] {
     .map(({ lower, upper }) => `${lower.surface} and ${upper.surface}`);
 }
 
+// The Modern pairs that met AA before the surfaces moved apart. The rest of Modern's text contrast is not checked yet.
+const modernTextOnGrounds: [keyof typeof everyTheme, string, string][] = [
+  ["modern light", "muted", "sidebar"],
+  ["modern light", "idle", "sidebar"],
+  ["modern light", "faint", "sidebar"],
+  ["modern light", "syn-kw", "code-bg"],
+  ["modern light", "syn-com", "code-bg"],
+  ["modern dark", "faint", "code-bg"],
+];
+
+test.each(modernTextOnGrounds)("in %s, %s on %s has 4.5:1 contrast", (theme, text, ground) => {
+  const values = everyTheme[theme];
+  expect(contrast(resolve(values, text), resolve(values, ground))).toBeGreaterThanOrEqual(4.5);
+});
+
 test("the chat area is the darkest surface in the default dark theme", () => {
   const chat = lightness(resolve(defaultDark, "bg"));
   for (const surface of surfaces.filter((name) => name !== "bg")) {
