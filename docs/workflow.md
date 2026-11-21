@@ -74,12 +74,12 @@ Skipped on Oct 25.
    - CodeRabbit reviews the PR and every push. Cursor's Bugbot, Security Agent, and Approval Agent run on a weekly quota.
    - Full or light: the first commit of a PR that CodeRabbit did not review gets the full review above. A later fix round gets a light review: one agent reads only the diff since the last reviewed commit, checks it against the open threads and the issue, and posts threads for what it finds. It starts no plugin agents.
    - `interrogate`: on a PR that touches PTY or acked streams, the socket protocol, agent state, or the Core API, the orchestrator also runs pstack `interrogate`, before QA. It posts the "Act on" items on the PR as review comments. Step 6 covers them like any other review comment, with the same two-round cap.
-   - Gauntlet on a PR: the orchestrator runs `swarm` on a PR only when the owner asks for it on that PR, after QA passes. Otherwise it runs at milestone close (Phase 4).
+   - Gauntlet on a PR: the orchestrator runs `swarm` on a PR only when the owner asks for it on that PR, after QA passes, or after CI is green when QA is skipped. Otherwise it runs at milestone close (Phase 4).
 6. Right after opening the PR, the implementer session turns on the app's Auto-fix for it (`mcp__ccd_pr__set_monitor` with `auto_fix` and `address_comments`; I approve). Auto-fix wakes it on review comments and merge conflicts, and it handles them itself:
    - Review comments (the reviewer, `interrogate`, CodeRabbit, Cursor, me): implement each finding by default. Check it against the code, fix it test first, and run the gates.
    - Skip a finding only if it is clearly wrong or out of scope, with the reason on the thread. Style-only nitpicks get a reply, not code.
    - Stop and ask before a Core API change, a new dependency, or a doc change.
-   - Push and reply on every thread. Resolve the threads of CodeRabbit, Cursor and me. Leave the reviewer's threads open: its recheck resolves them. `main` requires every thread resolved before merge. List skipped findings in the report. At most two fix rounds.
+   - Push and reply on every thread. Resolve the threads of CodeRabbit, Cursor, `interrogate` and me. Leave the reviewer's threads open: its recheck resolves them. `main` requires every thread resolved before merge. List skipped findings in the report. At most two fix rounds.
    - A failed check in the reviewer's summary: fix the root cause. No retries, sleeps, or disabled tests.
    - Merge conflict: sync with `main`. Never rebase or force-push.
    - Never use CodeRabbit's own autofix.

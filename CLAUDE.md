@@ -81,7 +81,7 @@ Each rule here can be checked against a diff. The Engineering rules below apply 
 - Writing style for docs and comments: plain and short, no em dashes.
 
 ## Rule enforcement
-`correct` keeps this table in step with the rules in this file. Proposed for the owner's approval. A rule can have more than one enforcer. CodeRabbit and the reviewer only advise.
+`correct` keeps this table in step with the rules in this file. A rule can have more than one enforcer. CodeRabbit and the reviewer only advise.
 
 | Rule | Enforced by |
 |---|---|
@@ -93,7 +93,7 @@ Each rule here can be checked against a diff. The Engineering rules below apply 
 | `thiserror` in core, `anyhow` only in binaries | CodeRabbit path instructions. No lint |
 | No `unwrap()` in core outside tests | CodeRabbit path instructions, and the reviewer. No lint |
 | Never block a tokio worker | CodeRabbit path instructions, and the reviewer. No test |
-| 8 ms output batching | Core side: `crates/grove-core/tests/sessions.rs`, `chat.rs` and `config.rs`. App side, `tauri::ipc::Channel` and no event per chunk: CodeRabbit path instructions only |
+| 8 ms output batching | Core side: `crates/grove-core/tests/sessions.rs`, `chat.rs` and `config.rs`. App side: the CodeRabbit path rule for `app/src/**` ("PTY output reaches the UI only through a batched channel, never one event per chunk"). Nothing yet checks `tauri::ipc::Channel` in `app/src-tauri` or the 8 ms there |
 | Git CLI for worktrees, git2 for diffs | CodeRabbit path instructions. Diff results are checked by the parity tests below |
 | Diff parity | `crates/grove-core/tests/diff.rs` in the `rust` check. `fixtures/diff-repo/check.py` in the `ts` job checks the fixture builds the same each time |
 | One issue, one worktree, one PR | The owner's review. Nothing automatic |
