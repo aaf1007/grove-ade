@@ -198,6 +198,49 @@ class FakeSidecarTest(unittest.TestCase):
                     self.assertGreater(at, due - 0.02, arrivals)
                     self.assertLess(at, due + 0.2, arrivals)
 
+    def test_replay_logs_when_it_heard_each_core_line_and_sent_each_sidecar_line(self):
+        path = self.recording([
+            {"t": 0.0, "from": "sidecar", "message": {"type": "account", "account": None}},
+            {"t": 0.1, "from": "core", "message": {"type": "user_message", "text": "go"}},
+            {"t": 0.2, "from": "sidecar", "message": {"type": "turn_start"}},
+            {"t": 0.6, "from": "sidecar", "message": {"type": "turn_end"}},
+        ])
+        proc = subprocess.Popen([FAKE, *self.args()], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                cwd=self.cwd, env=self.env([{"replay": path}]))
+        self.assertEqual(json.loads(proc.stdout.readline()), {"type": "account", "account": None})
+        got_account = time.time()
+        time.sleep(0.2)
+        wrote = time.time()
+        proc.stdin.write(b'{"type":"user_message","text":"go"}\n')
+        proc.stdin.close()
+        arrivals = [time.time() for _ in proc.stdout]
+        self.assertEqual(proc.wait(timeout=10), 0)
+        proc.stdout.close()
+
+        [times] = [r["replay_times"] for r in self.log_records() if "replay_times" in r]
+        self.assertEqual(len(times), 4)
+        account, heard, start, end = times
+        self.assertLessEqual(account, got_account)
+        self.assertGreaterEqual(heard, wrote)
+        # Each line goes no sooner than its recorded time after the core's line came.
+        self.assertGreaterEqual(start - heard, 0.1 - 0.001)
+        self.assertGreaterEqual(end - heard, 0.5 - 0.001)
+        # It is logged once sent, so never much before the line is read here.
+        self.assertLessEqual(start, arrivals[0] + 0.001)
+        self.assertLessEqual(end, arrivals[1] + 0.001)
+
+    def test_a_replay_that_stops_early_logs_the_times_it_has(self):
+        path = self.recording([
+            {"t": 0.0, "from": "sidecar", "message": {"type": "turn_start"}},
+            {"t": 0.1, "from": "core", "message": {"type": "user_message", "text": "go"}},
+        ])
+
+        result = self.run_fake([{"replay": path}])
+
+        self.assertEqual(result.returncode, 1)
+        [times] = [r["replay_times"] for r in self.log_records() if "replay_times" in r]
+        self.assertEqual(len(times), 1)
+
     def test_a_bad_replay_step_or_recording_exits_2_before_any_step_runs(self):
         good = {"t": 0, "from": "sidecar", "message": {"type": "turn_start"}}
         bad_recordings = [

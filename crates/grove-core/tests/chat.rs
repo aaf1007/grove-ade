@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use grove_core::{
     AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, Core, CoreConfig, CoreError,
@@ -19,7 +19,7 @@ use tokio::sync::broadcast::{self, error::TryRecvError};
 use tokio::sync::mpsc::unbounded_channel;
 
 mod common;
-use common::{grove_hook, now_unix_ms, times, untimed};
+use common::{grove_hook, now_unix_ms, times, untimed, write_script};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -75,13 +75,12 @@ fn setup_tuned(steps: Value, tune: impl FnOnce(&mut CoreConfig)) -> Setup {
     let log = dir.path().join("fake.log");
     let wrapper = dir.path().join("claude-sidecar");
     let script = format!(
-        "#!/bin/sh\nexport FAKE_CLAUDE_SIDECAR_SCENARIO='{}' FAKE_CLAUDE_SIDECAR_LOG='{}'\nexec '{}' \"$@\"\n",
+        "export FAKE_CLAUDE_SIDECAR_SCENARIO='{}' FAKE_CLAUDE_SIDECAR_LOG='{}'\nexec '{}' \"$@\"",
         scenario.display(),
         log.display(),
         fakes().join("claude-sidecar").display(),
     );
-    fs::write(&wrapper, script).unwrap();
-    make_executable(&wrapper);
+    write_script(&wrapper, &script);
     let mut cfg = CoreConfig::new(dir.path().join("home"));
     cfg.claude_sidecar_command = wrapper;
     cfg.claude_command = "/opt/claude/bin/claude".into();
@@ -110,11 +109,6 @@ impl Drop for Setup {
             );
         }
     }
-}
-
-fn make_executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 impl Setup {
@@ -746,13 +740,12 @@ fn use_fake_claude(cfg: &mut CoreConfig) {
     .unwrap();
     let wrapper = dir.join("claude");
     let script = format!(
-        "#!/bin/sh\nexport FAKE_CLAUDE_SCENARIO='{}' FAKE_CLAUDE_LOG='{}'\nexec '{}' \"$@\"\n",
+        "export FAKE_CLAUDE_SCENARIO='{}' FAKE_CLAUDE_LOG='{}'\nexec '{}' \"$@\"",
         scenario.display(),
         dir.join("claude.log").display(),
         fakes().join("claude").display(),
     );
-    fs::write(&wrapper, script).unwrap();
-    make_executable(&wrapper);
+    write_script(&wrapper, &script);
     cfg.claude_command = wrapper;
 }
 
@@ -1627,11 +1620,27 @@ fn recording_slice(seconds: f64) -> Vec<Value> {
 /// A recording replayed through the core.
 struct Replayed {
     _setup: Setup,
-    /// The recorded lines that reach the sink: when each was recorded, and the message the sink
-    /// should get for it.
-    expected: Vec<(f64, AgentMessage)>,
+    /// The recorded lines that reach the sink.
+    expected: Vec<Played>,
     /// What the sink got, each message with the time its frame came.
     got: Vec<(AgentMessage, Instant)>,
+}
+
+/// One recorded line that reaches the sink.
+struct Played {
+    /// When it was recorded, in seconds since the recording started.
+    recorded: f64,
+    /// The Unix time in seconds the fake heard it, for the core's line, or had sent it.
+    at_fake: f64,
+    /// The message the sink should get for it.
+    message: AgentMessage,
+}
+
+/// The Unix time of `at` in seconds, the clock the fake logs its replay times on.
+fn unix_secs(at: Instant) -> f64 {
+    let since = Instant::now().duration_since(at);
+    let unix_at = SystemTime::now() - since;
+    unix_at.duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
 }
 
 /// Plays `lines` through the fake sidecar at `speed` until the fake exits, sending each recorded
@@ -1654,8 +1663,9 @@ fn replay(lines: &[Value], speed: f64) -> Replayed {
     let deadline = Instant::now() + Duration::from_secs_f64(span / speed) + TIMEOUT;
     let received =
         |frames: &Frames| history.len() + frames.frames.iter().map(|(f, _)| f.len()).sum::<usize>();
+    // Each with its line's place in the recording.
     let mut expected = Vec::new();
-    for line in lines {
+    for (place, line) in lines.iter().enumerate() {
         let mut message = line["message"].clone();
         fill(&mut message, &slots);
         let Some(sink_message) = sink_message(&message) else {
@@ -1671,7 +1681,7 @@ fn replay(lines: &[Value], speed: f64) -> Replayed {
             let text = message["text"].as_str().unwrap();
             s.core.send_message(session, text).unwrap();
         }
-        expected.push((line["t"].as_f64().unwrap(), sink_message));
+        expected.push((place, line["t"].as_f64().unwrap(), sink_message));
     }
     while received(&frames) < expected.len() {
         frames
@@ -1682,6 +1692,15 @@ fn replay(lines: &[Value], speed: f64) -> Replayed {
     s.wait_exit(session);
     thread::sleep(Duration::from_millis(50));
     frames.take();
+    let replay_times = s.wait_log("replay_times")["replay_times"].clone();
+    let expected = expected
+        .into_iter()
+        .map(|(place, recorded, message)| Played {
+            recorded,
+            at_fake: replay_times[place].as_f64().unwrap(),
+            message,
+        })
+        .collect();
     let subscribed = Instant::now();
     let mut got: Vec<(AgentMessage, Instant)> =
         history.into_iter().map(|m| (m, subscribed)).collect();
@@ -1754,36 +1773,63 @@ impl Replayed {
             .expected
             .iter()
             .zip(&self.got)
-            .position(|((_, want), (got, _))| want != got);
+            .position(|(want, (got, _))| want.message != *got);
         if let Some(i) = differs {
             panic!(
                 "message {i} differs: want {:?}, got {:?}",
-                self.expected[i].1, self.got[i].0
+                self.expected[i].message, self.got[i].0
             );
         }
         assert_eq!(self.got.len(), self.expected.len(), "message count");
     }
 
-    /// Each message came no sooner than its recorded time after the user's message divided by
-    /// `speed`, and not much later.
+    /// Each message came on time. The fake and the core are timed apart, each against the
+    /// fake's own log of when it heard and sent every line, so the fake being slow on a busy
+    /// machine never counts as the core being late:
+    /// - the fake sent each line no sooner than its recorded time after the user's message
+    ///   divided by `speed`, and not much later;
+    /// - the core got each of the fake's lines to the sink, and the user's message to the sink
+    ///   and to the fake, without holding it.
     fn assert_on_time(&self, speed: f64) {
-        // The user's message and the first reply can each wait one flush window for a frame.
-        const EARLY: Duration = Duration::from_millis(20);
-        const LATE: Duration = Duration::from_millis(250);
-        let mut since = None;
-        for (i, ((t, want), (_, at))) in self.expected.iter().zip(&self.got).enumerate() {
-            if matches!(want, AgentMessage::User { .. }) {
-                since = Some((*t, *at));
+        // The core's share: the flush window of 8 ms, plus a turn on a core for its reader
+        // thread, its flush task and the thread that stamps the frame. With every core busy
+        // building the workspace this took at most 21 ms.
+        const CORE_LATE: f64 = 0.25;
+        // The fake's share: Python waking from a sleep to send a line, or to hear the user's
+        // message. A late fake only makes the replay slower than asked. With every core busy
+        // it was at most 80 ms late.
+        const FAKE_LATE: f64 = 0.5;
+        // The fake paces itself on one clock and logs on another.
+        const CLOCK_SKEW: f64 = 0.001;
+        // The recorded time of the turn's user message, and when the fake heard it.
+        let mut turn = None;
+        for (i, (played, (_, at_sink))) in self.expected.iter().zip(&self.got).enumerate() {
+            let sink_after_fake = unix_secs(*at_sink) - played.at_fake;
+            if matches!(played.message, AgentMessage::User { .. }) {
+                assert!(
+                    sink_after_fake <= CORE_LATE,
+                    "the sink got user message {i} {sink_after_fake:.3} s after the fake heard it"
+                );
+                assert!(
+                    -sink_after_fake <= FAKE_LATE,
+                    "the fake heard user message {i} {:.3} s after the sink got it",
+                    -sink_after_fake
+                );
+                turn = Some((played.recorded, played.at_fake));
                 continue;
             }
-            let Some((sent_t, sent_at)) = since else {
+            assert!(
+                sink_after_fake <= CORE_LATE,
+                "message {i} reached the sink {sink_after_fake:.3} s after the fake sent it"
+            );
+            let Some((user_recorded, heard)) = turn else {
                 continue;
             };
-            let due = Duration::from_secs_f64((t - sent_t) / speed);
-            let took = *at - sent_at;
+            let due = (played.recorded - user_recorded) / speed;
+            let sent = played.at_fake - heard;
             assert!(
-                took + EARLY >= due && took <= due + LATE,
-                "message {i} came {took:?} after the user's message, due at {due:?}"
+                sent + CLOCK_SKEW >= due && sent <= due + FAKE_LATE,
+                "the fake sent message {i} {sent:.3} s after it heard the user's message, due at {due:.3} s"
             );
         }
     }
