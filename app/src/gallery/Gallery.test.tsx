@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, expect, test, vi } from "vitest";
 
 import { fakeBridge } from "../fakeBridge";
-import { Gallery, GALLERY_REPO } from "./Gallery";
+import { addGallerySessions, Gallery, GALLERY_REPO } from "./Gallery";
 
 afterEach(() => {
   cleanup();
@@ -17,6 +17,7 @@ test("the gallery shows every component, every agent state, and switches between
   });
   const bridge = fakeBridge(GALLERY_REPO);
   await bridge.addRepo(Object.keys(GALLERY_REPO)[0]);
+  await addGallerySessions(bridge);
   await act(async () => render(<Gallery bridge={bridge} />));
 
   for (const name of ["Button", "IconButton", "AgentState", "Segmented", "PanelTabs", "Menu", "Card", "AgentMarkdown"]) {
@@ -27,6 +28,9 @@ test("the gallery shows every component, every agent state, and switches between
     expect(within(states).getAllByText(word)).toHaveLength(1);
   }
   expect(document.documentElement.dataset.theme).toBe("dark");
+  // The sidebar lists the gallery's sessions, the ended one dimmed.
+  const ended = await screen.findByText("Spike the port router", { selector: ".session-title" });
+  expect(ended.closest(".session-item")!.classList.contains("dimmed")).toBe(true);
 
   fireEvent.click(within(screen.getByRole("group", { name: "Theme" })).getByRole("button", { name: "Light" }));
 
