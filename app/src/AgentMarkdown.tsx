@@ -1,9 +1,9 @@
 import { Copy } from "lucide-react";
-import { Fragment, memo, useEffect, useState } from "react";
+import { Fragment, memo, useEffect, useReducer } from "react";
 import Markdown, { type Components, defaultUrlTransform, type UrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { type CodeRun, colorRuns } from "./monaco";
+import { type CodeRun, coloredRuns, colorRuns } from "./monaco";
 import { IconButton } from "./ui/IconButton";
 
 /**
@@ -87,12 +87,16 @@ function markOpenFences() {
     const mark = (node: MdastNode) => {
       node.children?.forEach(mark);
       if (node.type !== "code") return;
+      // Only a block that runs to the end of the text can still be growing. One that a quote or a
+      // list item ends is closed by it.
+      if (markdown.slice(node.position?.end.offset).trim()) return;
       const source = markdown.slice(node.position?.start.offset, node.position?.end.offset).split("\n");
       const fence = /(`{3,}|~{3,})/.exec(source[0])?.[1];
       if (!fence) return;
       const closing = new RegExp(`^[\\s>]*${fence[0]}{${fence.length},}\\s*$`);
       if (source.length > 1 && closing.test(source.at(-1)!)) return;
-      node.value = node.value!.replace(new RegExp(`(^|\\n)[ \\t]*${fence[0]}+[ \\t]*$`), "");
+      // A line that can still become the closing fence: up to three spaces, then fewer fence marks.
+      node.value = node.value!.replace(new RegExp(`(^|\\n) {0,3}${fence[0]}{1,${fence.length - 1}}[ \\t]*$`), "");
       node.data = { ...node.data, hProperties: { ...node.data?.hProperties, dataOpen: true } };
     };
     mark(tree);
@@ -156,20 +160,20 @@ function ColoredLine({ runs, last }: { runs: CodeRun[]; last: boolean }) {
   );
 }
 
-// The colored runs of `code` in the language `tag` names, after the block first paints. Undefined
-// until they are ready, with no tag, or for a language Monaco does not know.
+// The colored runs of `code` in the language `tag` names. Undefined until they are ready, with no
+// tag, or when the block stays plain.
 function useColorRuns(code: string, tag: string | undefined): CodeRun[][] | undefined {
-  const [colored, setColored] = useState<{ code: string; tag: string; lines?: CodeRun[][] }>();
+  const [, colored] = useReducer((count: number) => count + 1, 0);
   useEffect(() => {
     if (!tag) return;
     let current = true;
     colorRuns(code, tag).then(
-      (lines) => current && setColored({ code, tag, lines }),
+      () => current && colored(),
       (error) => console.error(`grove could not color a ${tag} block:`, error),
     );
     return () => {
       current = false;
     };
   }, [code, tag]);
-  return colored?.code === code && colored.tag === tag ? colored.lines : undefined;
+  return tag ? coloredRuns(code, tag) : undefined;
 }

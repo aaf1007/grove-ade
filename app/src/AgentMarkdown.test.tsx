@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { AgentMarkdown } from "./AgentMarkdown";
+import { monaco } from "./monaco";
 
 beforeEach(() => {
   stubClipboard();
@@ -76,12 +77,49 @@ test("a block in a language Monaco does not know shows as plain text", async () 
   expect(plain.textContent).toBe("const name = 1;\n");
 });
 
-test("a block too long to color in one frame stays plain", async () => {
-  const long = Array.from({ length: 1001 }, (_, line) => `const line${line} = ${line};`).join("\n");
-  const container = shown("```ts\n" + long + "\n```\n\n```ts\nlet ready = true;\n```");
-  await screen.findByText("let");
+// Lines of code, then a comment of slashes, `length` characters in all with the final newline.
+function codeOfLength(length: number) {
+  const lines = "let a = 1;\n".repeat(1817);
+  return lines + "/".repeat(length - lines.length - 1) + "\n";
+}
 
-  expect(container.querySelectorAll("pre > code")[0].querySelector("span")).toBeNull();
+test.each([
+  [20_000, true],
+  [20_001, false],
+])("a block of %i characters is colored: %s", async (length, colored) => {
+  const container = shown("```ts\n" + codeOfLength(length) + "```\n\n```ts\nconst ready = true;\n```");
+  await screen.findByText("const");
+
+  expect(container.querySelectorAll("pre > code")[0].querySelector("span") !== null).toBe(colored);
+});
+
+test("a block shown again is not colored again, and shows its colors at once", async () => {
+  const tokenize = vi.spyOn(monaco.editor, "tokenize");
+  const text = "```ts\nconst shownTwice = 1;\n```";
+  shown(text);
+  await screen.findByText("const");
+  cleanup();
+
+  shown(text);
+
+  expect(screen.getByText("const").style.color).toBe("var(--syn-kw)");
+  await act(async () => {});
+  expect(tokenize.mock.calls.filter(([code]) => code.includes("shownTwice"))).toHaveLength(1);
+});
+
+test.each([
+  ["a quote", "> ```ts\n> const quoted = 1;\n\nAfter the quote."],
+  ["a list", "- step\n\n  ```ts\n  const listed = 1;\n- next step"],
+])("a block closed by the end of %s is colored", async (_, text) => {
+  shown(text);
+
+  expect((await screen.findByText("const")).style.color).toBe("var(--syn-kw)");
+});
+
+test("code in a language embedded in another is colored the first time", async () => {
+  shown("```html\n<script>\nconst inner = 1;\n</script>\n```");
+
+  expect((await screen.findByText("const")).style.color).toBe("var(--syn-kw)");
 });
 
 test("the copy button copies the code as written, not the colored markup", async () => {
