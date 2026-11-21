@@ -16,4 +16,23 @@ Agents write all code, `crates/` included, so issues are `AFK` unless the develo
 
 Other labels from `docs/workflow.md`: `spike`, `dogfood`, `adr-needed`.
 
+## Component labels
+
+Every new issue gets at least one `comp:*` label for the part of grove it touches. Use two when it touches two. A spec that spans all of grove gets none.
+
+| Label             | Covers                                                    |
+| ----------------- | --------------------------------------------------------- |
+| `comp:sessions`   | Agent sessions, worktrees, handoff, restore               |
+| `comp:chat`       | Chat mode: transcript, composer, approvals, details card  |
+| `comp:sidebar`    | Sidebar and project list                                  |
+| `comp:shortcuts`  | Keyboard shortcuts and command palette                    |
+| `comp:diff`       | Diff panel                                                |
+| `comp:editor`     | Files panel and Monaco editor                             |
+| `comp:terminal`   | Terminal mode and terminal panel                          |
+| `comp:profiles`   | Profiles and project overrides                            |
+| `comp:subagents`  | Subagent sessions and their panels                        |
+| `comp:agent-io`   | Hooks, MCP, and agent adapters                            |
+| `comp:design`     | Design tokens, motion, visual polish                      |
+| `comp:infra`      | CI, tests, performance, workflow                          |
+
 Edit the "Label in our tracker" column to match whatever vocabulary you actually use.
