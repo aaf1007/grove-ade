@@ -28,6 +28,7 @@ import type {
 } from "./bridge";
 import { Actions, Dialog } from "./Dialog";
 import { useSetting } from "./settings";
+import { keyHint, shortcut } from "./shortcuts";
 import { sameState, stateWord } from "./ui/AgentState";
 import { IconButton } from "./ui/IconButton";
 import { Menu, type MenuHandle, type MenuItem } from "./ui/Menu";
@@ -68,6 +69,10 @@ export interface SidebarHandle {
   addRepo(): void;
   /** Puts focus on the sidebar switch in the top row. */
   focusSidebarSwitch(): void;
+  /** Opens New session's place picker, as the sidebar's button does. */
+  newSession(): void;
+  /** Shows the sidebar and puts focus in Search. */
+  focusSearch(): void;
 }
 
 /** What a worktree's menu does. */
@@ -283,12 +288,6 @@ export function Sidebar({
     refresh();
   }
 
-  const sidebarSwitch = useRef<HTMLButtonElement>(null);
-  useImperativeHandle(ref, () => ({
-    addRepo: () => void addRepo(),
-    focusSidebarSwitch: () => sidebarSwitch.current?.focus(),
-  }));
-
   function toggleRepo(path: string) {
     setFoldedRepos((folded) => toggled(folded, path));
   }
@@ -311,26 +310,22 @@ export function Sidebar({
     else onNewSession(worktree.path);
   }
 
-  // Cmd-N and Cmd-K, unless a dialog is open or a terminal or an editor took the key.
-  const onKey = useEffectEvent((event: KeyboardEvent) => {
-    if (event.defaultPrevented || dialog || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-    const key = event.key.toLowerCase();
-    if (key === "n" && newSessionProject) {
-      event.preventDefault();
+  const sidebarSwitch = useRef<HTMLButtonElement>(null);
+  useImperativeHandle(ref, () => ({
+    addRepo: () => void addRepo(),
+    focusSidebarSwitch: () => sidebarSwitch.current?.focus(),
+    newSession() {
+      if (!newSessionProject) return;
       // Shown first, since a hidden picker takes no focus.
       flushSync(() => onShowSidebar?.());
       newSessionMenu.current?.open();
-    } else if (key === "k") {
-      event.preventDefault();
+    },
+    focusSearch() {
       // Shown first, since a hidden box takes no focus.
       flushSync(() => onShowSidebar?.());
       searchBox.current?.focus();
-    }
-  });
-  useEffect(() => {
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+    },
+  }));
 
   // A session's row, then under it the subagent sessions it spawned that `shown` has.
   function sessionItem(record: AgentSessionRecord, shown: AgentSessionRecord[], byPath: Map<string, Worktree>) {
@@ -413,10 +408,10 @@ export function Sidebar({
             <>
               <Plus aria-hidden="true" />
               New session
-              <kbd aria-hidden="true">⌘N</kbd>
+              <kbd aria-hidden="true">{keyHint(shortcut("newSession").keys)}</kbd>
             </>
           }
-          triggerProps={{ className: "nav-row", "aria-keyshortcuts": "Meta+N", disabled: !newSessionProject }}
+          triggerProps={{ className: "nav-row", "aria-keyshortcuts": shortcut("newSession").keys, disabled: !newSessionProject }}
         />
         <label className="nav-row search-row">
           <Search aria-hidden="true" />
@@ -424,7 +419,7 @@ export function Sidebar({
             ref={searchBox}
             type="search"
             aria-label="Search"
-            aria-keyshortcuts="Meta+K"
+            aria-keyshortcuts={shortcut("search").keys}
             placeholder="Search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -432,13 +427,13 @@ export function Sidebar({
               if (event.key === "Escape") setQuery("");
             }}
           />
-          <kbd aria-hidden="true">⌘K</kbd>
+          <kbd aria-hidden="true">{keyHint(shortcut("search").keys)}</kbd>
         </label>
-        <button className="nav-row" aria-keyshortcuts="Meta+J" onClick={onJump}>
+        <button className="nav-row" aria-keyshortcuts={shortcut("jump").keys} onClick={onJump}>
           <Bell aria-hidden="true" />
           Needs you{" "}
           <span className={waiting > 0 ? "count waiting" : "count"}>{waiting}</span>
-          <kbd aria-hidden="true">⌘J</kbd>
+          <kbd aria-hidden="true">{keyHint(shortcut("jump").keys)}</kbd>
         </button>
         <button className="nav-row" disabled={!selected} onClick={onOpenProfiles}>
           <SlidersHorizontal aria-hidden="true" />

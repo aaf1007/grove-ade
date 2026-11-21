@@ -5,6 +5,7 @@ import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 import type { Worktree } from "./bridge";
 import { fakeBridge, type FakeBridge } from "./fakeBridge";
 import sidebarStyles from "./styles.css?raw";
+import { keyHint, shortcut, type ShortcutId } from "./shortcuts";
 import { Sidebar, type SidebarHandle } from "./Sidebar";
 import agentStateStyles from "./ui/AgentState.css?raw";
 import { menuItems } from "./testing";
@@ -774,12 +775,13 @@ test("Search finds a session by its title or its worktree's branch", async () =>
   expect(screen.queryByRole("region", { name: "grove" })).toBeNull();
 });
 
-test("Cmd-K puts focus in Search, and Escape there clears it", async () => {
-  render(<Sidebar bridge={await twoRepos()} selected={null} onSelect={() => {}} {...noAgents} />);
+test("focusing Search puts focus in it, and Escape there clears it", async () => {
+  const handle = createRef<SidebarHandle>();
+  render(<Sidebar ref={handle} bridge={await twoRepos()} selected={null} onSelect={() => {}} {...noAgents} />);
   await worktreeRow("Terminal resize");
   const box = screen.getByRole("searchbox", { name: "Search" });
 
-  fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+  act(() => handle.current!.focusSearch());
   expect(document.activeElement).toBe(box);
 
   search("resize");
@@ -805,8 +807,9 @@ function pickPlace(name: string) {
   fireEvent.click(screen.getByRole("menuitem", { name }));
 }
 
-test("New session and Cmd-N open the place picker for the selected worktree's project", async () => {
-  render(<Sidebar bridge={await twoRepos()} selected="/code/site-wt/fix-12" onSelect={() => {}} {...noAgents} />);
+test("New session, by click or by key, opens the place picker for the selected worktree's project", async () => {
+  const handle = createRef<SidebarHandle>();
+  render(<Sidebar ref={handle} bridge={await twoRepos()} selected="/code/site-wt/fix-12" onSelect={() => {}} {...noAgents} />);
   await worktreeRow("Terminal resize");
   // New session is the only way to make a worktree from the sidebar.
   expect(screen.queryByRole("button", { name: /New worktree/ })).toBeNull();
@@ -819,15 +822,30 @@ test("New session and Cmd-N open the place picker for the selected worktree's pr
   fireEvent.keyDown(document.activeElement!, { key: "Escape" });
   expect(screen.queryByRole("menu")).toBeNull();
 
-  fireEvent.keyDown(document.body, { key: "n", metaKey: true });
+  act(() => handle.current!.newSession());
   expect(places()).toEqual(["Local checkout", "Terminal resize", "New worktree…"]);
+});
+
+test("the sidebar's key hints come from the shortcut list", () => {
+  render(<Sidebar bridge={fakeBridge({})} selected={null} onSelect={() => {}} {...noAgents} />);
+  const rows: [ShortcutId, HTMLElement][] = [
+    ["newSession", screen.getByRole("button", { name: "New session" })],
+    ["search", screen.getByRole("searchbox", { name: "Search" })],
+    ["jump", screen.getByRole("button", { name: /^Needs you/ })],
+  ];
+  for (const [id, control] of rows) {
+    const { keys } = shortcut(id);
+    expect(control.getAttribute("aria-keyshortcuts")).toBe(keys);
+    expect(control.closest(".nav-row")!.querySelector("kbd")!.textContent).toBe(keyHint(keys));
+  }
 });
 
 test("with nothing selected, New session uses the first project, and with no project it is off", async () => {
   const bridge = fakeBridge({ "/code/grove": groveRepo });
-  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  const handle = createRef<SidebarHandle>();
+  render(<Sidebar ref={handle} bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
   expect(screen.getByRole("button", { name: "New session" })).toHaveProperty("disabled", true);
-  fireEvent.keyDown(document.body, { key: "n", metaKey: true });
+  act(() => handle.current!.newSession());
   expect(screen.queryByRole("menu")).toBeNull();
 
   addRepo(bridge, "/code/grove");
@@ -837,10 +855,12 @@ test("with nothing selected, New session uses the first project, and with no pro
   expect(places()).toEqual(["Local checkout", "feat-35-tauri-sidebar", "spike", "New worktree…"]);
 });
 
-test("the picker works from the keyboard: Cmd-N focuses the first place, arrows move, Escape closes it", async () => {
+test("the picker works from the keyboard: opened by key it focuses the first place, arrows move, Escape closes it", async () => {
   const shown: string[] = [];
+  const handle = createRef<SidebarHandle>();
   render(
     <Sidebar
+      ref={handle}
       bridge={await twoRepos()}
       selected={null}
       onSelect={() => {}}
@@ -850,7 +870,7 @@ test("the picker works from the keyboard: Cmd-N focuses the first place, arrows 
   );
   await worktreeRow("Terminal resize");
 
-  fireEvent.keyDown(document.body, { key: "n", metaKey: true });
+  act(() => handle.current!.newSession());
   // A collapsed sidebar shows first, since a hidden picker takes no focus.
   expect(shown).toEqual(["shown"]);
   expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Local checkout" }));

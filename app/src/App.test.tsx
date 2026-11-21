@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest"
 import { App } from "./App";
 import type { Agent, AgentState, StateSource, Workspace, Worktree } from "./bridge";
 import { DEFAULT_WORKSPACE, type FakeBridge, fakeBridge } from "./fakeBridge";
+import { keyHint, shortcut, type ShortcutId, SHORTCUTS } from "./shortcuts";
 import { menuItems } from "./testing";
 import detailsStyles from "./DetailsCard.css?raw";
 import appStyles from "./styles.css?raw";
@@ -687,6 +688,117 @@ test("Cmd-K with the sidebar collapsed shows the sidebar and puts focus in Searc
   expect(screen.getByRole("button", { name: "Sidebar" }).getAttribute("aria-pressed")).toBe("true");
 });
 
+// Presses a shortcut by the keys the list gives it, or those keys with Ctrl for Cmd.
+async function pressShortcut(id: ShortcutId, { target = document.body, ctrlForCmd = false } = {}) {
+  const keys = shortcut(id).keys.split("+");
+  const cmd = keys.includes("Meta");
+  await act(async () =>
+    fireEvent.keyDown(target, {
+      key: keys.at(-1)!.toLowerCase(),
+      metaKey: cmd && !ctrlForCmd,
+      ctrlKey: cmd && ctrlForCmd,
+      shiftKey: keys.includes("Shift"),
+      altKey: keys.includes("Alt"),
+    }),
+  );
+}
+
+function searchBox() {
+  return within(screen.getByRole("complementary", { name: "Worktrees" })).getByRole("searchbox", { name: "Search" });
+}
+
+test("the list's keys for New session and Search do what the sidebar's controls do", async () => {
+  render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+
+  await pressShortcut("newSession");
+  const picker = screen.getByRole("menu", { name: "New session" });
+  expect(document.activeElement).toBe(within(picker).getByRole("menuitem", { name: "Local checkout" }));
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+  expect(screen.queryByRole("menu")).toBeNull();
+
+  await pressShortcut("search");
+  expect(document.activeElement).toBe(searchBox());
+});
+
+test("Cmd-/ opens Keyboard shortcuts, which shows every shortcut in the list under its group", async () => {
+  render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+
+  await pressShortcut("showShortcuts");
+
+  const sheet = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+  for (const shortcut of SHORTCUTS) {
+    const group = within(sheet).getByRole("region", { name: shortcut.group });
+    const row = within(group).getByText(shortcut.label).closest("div")!;
+    expect(row.querySelector("kbd")?.textContent).toBe(keyHint(shortcut.keys));
+  }
+
+  fireEvent.keyDown(sheet, { key: "Escape" });
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("no shortcut fires while a dialog is open", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 0" });
+  await act(async () =>
+    bridge.agentStateChanged({ session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" }),
+  );
+  await select("main (main worktree)");
+  await pressShortcut("showShortcuts");
+  const sheet = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+
+  await pressShortcut("jump", { target: sheet });
+  await pressShortcut("newSession", { target: sheet });
+  await pressShortcut("search", { target: sheet });
+
+  expect(bridge.focused).toEqual([]);
+  expect(screen.getByRole("button", { name: "main (main worktree)" }).getAttribute("aria-current")).toBe("true");
+  expect(screen.getAllByRole("dialog").map((dialog) => dialog.getAttribute("aria-label"))).toEqual([
+    "Keyboard shortcuts",
+  ]);
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(document.activeElement).not.toBe(searchBox());
+});
+
+test("a terminal keeps its Ctrl keys and the Cmd keys it takes, and Cmd-J still jumps from it", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 0" });
+  await act(async () =>
+    bridge.agentStateChanged({ session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" }),
+  );
+  await select("main (main worktree)");
+  fireEvent.click(screen.getByRole("button", { name: "Open shell" }));
+  const terminal = await screen.findByLabelText(`Panel ${bridge.spawned[0].session}`);
+  terminal.focus();
+
+  // Plain Ctrl-K, Ctrl-N, Ctrl-J and Ctrl-/ go to the shell, as they would in any terminal.
+  for (const shortcut of SHORTCUTS) await pressShortcut(shortcut.id, { target: terminal, ctrlForCmd: true });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(document.activeElement).toBe(terminal);
+  expect(bridge.focused).toEqual([]);
+
+  // A Cmd key the focused terminal or editor takes for itself stays with it.
+  terminal.addEventListener("keydown", (event) => event.preventDefault());
+  await pressShortcut("newSession", { target: terminal });
+  await pressShortcut("search", { target: terminal });
+  await pressShortcut("showShortcuts", { target: terminal });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(document.activeElement).toBe(terminal);
+
+  // Cmd-J comes first, so it jumps even then.
+  await pressShortcut("jump", { target: terminal });
+  expect(bridge.focused).toEqual(["0"]);
+});
+
 test("the title bar sits over the chat lane, and the panel area runs the window's full height beside it", async () => {
   const style = document.createElement("style");
   style.textContent = appStyles;
@@ -1184,7 +1296,7 @@ function waiting() {
 }
 
 async function pressJump() {
-  await act(async () => fireEvent.keyDown(document.body, { key: "j", metaKey: true }));
+  await pressShortcut("jump");
 }
 
 test("with nothing waiting Needs you counts 0, and the key does nothing", async () => {

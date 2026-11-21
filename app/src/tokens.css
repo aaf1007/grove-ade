@@ -255,6 +255,16 @@
 
   /* How Working pulses, wherever it shows: with `ui-agent-state-pulse`. */
   --working-pulse: 2s steps(6) infinite;
+  /* A running label's shimmer, and the dot before comments being sent. */
+  --shimmer: 2.2s linear infinite;
+  --dot-pulse: 1.4s ease-in-out infinite;
+
+  /* Every transition takes this curve and one of these durations (tokens.test.ts). Fast for fades
+     and hover, base for a press and a popover opening, slow for a chevron turning. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --duration-fast: 120ms;
+  --duration-base: 150ms;
+  --duration-slow: 200ms;
 
   --shadow-highlight: inset 0 1px rgba(255, 255, 255, 0.16);
   /* A 1px outline in line that takes no layout space. */
@@ -302,4 +312,13 @@
   --text-code-sm: 400 var(--text-code-sm-size) / 20px var(--font-mono);
   --text-code-meta-size: 11px;
   --text-code-meta: 400 var(--text-code-meta-size) / 16px var(--font-mono);
+}
+
+/* Reduced motion turns every transition off, since each one takes its duration from here. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0s;
+    --duration-base: 0s;
+    --duration-slow: 0s;
+  }
 }

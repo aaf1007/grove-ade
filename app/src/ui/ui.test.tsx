@@ -152,6 +152,20 @@ test("a menu item's shortcut picks it while the menu is open", () => {
   expect(screen.queryByRole("menu")).toBeNull();
 });
 
+test("a menu opened by a pointer plays its enter transition, and by a key it does not", () => {
+  render(<Menu label="Open a panel" icon={Plus} items={[{ key: "Files", label: "Files", onSelect() {} }]} />);
+  const trigger = screen.getByRole("button", { name: "Open a panel" });
+
+  fireEvent.pointerDown(trigger);
+  fireEvent.click(trigger);
+  expect(screen.getByRole("menu").classList.contains("popover-enter")).toBe(true);
+  fireEvent.click(trigger);
+
+  fireEvent.keyDown(trigger, { key: "Enter" });
+  fireEvent.click(trigger);
+  expect(screen.getByRole("menu").classList.contains("popover-enter")).toBe(false);
+});
+
 test("a full-width menu takes its trigger's attributes, and its owner can open it", () => {
   const menu = createRef<MenuHandle>();
   render(
@@ -173,6 +187,22 @@ test("a full-width menu takes its trigger's attributes, and its owner can open i
 
   expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Local checkout" }));
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
+});
+
+test("a menu its owner opens on a shortcut appears at once, even after a pointer opened it", () => {
+  const menu = createRef<MenuHandle>();
+  render(
+    <Menu ref={menu} label="New session" icon={Plus} items={[{ key: "local", label: "Local checkout", onSelect() {} }]} />,
+  );
+  const trigger = screen.getByRole("button", { name: "New session" });
+  fireEvent.pointerDown(trigger);
+  fireEvent.click(trigger);
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+
+  fireEvent.keyDown(document.body, { key: "n", metaKey: true });
+  act(() => menu.current!.open());
+
+  expect(screen.getByRole("menu").classList.contains("popover-enter")).toBe(false);
 });
 
 test("a card is a region named by its title", () => {
