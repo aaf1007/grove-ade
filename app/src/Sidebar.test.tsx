@@ -26,6 +26,7 @@ const noAgents = {
   shownAgents: [],
   onStartAgent() {},
   onStartAgentAfterSetup() {},
+  onNewSession() {},
   onDeleting() {},
   onRemoved() {},
   onFocusAgent() {},
@@ -619,35 +620,223 @@ test("Cmd-K puts focus in Search, and Escape there clears it", async () => {
   expect(rowNames()).toHaveLength(5);
 });
 
-test("New worktree and Cmd-N open the new worktree dialog for the selected worktree's repo", async () => {
-  const bridge = await twoRepos();
-  const asked = vi.spyOn(bridge, "suggestProfile");
-  render(<Sidebar bridge={bridge} selected="/code/site-wt/fix-12" onSelect={() => {}} {...noAgents} />);
-  await worktreeRow("Terminal resize");
+// The places in the open picker named `menu`, by name, in order.
+function placesIn(menu: string) {
+  return within(screen.getByRole("menu", { name: menu }))
+    .getAllByRole("menuitem")
+    .map((item) => item.getAttribute("aria-label"));
+}
 
-  fireEvent.click(screen.getByRole("button", { name: "New worktree" }));
-  const dialog = await screen.findByRole("dialog", { name: "New worktree" });
-  expect(asked).toHaveBeenLastCalledWith("/code/site");
-  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-  await expect.poll(() => screen.queryByRole("dialog")).toBeNull();
+// The main New session button's places. Its picker must be open.
+const places = () => placesIn("New session");
+
+function pickPlace(name: string) {
+  fireEvent.click(screen.getByRole("button", { name: "New session" }));
+  fireEvent.click(screen.getByRole("menuitem", { name }));
+}
+
+test("New session and Cmd-N open the place picker for the selected worktree's project", async () => {
+  render(<Sidebar bridge={await twoRepos()} selected="/code/site-wt/fix-12" onSelect={() => {}} {...noAgents} />);
+  await worktreeRow("Terminal resize");
+  // New session is the only way to make a worktree from the sidebar.
+  expect(screen.queryByRole("button", { name: /New worktree/ })).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "New session" }));
+  expect(places()).toEqual(["Local checkout", "Terminal resize", "New worktree…"]);
+  // The local checkout runs on its current branch, and a worktree names its branch.
+  expect(within(screen.getByRole("menuitem", { name: "Local checkout" })).getByText("main")).toBeTruthy();
+  expect(within(screen.getByRole("menuitem", { name: "Terminal resize" })).getByText("fix-12-pty")).toBeTruthy();
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+  expect(screen.queryByRole("menu")).toBeNull();
 
   fireEvent.keyDown(document.body, { key: "n", metaKey: true });
-  expect(await screen.findByRole("dialog", { name: "New worktree" })).toBeTruthy();
-  expect(asked).toHaveBeenCalledTimes(2);
+  expect(places()).toEqual(["Local checkout", "Terminal resize", "New worktree…"]);
 });
 
-test("with no worktree selected, New worktree uses the first repo, and with no repo it is off", async () => {
+test("with nothing selected, New session uses the first project, and with no project it is off", async () => {
   const bridge = fakeBridge({ "/code/grove": groveRepo });
-  const asked = vi.spyOn(bridge, "suggestProfile");
   render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
-  expect(screen.getByRole("button", { name: "New worktree" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "New session" })).toHaveProperty("disabled", true);
+  fireEvent.keyDown(document.body, { key: "n", metaKey: true });
+  expect(screen.queryByRole("menu")).toBeNull();
 
   addRepo(bridge, "/code/grove");
   await worktreeRow("feat-35-tauri-sidebar");
-  fireEvent.click(screen.getByRole("button", { name: "New worktree" }));
+  fireEvent.click(screen.getByRole("button", { name: "New session" }));
 
-  await screen.findByRole("dialog", { name: "New worktree" });
-  expect(asked).toHaveBeenLastCalledWith("/code/grove");
+  expect(places()).toEqual(["Local checkout", "feat-35-tauri-sidebar", "spike", "New worktree…"]);
+});
+
+test("the picker works from the keyboard: Cmd-N focuses the first place, arrows move, Escape closes it", async () => {
+  const shown: string[] = [];
+  render(
+    <Sidebar
+      bridge={await twoRepos()}
+      selected={null}
+      onSelect={() => {}}
+      {...noAgents}
+      onShowSidebar={() => shown.push("shown")}
+    />,
+  );
+  await worktreeRow("Terminal resize");
+
+  fireEvent.keyDown(document.body, { key: "n", metaKey: true });
+  // A collapsed sidebar shows first, since a hidden picker takes no focus.
+  expect(shown).toEqual(["shown"]);
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Local checkout" }));
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "feat-35-tauri-sidebar" }));
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "New worktree…" }));
+
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "New session" }));
+});
+
+test("picking the local checkout or a worktree selects it and starts a session there", async () => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  await bridge.addRepo("/code/grove");
+  const selected: (string | null)[] = [];
+  const started: string[] = [];
+  render(
+    <Sidebar
+      bridge={bridge}
+      selected={null}
+      onSelect={(path) => selected.push(path)}
+      {...noAgents}
+      onNewSession={(path) => started.push(path)}
+    />,
+  );
+  await worktreeRow("feat-35-tauri-sidebar");
+
+  pickPlace("Local checkout");
+  pickPlace("feat-35-tauri-sidebar");
+
+  expect(selected).toEqual(["/code/grove", feature]);
+  expect(started).toEqual(["/code/grove", feature]);
+  expect(screen.queryByRole("menu")).toBeNull();
+});
+
+test("a place that already has a session is offered, and picking it starts another session there", async () => {
+  const { bridge } = await oneSession();
+  const started: string[] = [];
+  render(
+    <Sidebar
+      bridge={bridge}
+      selected={feature}
+      onSelect={() => {}}
+      {...noAgents}
+      onNewSession={(path) => started.push(path)}
+    />,
+  );
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+
+  pickPlace("feat-35-tauri-sidebar");
+
+  expect(started).toEqual([feature]);
+});
+
+test("a worktree whose setup script runs gets its session once the setup ends", async () => {
+  const repo = [
+    { path: "/code/grove", branch: "main", isMain: true },
+    { path: feature, branch: "feat-35-tauri-sidebar", isMain: false, setup: { state: "Running" as const } },
+  ];
+  const bridge = fakeBridge({ "/code/grove": repo });
+  await bridge.addRepo("/code/grove");
+  const now: string[] = [];
+  const afterSetup: string[] = [];
+  render(
+    <Sidebar
+      bridge={bridge}
+      selected={null}
+      onSelect={() => {}}
+      {...noAgents}
+      onNewSession={(path) => now.push(path)}
+      onStartAgentAfterSetup={(path) => afterSetup.push(path)}
+    />,
+  );
+  await worktreeRow("feat-35-tauri-sidebar");
+
+  pickPlace("feat-35-tauri-sidebar");
+
+  expect(now).toEqual([]);
+  expect(afterSetup).toEqual([feature]);
+});
+
+test("a project's + opens New session for that project, though a row of another project is selected", async () => {
+  const bridge = await twoRepos();
+  const selected: (string | null)[] = [];
+  const started: string[] = [];
+  render(
+    <Sidebar
+      bridge={bridge}
+      selected={feature}
+      onSelect={(path) => selected.push(path)}
+      {...noAgents}
+      onNewSession={(path) => started.push(path)}
+    />,
+  );
+  await worktreeRow("Terminal resize");
+  const plus = screen.getByRole("button", { name: "New session in site" });
+  expect(plus.title).toBe("New session in site");
+
+  fireEvent.click(plus);
+  expect(placesIn("New session in site")).toEqual(["Local checkout", "Terminal resize", "New worktree…"]);
+  fireEvent.click(screen.getByRole("menuitem", { name: "Terminal resize" }));
+
+  expect(selected).toEqual(["/code/site-wt/fix-12"]);
+  expect(started).toEqual(["/code/site-wt/fix-12"]);
+  // The main button still uses the selected worktree's project.
+  fireEvent.click(screen.getByRole("button", { name: "New session" }));
+  expect(places()).toEqual(["Local checkout", "feat-35-tauri-sidebar", "spike", "New worktree…"]);
+});
+
+test("a folded project's + opens New session for it, and Escape gives focus back to the +", async () => {
+  render(<Sidebar bridge={await twoRepos()} selected={null} onSelect={() => {}} {...noAgents} />);
+  await worktreeRow("Terminal resize");
+  fireEvent.click(folder("site"));
+  expect(screen.queryByRole("button", { name: "Terminal resize" })).toBeNull();
+  const plus = screen.getByRole("button", { name: "New session in site" });
+  // A button, so Tab reaches it and Enter or Space opens it.
+  expect(plus.tagName).toBe("BUTTON");
+  expect(plus.tabIndex).toBe(0);
+
+  plus.focus();
+  fireEvent.click(plus);
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Local checkout" }));
+  expect(placesIn("New session in site")).toEqual(["Local checkout", "Terminal resize", "New worktree…"]);
+
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(document.activeElement).toBe(plus);
+});
+
+test("a project's + shows on hover or focus, and stays while its picker is open", () => {
+  expect(sidebarStyles).toMatch(/\.repo-folder \.ui-menu \{\s*opacity: 0;/);
+  expect(sidebarStyles).toMatch(/\.repo-folder:hover \.ui-menu,\s*\.repo-folder \.ui-menu:focus-within \{\s*opacity: 1;/);
+});
+
+test("New worktree… opens the new worktree dialog for the project, which makes the worktree", async () => {
+  const bridge = await twoRepos();
+  const asked = vi.spyOn(bridge, "suggestProfile");
+  const selected: (string | null)[] = [];
+  render(
+    <Sidebar bridge={bridge} selected="/code/site-wt/fix-12" onSelect={(path) => selected.push(path)} {...noAgents} />,
+  );
+  await worktreeRow("Terminal resize");
+
+  pickPlace("New worktree…");
+  const dialog = await screen.findByRole("dialog", { name: "New worktree" });
+  expect(asked).toHaveBeenLastCalledWith("/code/site");
+  fireEvent.change(within(dialog).getByLabelText("Branch name"), { target: { value: "fix-13" } });
+  fireEvent.change(within(dialog).getByLabelText("Profile"), { target: { value: "none" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Create worktree" }));
+
+  expect(await worktreeRow("fix-13")).toBeTruthy();
+  expect(selected).toHaveLength(1);
+  expect(selected[0]).toMatch(/fix-13$/);
 });
 
 test("Needs you shows the attention queue's length, and clicking it jumps", async () => {
@@ -795,19 +984,6 @@ test("a repo folder cannot fold while Search has text, since Search keeps it ope
   expect(folder("grove").getAttribute("aria-expanded")).toBe("true");
   expect(rowNames()).toContain("feat-35-tauri-sidebar");
 });
-
-test("a repo folder's + opens the new worktree dialog for that repo", async () => {
-  const bridge = await twoRepos();
-  const asked = vi.spyOn(bridge, "suggestProfile");
-  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
-  await worktreeRow("Terminal resize");
-
-  fireEvent.click(screen.getByRole("button", { name: "New worktree in site" }));
-
-  await screen.findByRole("dialog", { name: "New worktree" });
-  expect(asked).toHaveBeenLastCalledWith("/code/site");
-});
-
 
 test("the menu keeps every action: Start Claude Code, Change base branch, Forget and Delete", async () => {
   const bridge = fakeBridge({ "/code/grove": groveRepo });

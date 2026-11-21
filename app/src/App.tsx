@@ -388,12 +388,13 @@ export function App({ bridge }: { bridge: Bridge }) {
 
   // The core puts the new session in agent panel `at` (a new one after the last when null), and
   // its panel is drawn before the start ends, so a second click starts nothing more. Without the
-  // workspace the panel could not be drawn, so none starts.
+  // workspace the panel could not be drawn, so none starts. `started` gets the session once it runs.
   async function startAgent(
     worktree: string,
     agent: Agent,
     at: (workspace: Workspace) => number | null,
     afterSetup = false,
+    started: (session: SessionId) => void = () => {},
   ) {
     try {
       await loadWorkspace(worktree);
@@ -407,7 +408,7 @@ export function App({ bridge }: { bridge: Bridge }) {
       "agent",
       worktree,
       () => startAgentInWorkspace(worktree, agent, at, spawn, { afterSetup }),
-      () => {},
+      started,
     );
   }
 
@@ -686,6 +687,11 @@ export function App({ bridge }: { bridge: Bridge }) {
               onStartAgent={(worktree) => startAgent(worktree, "Claude", firstEmptyPanel)}
               onStartAgentAfterSetup={(worktree) =>
                 startAgent(worktree, "Claude", firstEmptyPanel, true)
+              }
+              onNewSession={(worktree) =>
+                startAgent(worktree, "Claude", firstEmptyPanel, false, (session) =>
+                  focusSession({ session, worktree, agent: "Claude" }),
+                )
               }
               onFocusAgent={focusSession}
               onSessionResumed={(session) => setResumes((counts) => ({ ...counts, [session]: (counts[session] ?? 0) + 1 }))}
