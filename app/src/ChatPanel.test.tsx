@@ -1492,6 +1492,19 @@ test("Previous question goes back to an earlier answer, which can change before 
   expect(bridge.answered.map((a) => a.reply)).toEqual([{ type: "Answers", answers: [["jest"], ["unit"]] }]);
 });
 
+test("a request with no questions says so, and Continue answers it with none", async () => {
+  const bridge = await asked({ type: "QuestionAsked", request: "toolu_02", questions: [] });
+
+  const card = questionCard();
+  expect(within(card).getByText("Claude Code asked nothing. Continue to let it go on.")).toBeTruthy();
+  fireEvent.click(within(card).getByRole("button", { name: "Continue" }));
+  await settle();
+
+  expect(bridge.answered.map((a) => a.reply)).toEqual([{ type: "Answers", answers: [] }]);
+  expect(screen.queryByRole("group", { name: "Claude Code is asking" })).toBeNull();
+  expect(screen.getByText("Answered")).toBeTruthy();
+});
+
 test("a free-text answer sends the text in place of any option", async () => {
   const bridge = await asked({ type: "QuestionAsked", request: "toolu_02", questions: [runner] });
 

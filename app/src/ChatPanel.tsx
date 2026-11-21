@@ -1495,6 +1495,26 @@ function QuestionCard({
   const question = questions[at];
   const last = at === questions.length - 1;
 
+  function submit(answers: string[][]) {
+    setSending(true);
+    // The card goes when the core's `Answered` comes. A refused answer expires it.
+    onAnswer(request, { type: "Answers", answers }).catch(() => {});
+  }
+
+  // A request can come with no questions. Answering it with none lets the agent go on.
+  if (!question) {
+    return (
+      <div className="question-card" role="group" aria-label={`${agentName} is asking`}>
+        <p className="question-text">{agentName} asked nothing. Continue to let it go on.</p>
+        <div className="question-actions">
+          <Button variant="primary" size="sm" disabled={sending} onClick={() => submit([])}>
+            Continue
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   function pick(label: string) {
     const was = picked[at];
     const now = !question.multiSelect ? [label] : was.includes(label) ? was.filter((l) => l !== label) : [...was, label];
@@ -1514,9 +1534,7 @@ function QuestionCard({
           event.preventDefault();
           if (answers[at].length === 0 || sending) return;
           if (!last) return setAt(at + 1);
-          setSending(true);
-          // The card goes when the core's `Answered` comes. A refused answer expires it.
-          onAnswer(request, { type: "Answers", answers }).catch(() => {});
+          submit(answers);
         }}
       >
         <fieldset key={at} className="question" disabled={sending}>
@@ -1582,6 +1600,7 @@ function describeApproval(reply: Reply): string {
 /** The record of an answered question, such as "Answered: vitest". */
 function describeAnswers(item: QuestionItem, reply: Reply): string {
   if (reply.type !== "Answers") return "Declined the question";
+  if (reply.answers.length === 0) return "Answered";
   const headers = item.questions.length > 1 ? item.questions : null;
   const answers = reply.answers.map((a, i) => (headers ? `${headers[i].header}: ` : "") + a.join(", "));
   return `Answered: ${answers.join("; ")}`;
