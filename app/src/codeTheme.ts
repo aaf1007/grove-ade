@@ -79,6 +79,17 @@ const SYNTAX: [string, string][] = [
   ["string.invalid", "syn-invalid"],
 ];
 
+/** The syntax token that colors a Monaco token type such as `keyword.ts`, by the same rules as the theme. */
+export function syntaxTokenOf(type: string): string | undefined {
+  let match: [string, string] | undefined;
+  for (const rule of SYNTAX) {
+    const [token] = rule;
+    const covers = type === token || type.startsWith(`${token}.`);
+    if (covers && token.length > (match?.[0].length ?? -1)) match = rule;
+  }
+  return match?.[1];
+}
+
 /** The Monaco theme for the root's theme and palette, built from the tokens alone. */
 export function monacoTheme(): monaco.editor.IStandaloneThemeData {
   const fg = colorToken("fg");
