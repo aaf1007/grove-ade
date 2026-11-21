@@ -26,10 +26,12 @@ import type {
   Question,
   Reply,
   SessionId,
+  SlashCommand,
   Workspace,
 } from "./bridge";
 import { AgentMarkdown } from "./AgentMarkdown";
 import "./ChatPanel.css";
+import { takeCommands, useCommandMenu } from "./CommandMenu";
 import { AgentMark, type ModelChoice, Picker, useModelChoice } from "./Picker";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { TerminalPanel } from "./TerminalPanel";
@@ -584,6 +586,7 @@ function ChatView({
   onModelChoice?: (choice: ModelChoice | null) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [commands, setCommands] = useState<SlashCommand[]>([]);
   // Whether the history has come. Before it does, the panel cannot tell whether an approval waits.
   const [historyLoaded, setHistoryLoaded] = useState(false);
   // A switch ends this session once the new one starts, so nothing may be sent to it meanwhile.
@@ -635,15 +638,17 @@ function ChatView({
           return;
         }
         // However many frames come, the panel draws once per animation frame.
-        queued.push(...batch);
+        queued.push(...takeCommands(batch, setCommands));
         if (!frame) frame = requestAnimationFrame(draw);
       })
       .then(
         (history) => {
           if (!current) return;
-          // Every message sent before the subscribe is in the history.
-          if (resumed) resumedAt.current ??= history.length;
-          const all: ChatMessage[] = [...history, ...early!];
+          // Every message sent before the subscribe is in the history. A list in an early frame
+          // is newer than the one after the history.
+          const conversation = takeCommands(history, setCommands);
+          if (resumed) resumedAt.current ??= conversation.length;
+          const all: ChatMessage[] = [...conversation, ...takeCommands(early!, setCommands)];
           if (resumedAt.current !== null) all.splice(resumedAt.current, 0, RESUMED);
           setMessages(all);
           setHistoryLoaded(true);
@@ -769,7 +774,10 @@ function ChatView({
     setDraft((typed) => [...failed, typed].filter(Boolean).join("\n"));
   }
 
+  const commandMenu = useCommandMenu(commands, draft, setDraft);
+
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (commandMenu.onKeyDown(event)) return;
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
     send();
@@ -865,10 +873,12 @@ function ChatView({
           />
         )}
         {question && <QuestionCard key={question.request} item={question} agentName={name} onAnswer={answer} />}
-        <div className="composer">
+        <div className="composer composer-commands">
+          {commandMenu.menu}
           <textarea
             ref={composer}
             aria-label="Message"
+            {...commandMenu.composerProps}
             rows={1}
             placeholder={
               declining ? "Send a message to decline and redirect the agent" : `Ask ${name} anything. @ files, / commands`

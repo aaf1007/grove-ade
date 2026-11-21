@@ -11,11 +11,11 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{now_unix_ms, times, untimed};
+use common::{conversation_only, now_unix_ms, times, untimed};
 use grove_core::{
     AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, Core, CoreConfig, CoreEvent,
-    InputKind, Mode, ModelInfo, Question, QuestionOption, Reply, RequestId, SessionId, StateSource,
-    TurnOutcome,
+    InputKind, Mode, ModelInfo, Question, QuestionOption, Reply, RequestId, SessionId,
+    SlashCommand, StateSource, TurnOutcome,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -371,7 +371,7 @@ fn a_message_starts_a_turn_on_the_thread_its_deltas_arrive_in_order_and_the_turn
     s.state(session, AgentState::Working);
     assert_eq!(frames.until_turn_end(), TurnOutcome::Completed);
     assert_eq!(
-        untimed(frames.messages),
+        untimed(conversation_only(frames.messages)),
         [
             AgentMessage::User { text: "hi".into() },
             started(),
@@ -407,6 +407,7 @@ fn the_handshake_comes_first_and_a_first_prompt_waits_for_the_thread() {
             "account/read",
             "thread/start",
             "model/list",
+            "skills/list",
             "turn/start"
         ]
     );
@@ -672,7 +673,7 @@ fn not_delivered(text: &str) -> AgentMessage {
 }
 
 fn conversation(core: &Core, session: SessionId) -> Vec<AgentMessage> {
-    core.subscribe(session, unbounded_channel().0).unwrap()
+    conversation_only(core.subscribe(session, unbounded_channel().0).unwrap())
 }
 
 #[test]
@@ -1069,4 +1070,40 @@ fn a_tool_call_and_its_turn_from_the_app_server_carry_the_times_the_core_got_the
             "{time} is not in {before}..={after}"
         );
     }
+}
+
+#[test]
+fn codexs_enabled_skills_reach_the_panel_as_commands_and_a_skills_change_asks_for_them_again() {
+    let changed = json!({"send": {"method": "skills/changed", "params": {}}});
+    let mut steps = turn(&["ok"]);
+    steps.push(changed);
+    let s = setup(json!(steps));
+    let session = s.spawn(None);
+    let mut frames = Frames::subscribe(&s.core, session);
+
+    let listed = frames.until("the skills", |m| matches!(m, AgentMessage::Commands { .. }));
+    s.core.send_message(session, "go").unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while s
+        .sent()
+        .iter()
+        .filter(|m| m["method"] == "skills/list")
+        .count()
+        < 2
+    {
+        assert!(Instant::now() < deadline, "the core never asked again");
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(
+        listed,
+        AgentMessage::Commands {
+            commands: vec![SlashCommand {
+                name: "review".into(),
+                description: "Review the diff".into(),
+                argument_hint: String::new(),
+                invocation: "$review".into(),
+            }]
+        }
+    );
 }

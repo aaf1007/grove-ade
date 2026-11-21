@@ -512,6 +512,30 @@ enum Message {
     NotDelivered {
         text: String,
     },
+    Commands {
+        commands: Vec<SlashCommand>,
+    },
+}
+
+/// Mirrors `SlashCommand` in `app/src/bridge.ts`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SlashCommand {
+    name: String,
+    description: String,
+    argument_hint: String,
+    invocation: String,
+}
+
+impl From<grove_core::SlashCommand> for SlashCommand {
+    fn from(c: grove_core::SlashCommand) -> Self {
+        SlashCommand {
+            name: c.name,
+            description: c.description,
+            argument_hint: c.argument_hint,
+            invocation: c.invocation,
+        }
+    }
 }
 
 /// Mirrors `BatchComment` in `app/src/bridge.ts`.
@@ -653,6 +677,9 @@ impl From<AgentMessage> for Message {
                 comments: comments.into_iter().map(BatchComment::from).collect(),
             },
             AgentMessage::NotDelivered { text } => Message::NotDelivered { text },
+            AgentMessage::Commands { commands } => Message::Commands {
+                commands: commands.into_iter().map(SlashCommand::from).collect(),
+            },
         }
     }
 }
@@ -3065,6 +3092,17 @@ mod tests {
                 text: "add a test".into()
             }),
             r#"[{"type":"NotDelivered","text":"add a test"}]"#
+        );
+        assert_eq!(
+            message(AgentMessage::Commands {
+                commands: vec![grove_core::SlashCommand {
+                    name: "review".into(),
+                    description: "Review a pull request".into(),
+                    argument_hint: "<pr>".into(),
+                    invocation: "/review".into(),
+                }]
+            }),
+            r#"[{"type":"Commands","commands":[{"name":"review","description":"Review a pull request","argumentHint":"<pr>","invocation":"/review"}]}]"#
         );
     }
 

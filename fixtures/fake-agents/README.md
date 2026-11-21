@@ -157,6 +157,9 @@ reads:
 - `model/list` gets two models, `gpt-5.5` (the default, efforts `low`,
   `medium` and `high`, `medium` by default) and `gpt-5.5-mini` (efforts `low`
   and `medium`, `low` by default), and no next cursor.
+- `skills/list` gets one entry per path in `params.cwds`, or one for the
+  fake's folder when there is none. Each lists two skills: `review`, enabled,
+  and `off`, turned off.
 - `turn/start` on that thread, with `input` a list of text items that each
   have `text_elements`, gets a turn with a new UUID. One turn runs at a time:
   it ends when the scenario sends `turn/completed`. An optional `model` and

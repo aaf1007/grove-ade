@@ -36,6 +36,14 @@ MODELS = [
      "supportedReasoningEfforts": [{"reasoningEffort": e, "description": ""} for e in ("low", "medium")],
      "defaultReasoningEffort": "low", "isDefault": False},
 ]
+# What skills/list returns for each folder, cut down to the fields grove reads.
+SKILLS = [
+    {"name": "review", "description": "Reviews the working tree's diff against HEAD",
+     "interface": {"shortDescription": "Review the diff"}, "enabled": True,
+     "path": "/skills/review/SKILL.md", "scope": "user"},
+    {"name": "off", "description": "A skill the user turned off", "enabled": False,
+     "path": "/skills/off/SKILL.md", "scope": "user"},
+]
 ESCAPES = {"b": "\b", "t": "\t", "n": "\n", "f": "\f", "r": "\r", '"': '"', "\\": "\\"}
 BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 NUMBER = re.compile(r"[+-]?[0-9][0-9_]*(\.[0-9_]+)?([eE][+-]?[0-9_]+)?")
@@ -380,6 +388,10 @@ class AppServer:
                                                                "errors": []} for cwd in cwds]}})
         if method == "model/list":
             return self.send({"id": rid, "result": {"data": MODELS, "nextCursor": None}})
+        if method == "skills/list":
+            cwds = params.get("cwds") or [os.getcwd()]
+            return self.send({"id": rid, "result": {"data": [{"cwd": cwd, "skills": SKILLS, "errors": []}
+                                                              for cwd in cwds]}})
         if method == "account/read":
             account = json.loads(os.environ.get("FAKE_CODEX_ACCOUNT", "null"))
             return self.send({"id": rid, "result": {"account": account, "requiresOpenaiAuth": True}})

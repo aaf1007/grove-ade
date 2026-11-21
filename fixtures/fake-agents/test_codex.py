@@ -491,6 +491,18 @@ class FakeCodexTest(unittest.TestCase):
         self.assertEqual((completed["method"], completed["params"]["turn"]["status"]), ("turn/completed", "interrupted"))
         self.assertIn("result", after)
 
+    def test_app_server_lists_its_skills_for_each_folder_asked_or_its_own(self):
+        server = self.chat([])
+        server.handshake()
+
+        own = server.request("skills/list", {})["result"]["data"]
+        asked = server.request("skills/list", {"cwds": ["/a", "/b"]})["result"]["data"]
+
+        self.assertEqual([entry["cwd"] for entry in own], [os.path.realpath(self.cwd)])
+        self.assertEqual([entry["cwd"] for entry in asked], ["/a", "/b"])
+        self.assertEqual([(s["name"], s["enabled"]) for s in asked[0]["skills"]],
+                         [("review", True), ("off", False)])
+
     def test_app_server_lists_its_models_and_runs_each_turn_with_the_model_and_effort_it_was_given(self):
         says = {"send": {"method": "item/agentMessage/delta",
                          "params": {"threadId": "{{thread_id}}", "turnId": "{{turn_id}}", "itemId": "m1",

@@ -280,7 +280,22 @@ export type AgentMessage =
   | ({ type: "TurnEnded"; timeUnixMs: number | null } & TurnOutcome)
   | { type: "ReviewBatch"; comments: BatchComment[] }
   /** A message the user sent never reached the agent: its process ended first. `text` is what the agent would have got. */
-  | { type: "NotDelivered"; text: string };
+  | { type: "NotDelivered"; text: string }
+  /**
+   * The commands and skills the agent offers now, in place of any list before. Never part of the
+   * conversation: a subscribe gets the latest list after the history, and frames bring changes.
+   */
+  | { type: "Commands"; commands: SlashCommand[] };
+
+/** A slash command or skill the agent offers, as `SlashCommand` in `app/src-tauri/src/main.rs` sends it. */
+export interface SlashCommand {
+  name: string;
+  description: string;
+  /** What it takes, such as `<pr>`. Empty when it takes nothing or the agent does not say. */
+  argumentHint: string;
+  /** What the user types to run it: `/review` for Claude, `$review` for a Codex skill. */
+  invocation: string;
+}
 
 /** One review comment of a review batch, as sent, with control characters but newline and tab stripped. */
 export interface BatchComment {

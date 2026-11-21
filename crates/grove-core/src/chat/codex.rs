@@ -7,7 +7,9 @@ use std::collections::{HashMap, VecDeque};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::{FromAgent, ModelInfo, Question, QuestionOption, Reply, RequestId, TurnError};
+use super::{
+    FromAgent, ModelInfo, Question, QuestionOption, Reply, RequestId, SlashCommand, TurnError,
+};
 use crate::AccountInfo;
 
 /// What the core knows of its connection to one app server. The chat's lock guards it.
@@ -223,8 +225,12 @@ impl AppServer {
                 writes.push(self.start_thread());
                 // One page holds them all: the picker's list is short.
                 writes.push(self.request("model/list", json!({})));
+                writes.push(self.request("skills/list", json!({})));
                 Vec::new()
             }
+            "skills/list" => vec![FromAgent::Skills {
+                commands: skills(&result["data"]),
+            }],
             "model/list" => vec![FromAgent::Models {
                 models: models(&result["data"]),
             }],
@@ -263,8 +269,9 @@ impl AppServer {
     /// A request of the core's that failed. A turn that never started ends failed.
     fn failed(&mut self, method: &'static str, message: String) -> Vec<FromAgent> {
         match method {
-            // The account stays unknown, and an interrupt that came too late changes nothing.
-            "account/read" | "turn/interrupt" => return Vec::new(),
+            // The account stays unknown, the commands stay as they were, and an interrupt that
+            // came too late changes nothing.
+            "account/read" | "skills/list" | "turn/interrupt" => return Vec::new(),
             // The picker offers no models, and Codex uses its own.
             "model/list" => return vec![FromAgent::Models { models: Vec::new() }],
             "initialize" | "thread/start" | "thread/resume" => {
@@ -311,6 +318,11 @@ impl AppServer {
                 .into_iter()
                 .collect(),
             "item/started" => tool_call(&params["item"]).into_iter().collect(),
+            // Only says the list changed, so the core asks for it again.
+            "skills/changed" => {
+                writes.push(self.request("skills/list", json!({})));
+                Vec::new()
+            }
             "item/completed" => tool_result(&params["item"]).into_iter().collect(),
             "turn/completed" => {
                 self.turn = None;
@@ -645,6 +657,34 @@ fn models(data: &Value) -> Vec<ModelInfo> {
         .collect()
 }
 
+/// The enabled skills of a `skills/list` reply's data, as commands. Codex runs a skill by
+/// `$name` in a message.
+fn skills(data: &Value) -> Vec<SlashCommand> {
+    let entries = data.as_array().map(Vec::as_slice).unwrap_or_default();
+    entries
+        .iter()
+        .flat_map(|entry| entry["skills"].as_array().into_iter().flatten())
+        .filter(|skill| skill["enabled"].as_bool().unwrap_or(false))
+        .filter_map(|skill| {
+            let name = skill["name"].as_str()?;
+            let description = [
+                &skill["interface"]["shortDescription"],
+                &skill["shortDescription"],
+                &skill["description"],
+            ]
+            .into_iter()
+            .find_map(Value::as_str)
+            .unwrap_or_default();
+            Some(SlashCommand {
+                name: name.to_owned(),
+                description: description.to_owned(),
+                argument_hint: String::new(),
+                invocation: format!("${name}"),
+            })
+        })
+        .collect()
+}
+
 /// The permissions a grant gives: those asked for, leaving out the kinds not asked for.
 fn granted(asked: &Value, scope: &str) -> Value {
     let permissions: Map<String, Value> = asked
@@ -831,5 +871,87 @@ mod tests {
 
         assert_eq!(before_reply, None);
         assert_eq!(interrupt["params"]["turnId"], "t2");
+    }
+
+    /// The `skills/list` request among `writes`.
+    fn skills_request(writes: &[Vec<u8>]) -> Value {
+        writes
+            .iter()
+            .map(|line| sent(line))
+            .find(|line| line["method"] == "skills/list")
+            .expect("no skills/list request")
+    }
+
+    fn skills_after_handshake(server: &mut AppServer) -> Value {
+        let init = sent(&server.opening());
+        let reply = json!({"id": init["id"], "result": {}}).to_string();
+        skills_request(&server.read(reply.as_bytes()).1)
+    }
+
+    #[test]
+    fn the_enabled_skills_codex_lists_become_commands_run_by_dollar_name() {
+        let mut server = AppServer::new(None);
+        let list = skills_after_handshake(&mut server);
+        let skill = |name: &str, enabled: bool, extra: Value| {
+            let mut skill = json!({"name": name, "description": format!("{name} in full"),
+                "enabled": enabled, "path": format!("/s/{name}/SKILL.md"), "scope": "user"});
+            skill
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            skill
+        };
+        let reply = json!({"id": list["id"], "result": {"data": [{"cwd": "/w", "errors": [], "skills": [
+            skill("review", true, json!({"interface": {"shortDescription": "Review a diff"}})),
+            skill("off", false, json!({})),
+            skill("plan", true, json!({"shortDescription": "Plan it"})),
+            skill("tidy", true, json!({})),
+        ]}]}});
+
+        let (incoming, _) = server.read(reply.to_string().as_bytes());
+
+        let [FromAgent::Skills { commands }] = &incoming[..] else {
+            panic!("no skills");
+        };
+        let shown: Vec<(&str, &str, &str, &str)> = commands
+            .iter()
+            .map(|c| {
+                let SlashCommand {
+                    name,
+                    description,
+                    argument_hint,
+                    invocation,
+                } = c;
+                (
+                    name.as_str(),
+                    description.as_str(),
+                    argument_hint.as_str(),
+                    invocation.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("review", "Review a diff", "", "$review"),
+                ("plan", "Plan it", "", "$plan"),
+                ("tidy", "tidy in full", "", "$tidy"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_skills_change_asks_for_the_list_again_and_a_failed_list_ends_no_turn() {
+        let mut server = AppServer::new(None);
+        skills_after_handshake(&mut server);
+
+        let changed = json!({"method": "skills/changed", "params": {}});
+        let (incoming, writes) = server.read(changed.to_string().as_bytes());
+        let again = skills_request(&writes);
+        let error = json!({"id": again["id"], "error": {"code": -32600, "message": "unknown"}});
+        let (failed, _) = server.read(error.to_string().as_bytes());
+
+        assert!(incoming.is_empty());
+        assert!(failed.is_empty());
     }
 }
