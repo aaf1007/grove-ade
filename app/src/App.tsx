@@ -16,7 +16,8 @@ import type {
   Worktree,
 } from "./bridge";
 import { ChatPanel } from "./ChatPanel";
-import { DetailsCard, type FocusedSession, type RunTab } from "./DetailsCard";
+import { useSetting } from "./settings";
+import { DetailsCard, type FocusedSession, type RunTab, useDetailsRoom } from "./DetailsCard";
 import { type DiffOpened, DiffView } from "./DiffView";
 import { FilesPanel } from "./FilesPanel";
 import { useLayout } from "./layout";
@@ -156,11 +157,8 @@ export function App({ bridge }: { bridge: Bridge }) {
   const [sessionDetails, setSessionDetails] = useState<
     Record<SessionId, { mode?: Mode; model?: ModelChoice | null }>
   >({});
-  // Whether Details is on. The card shows while it has room beside the chat's text column, or
-  // over the text once the user asked for it while there was no room.
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const [detailsFits, setDetailsFits] = useState(true);
-  const [detailsOverText, setDetailsOverText] = useState(false);
+  // Whether the user opened Details. It shows while the chat area has room for it.
+  const [detailsOpen, setDetailsOpen] = useSetting("grove.detailsOpen", false, (open) => typeof open === "boolean");
   const [chatLane, setChatLane] = useState<HTMLElement | null>(null);
   // The base the Details card last asked each worktree's Diff to open on.
   const [diffOpened, setDiffOpened] = useState<Record<string, DiffOpened>>({});
@@ -521,19 +519,6 @@ export function App({ bridge }: { bridge: Bridge }) {
     if (!layout.panelsOpen) togglePanels();
   }
 
-  // A click on Details always shows the card: over the text if it has no room beside it. A click on
-  // a card that shows turns Details off.
-  function toggleDetails() {
-    if (detailsOpen && (detailsFits || detailsOverText)) return closeDetails();
-    setDetailsOpen(true);
-    setDetailsOverText(true);
-  }
-
-  function closeDetails() {
-    setDetailsOpen(false);
-    setDetailsOverText(false);
-  }
-
   function toggleTerminal(worktree: string) {
     if (workspaces[worktree]?.terminal) {
       void changeWorkspace(worktree, (workspace) => ({ ...workspace, terminal: false }));
@@ -595,10 +580,11 @@ export function App({ bridge }: { bridge: Bridge }) {
     if (!found) return null;
     const { mode, model } = sessionDetails[found.session] ?? {};
     return {
+      session: found.session,
       agent: found.agent,
       model: mode === "Chat" ? model : undefined,
       mode,
-      source: agentStates[found.session]?.source,
+      state: agentStates[found.session],
     };
   }
 
@@ -611,6 +597,7 @@ export function App({ bridge }: { bridge: Bridge }) {
     });
   }
   const shownCount = workspace?.chat.filter((panel) => panel.shown).length ?? 0;
+  const detailsRoom = useDetailsRoom(chatLane, shownCount);
   const shownAgents = agents.filter((a) => places[a.session]?.shown).map((a) => a.session);
   const names = sessionNames(agents);
   // The one agent panel shown, and its session once started. It draws no header: the title bar
@@ -667,8 +654,8 @@ export function App({ bridge }: { bridge: Bridge }) {
               sidebarSwitch={titleBarSidebarSwitch}
               onTogglePanels={togglePanels}
               onToggleTerminal={() => selected && toggleTerminal(selected)}
-              detailsOpen={selected ? detailsOpen : null}
-              onToggleDetails={toggleDetails}
+              detailsOpen={selected && detailsRoom ? detailsOpen : null}
+              onToggleDetails={() => setDetailsOpen((open) => !open)}
               soleAgent={soleAgent ?? null}
               onSplit={soleShownAgent && (() => split(soleShownAgent))}
             />
@@ -679,11 +666,7 @@ export function App({ bridge }: { bridge: Bridge }) {
             <Sidebar
               bridge={bridge}
               selected={selected}
-              onSelect={(worktree) => {
-                // The selected worktree went away, and the Details card with it.
-                if (worktree === null) closeDetails();
-                setSelected(worktree);
-              }}
+              onSelect={setSelected}
               onDeleting={(worktree, running) =>
                 setDeleting((all) =>
                   running ? [...all, worktree] : all.filter((other) => other.path !== worktree.path),
@@ -720,20 +703,13 @@ export function App({ bridge }: { bridge: Bridge }) {
             />
           )}
           <main className="chat-area" ref={setChatLane}>
-            {selected && detailsOpen && (
+            {selected && detailsOpen && detailsRoom && (
               <DetailsCard
                 key={selected}
                 bridge={bridge}
                 worktree={selected}
                 runs={runs[selected] ?? []}
                 session={detailsSession}
-                lane={chatLane}
-                hidden={!detailsFits && !detailsOverText}
-                onRoom={(fits) => {
-                  setDetailsFits(fits);
-                  // With room, it is an ordinary card again, which hides when the room goes.
-                  if (fits) setDetailsOverText(false);
-                }}
                 onStartRun={(name) => void startRun(selected, name)}
                 onOpenDiff={(base) => {
                   setDiffOpened((asks) => ({
@@ -743,7 +719,6 @@ export function App({ bridge }: { bridge: Bridge }) {
                   open(selected, "Diff");
                 }}
                 onOpenProfile={() => open(selected, "Profile")}
-                onClose={closeDetails}
               />
             )}
             {(agentError || workspaceError) && (
