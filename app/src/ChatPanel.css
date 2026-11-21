@@ -146,50 +146,9 @@ button.tool:hover {
   color: var(--fg);
 }
 
-/* An approval: its call's row, then a line under the label with what the user can do. */
+/* An approval's record, under its call's label. */
 .approval-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-8);
   margin-left: calc(var(--icon) + var(--space-10));
-  color: var(--muted);
-  font: var(--text-body);
-}
-
-.approval-waiting {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-6);
-  color: var(--needs);
-}
-
-.approval-waiting svg {
-  width: var(--space-16);
-  height: var(--space-16);
-  stroke-width: 1.75;
-}
-
-.approval-action {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--muted);
-  font: var(--text-control);
-  cursor: pointer;
-}
-
-.approval-action.approve {
-  color: var(--fg);
-}
-
-.approval-action:hover:not(:disabled) {
-  text-decoration: underline;
-}
-
-.approval-action:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 /* What became of a request: answered, or expired with its turn. */
@@ -202,7 +161,8 @@ button.tool:hover {
   color: var(--faint);
 }
 
-/* A pending question, attached above the composer in its lane. */
+/* A pending approval or question, attached above the composer in its lane. */
+.approval-card,
 .question-card {
   max-width: var(--chat-lane);
   margin: 0 auto var(--space-8);
@@ -264,6 +224,63 @@ button.tool:hover {
 
 .question-card .question-submit {
   border-radius: var(--radius-full);
+}
+
+/* Focus lands here on a jump to the session, and Y or N answers. */
+.approval-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.approval-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  font-weight: 500;
+}
+
+.approval-head svg {
+  width: var(--space-16);
+  height: var(--space-16);
+  flex: none;
+  color: var(--needs);
+  stroke-width: 1.75;
+}
+
+.approval-target {
+  max-height: calc(var(--space-32) * 4);
+  margin: var(--space-8) 0 0;
+  padding: var(--space-8) var(--space-10);
+  overflow: auto;
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  font: var(--text-code-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.approval-why {
+  margin: var(--space-8) 0 0;
+  color: var(--muted);
+  font-size: var(--text-meta-size);
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-8);
+  margin-top: var(--space-12);
+}
+
+.approval-actions .ui-button {
+  border-radius: var(--radius-full);
+}
+
+.approval-actions kbd {
+  margin-left: var(--space-6);
+  opacity: 0.6;
+  font: var(--text-code-meta);
 }
 
 /* What the panel's agent session changed in the workspace or a profile, above the composer. */
