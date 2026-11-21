@@ -260,6 +260,7 @@ pub(crate) struct Agents {
     last_focused: Mutex<HashMap<PathBuf, SessionId>>,
     // Each change to what a restart brings back asks for a save.
     saves: SaveRequests,
+    max_live_subagents_per_parent: usize,
 }
 
 struct Tracked {
@@ -451,6 +452,7 @@ impl Agents {
             live: Mutex::default(),
             last_focused: Mutex::default(),
             saves,
+            max_live_subagents_per_parent: cfg.max_live_subagents_per_parent,
         }
     }
 
@@ -747,6 +749,10 @@ impl Core {
                 parent,
                 limit: MAX_SUBAGENT_DEPTH,
             });
+        }
+        let limit = self.agents.max_live_subagents_per_parent;
+        if live_subagents(&live, parent) >= limit {
+            return Err(CoreError::TooManyLiveSubagents { parent, limit });
         }
         drop(live);
         let worktree = worktree.unwrap_or_else(|| parent_worktree.clone());
@@ -1168,6 +1174,13 @@ fn subagent_depth(live: &HashMap<SessionId, Tracked>, session: SessionId) -> usi
         above = live.get(&parent).and_then(|tracked| tracked.parent);
     }
     depth
+}
+
+// How many subagents `parent` started itself that have not ended.
+fn live_subagents(live: &HashMap<SessionId, Tracked>, parent: SessionId) -> usize {
+    live.values()
+        .filter(|tracked| tracked.parent == Some(parent) && !tracked.ended)
+        .count()
 }
 
 impl Agents {
@@ -1595,7 +1608,7 @@ mod tests {
         assert_eq!(lock(&core.agents.live).len(), 1);
     }
 
-    // Tracks `chain` as agent sessions, each the subagent of the one before it.
+    // Tracks each of `chain` as an agent session, with the parent it names.
     fn track_chain(core: &Core, home: &Path, chain: &[(u64, Option<u64>)]) {
         for &(id, parent) in chain {
             let mut tracked = Tracked::new(Agent::Claude, home, Mode::Chat, (80, 24), None);
@@ -1628,6 +1641,30 @@ mod tests {
         );
         assert!(events.try_recv().is_err());
         assert_eq!(lock(&core.agents.live).len(), 4);
+    }
+
+    #[test]
+    fn a_parent_with_eight_live_subagents_spawns_no_ninth() {
+        let home = tempfile::tempdir().unwrap();
+        let (core, mut events) = Core::start(CoreConfig::new(home.path().to_path_buf())).unwrap();
+        let mut sessions = vec![(0, None)];
+        sessions.extend((1..=8).map(|subagent| (subagent, Some(0))));
+        track_chain(&core, home.path(), &sessions);
+
+        let spawned = core.spawn_subagent(SessionId(0), Agent::Codex, "hi".into(), None);
+
+        assert!(
+            matches!(
+                spawned,
+                Err(CoreError::TooManyLiveSubagents {
+                    parent: SessionId(0),
+                    limit: 8
+                })
+            ),
+            "{spawned:?}"
+        );
+        assert!(events.try_recv().is_err());
+        assert_eq!(lock(&core.agents.live).len(), 9);
     }
 
     #[test]
