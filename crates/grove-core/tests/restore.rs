@@ -1751,6 +1751,54 @@ fn a_session_that_cannot_relaunch_is_left_out_with_a_warning() {
     assert!(s.core().resume_id(claude).is_none());
 }
 
+// Issue #15. A session that is left out is not saved again, so a later run can hand its id to a
+// new session. Its panel goes with it, so the new session never shows in the place it had.
+#[test]
+fn a_subagent_that_cannot_relaunch_loses_its_panel_and_no_new_session_shows_in_it() {
+    let _serial = serial();
+    let mut s = setup(Scenarios {
+        claude_chat: one_recorded_turn(),
+        ..Scenarios::default()
+    });
+    let parent = s.spawn(Agent::Claude, Mode::Chat);
+    let child = s.spawn_subagent(parent);
+    // Its prompt's turn ends first: a mode switch is refused during one.
+    s.wait_state(child, AgentState::Done);
+    block_on(s.core().set_mode(child, Mode::Terminal)).unwrap();
+    wait_launches(&s.claude_tui, 1);
+    let chat_of = |s: &Setup| s.core().workspace(parent).unwrap().chat;
+    // Hidden and first: a place no new panel gets.
+    let mut workspace = s.core().workspace(parent).unwrap();
+    workspace.chat = vec![
+        panel(Agent::Claude, child, false),
+        panel(Agent::Claude, parent, true),
+    ];
+    block_on(s.core().set_workspace(parent, workspace, None)).unwrap();
+
+    // Only the subagent, in terminal mode, runs this command.
+    s.cfg.claude_command = s.dir.path().join("no-such-claude");
+    s.restart();
+    // The parent is back, with the token a subagent request needs.
+    wait_launches(&s.claude_chat, 3);
+
+    let only_parent = [panel(Agent::Claude, parent, true)];
+    assert_eq!(chat_of(&s), only_parent);
+    let same_run = s.spawn_subagent(parent);
+    assert!(same_run > child, "{same_run} after {child}");
+    let after_parent = |new| [only_parent[0].clone(), panel(Agent::Claude, new, true)];
+    assert_eq!(chat_of(&s), after_parent(same_run));
+
+    // With that session gone too, nothing saved holds the left out subagent's id any more.
+    wait_launches(&s.claude_chat, 4);
+    block_on(s.core().delete_agent_session(same_run)).unwrap();
+    s.restart();
+    wait_launches(&s.claude_chat, 5);
+    let later = s.spawn_subagent(parent);
+
+    assert_eq!(later, child, "the id is handed out again");
+    assert_eq!(chat_of(&s), after_parent(later));
+}
+
 // Version 4 saved workspaces with no sessions in their panels, and no sessions or comments. A
 // workspace with no session has no session to go to, so it is dropped.
 #[test]
