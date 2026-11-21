@@ -531,6 +531,9 @@ function switchBlocked(
   return null;
 }
 
+/** Whether a decline carries the user's message to the agent. Codex's app-server takes none. */
+const DECLINE_TAKES_MESSAGE: Record<Agent, boolean> = { Claude: true, Codex: false };
+
 /** Where the panel came back to chat mode from terminal mode. Only the panel adds it. */
 const RESUMED = { type: "Resumed" } as const;
 
@@ -797,15 +800,20 @@ function ChatView({
     return answer(request, reply);
   }
 
-  // The message comes back to the composer if the core refuses it.
+  // The message comes back to the composer if the core refuses it. An agent that takes no message
+  // with a decline gets the decline alone, and the message stays in the composer.
   function decline(request: string, text: string) {
-    setDraft("");
+    const withMessage = DECLINE_TAKES_MESSAGE[agent];
+    if (withMessage) setDraft("");
     following.current = true;
-    answer(request, { type: "Deny", message: text }).then(
-      () => setError(null),
+    answer(request, { type: "Deny", message: withMessage ? text : null }).then(
+      () =>
+        setError(
+          withMessage ? null : `Declined. ${name} takes no message with a decline, so yours was not sent. It is still here.`,
+        ),
       (e: unknown) => {
         setError(String(e));
-        setDraft((typed) => [text, typed].filter(Boolean).join("\n"));
+        if (withMessage) setDraft((typed) => [text, typed].filter(Boolean).join("\n"));
       },
     );
   }
@@ -874,9 +882,7 @@ function ChatView({
             ref={composer}
             aria-label="Message"
             rows={1}
-            placeholder={
-              declining ? "Send a message to decline and redirect the agent" : `Ask ${name} anything. @ files, / commands`
-            }
+            placeholder={placeholder(name, agent, declining !== undefined)}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
@@ -906,6 +912,13 @@ function ChatView({
       </div>
     </>
   );
+}
+
+/** What the empty composer says: while an approval waits, a message declines it. */
+function placeholder(name: string, agent: Agent, declining: boolean): string {
+  if (!declining) return `Ask ${name} anything. @ files, / commands`;
+  if (DECLINE_TAKES_MESSAGE[agent]) return "Send a message to decline and redirect the agent";
+  return `Send to decline. ${name} takes no message with a decline`;
 }
 
 function fitComposer(el: HTMLTextAreaElement) {

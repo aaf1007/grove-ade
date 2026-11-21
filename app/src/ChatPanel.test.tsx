@@ -1380,6 +1380,34 @@ test("while an approval waits, a message from the composer declines it with that
   expect(composer().getAttribute("placeholder")).toBe("Ask Claude Code anything. @ files, / commands");
 });
 
+test("while a Codex approval waits, a message declines it without the message, which stays in the composer", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, {
+    agent: "Codex",
+    state: { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" },
+  });
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted" },
+      { type: "ApprovalRequested", request: "item_1", tool: "commandExecution", input: { command: "npm test" } },
+    ),
+  );
+  nextFrame();
+
+  expect(composer().getAttribute("placeholder")).toBe("Send to decline. Codex takes no message with a decline");
+  fireEvent.change(composer(), { target: { value: "use vitest instead" } });
+  fireEvent.keyDown(composer(), { key: "Enter" });
+  await settle();
+
+  expect(bridge.answered).toEqual([{ session: "0", request: "item_1", reply: { type: "Deny", message: null } }]);
+  expect(screen.getByText("Declined")).toBeTruthy();
+  expect((composer() as HTMLTextAreaElement).value).toBe("use vitest instead");
+  expect(screen.getByRole("alert").textContent).toBe(
+    "Declined. Codex takes no message with a decline, so yours was not sent. It is still here.",
+  );
+});
+
 test("a decline the core refuses puts the message back in the composer with its error", async () => {
   const bridge = await asked(bashCall, approval);
   vi.spyOn(bridge, "answer").mockRejectedValue("agent session 0 has no pending request toolu_01");
