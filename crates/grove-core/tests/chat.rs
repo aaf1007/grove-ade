@@ -233,12 +233,11 @@ impl Setup {
 
 fn chat_spec(agent: Agent, prompt: Option<&str>) -> AgentSpec {
     AgentSpec {
-        agent,
+        agent: Some(agent),
         mode: Mode::Chat,
         prompt: prompt.map(str::to_owned),
         cols: 120,
         rows: 40,
-        panel: None,
     }
 }
 

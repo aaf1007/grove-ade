@@ -156,12 +156,11 @@ fn setup(steps: Value) -> Setup {
 impl Setup {
     fn spawn(&self) -> SessionId {
         let spec = AgentSpec {
-            agent: Agent::Claude,
+            agent: Some(Agent::Claude),
             mode: Mode::Terminal,
             prompt: None,
             cols: 120,
             rows: 40,
-            panel: None,
         };
         self.core.spawn_agent(&self.worktree, spec).unwrap()
     }
@@ -169,12 +168,11 @@ impl Setup {
     /// Starts an agent session in chat mode, with "hi" as its first message.
     fn spawn_chat(&self, agent: Agent) -> SessionId {
         let spec = AgentSpec {
-            agent,
+            agent: Some(agent),
             mode: Mode::Chat,
             prompt: Some("hi".into()),
             cols: 120,
             rows: 40,
-            panel: None,
         };
         self.core.spawn_agent(&self.worktree, spec).unwrap()
     }

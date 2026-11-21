@@ -97,8 +97,8 @@ impl Agents {
         Ok(dropped)
     }
 
-    /// Drops the records of the agent sessions in `worktrees`, which are being removed, and
-    /// returns them. The removal saves the state.
+    /// Drops the records of the agent sessions in `worktrees`, which are being removed, with
+    /// their workspaces, and returns them. The removal saves the state.
     pub(crate) fn drop_records_in(&self, worktrees: &[PathBuf]) -> Vec<SessionId> {
         let mut live = lock(&self.live);
         let dropped: Vec<SessionId> = live
@@ -134,8 +134,8 @@ impl Agents {
     }
 }
 
-// `session`, then every session below it, each once, so a chain of parents that loops still
-// ends. With them, the worktree of `session`.
+// `session` and every subagent session below it, with the worktree of `session`. Refused while
+// one of them switches mode or resumes.
 fn with_subagents(
     live: &HashMap<SessionId, Tracked>,
     session: SessionId,
@@ -144,6 +144,20 @@ fn with_subagents(
         .get(&session)
         .map(|tracked| tracked.worktree.clone())
         .ok_or(CoreError::NotAnAgentSession(session))?;
+    let found = with_those_below(live, session);
+    let switching = |id: &&SessionId| live.get(*id).is_some_and(|tracked| tracked.switching);
+    match found.iter().find(switching) {
+        Some(&switching) => Err(CoreError::SwitchingMode(switching)),
+        None => Ok((found, worktree)),
+    }
+}
+
+// `session`, then every session below it, each once, so a chain of parents that loops still
+// ends.
+pub(super) fn with_those_below(
+    live: &HashMap<SessionId, Tracked>,
+    session: SessionId,
+) -> Vec<SessionId> {
     let mut found = vec![session];
     let mut at = 0;
     while let Some(&parent) = found.get(at) {
@@ -154,11 +168,7 @@ fn with_subagents(
         }
         at += 1;
     }
-    let switching = |id: &&SessionId| live.get(*id).is_some_and(|tracked| tracked.switching);
-    match found.iter().find(switching) {
-        Some(&switching) => Err(CoreError::SwitchingMode(switching)),
-        None => Ok((found, worktree)),
-    }
+    found
 }
 
 impl Core {
@@ -191,9 +201,9 @@ impl Core {
     }
 
     /// Deletes agent session `session` and every subagent session below it: ends their
-    /// processes, then drops their records, their agent panels and their folders under the
-    /// home folder. Sends `AgentSessionsChanged`, and `WorkspaceChanged` with no `by` for each
-    /// worktree that lost a panel. When a process does not exit in time it fails with
+    /// processes, then drops their records, with their workspaces, their agent panels and
+    /// their folders under the home folder. Sends `AgentSessionsChanged`, and `WorkspaceChanged`
+    /// with no `by` for each workspace that lost a panel. When a process does not exit in time it fails with
     /// `SessionsStillRunning` and drops nothing, so the call can be made again. When the state
     /// cannot be saved it fails after it dropped them all, as removing a worktree does, and
     /// the next save writes the state without them.
@@ -220,14 +230,12 @@ impl Core {
         for &session in &deleted {
             let _ = self.kill(session);
         }
-        let lost_a_panel = self.drop_agent_panels(&deleted);
+        let lost_a_panel = self.agents.drop_panels_of(&deleted);
         let saved = self.save_state().await;
         // The records are gone whether the save worked or not. Having no receivers is fine.
         let _ = self.events.send(CoreEvent::AgentSessionsChanged);
-        for worktree in lost_a_panel {
-            let _ = self
-                .events
-                .send(CoreEvent::WorkspaceChanged { worktree, by: None });
+        for owner in lost_a_panel {
+            self.workspace_changed(owner);
         }
         // The records are gone, so nothing else would remove their folders later.
         let agents = self.agents.clone();
@@ -244,11 +252,12 @@ impl Core {
 
     /// Starts ended agent session `session` again: a new process under the same session id,
     /// in the mode it had, that resumes its conversation as a restart does. It becomes `Idle`
-    /// and shows in the agent panel it had, or in a new one after the last when the workspace
-    /// no longer has that panel. Sends `AgentSessionsChanged` and `WorkspaceChanged` with no
-    /// `by`. A session that still runs stays as it is.
+    /// and shows in the agent panel it had, in its own workspace or its top parent's, or in a
+    /// new one after the last when that workspace no longer has the panel. Sends
+    /// `AgentSessionsChanged` and `WorkspaceChanged` with no `by`. A session that still runs
+    /// stays as it is.
     pub fn resume_agent_session(&self, session: SessionId) -> Result<()> {
-        let (agent, mode, worktree) = {
+        let (agent, mode) = {
             let mut live = lock(&self.agents.live);
             let tracked = live
                 .get_mut(&session)
@@ -264,7 +273,7 @@ impl Core {
             // It was `Exited` or `Failed`. Set before its new process starts, so this never
             // replaces a state that process reports, or the state of its exit.
             tracked.set(session, AgentState::Idle, tracked.source(), &self.events);
-            (tracked.agent, tracked.mode, tracked.worktree.clone())
+            (tracked.agent, tracked.mode)
         };
         // Leaves the session ended and `Exited` however this fails.
         let mut resume = Switch {
@@ -276,7 +285,7 @@ impl Core {
         self.resume_in(session, mode)?;
         resume.started = true;
         drop(resume);
-        self.show_agent_panel(&worktree, session, agent);
+        self.show_agent_panel(session, agent);
         Ok(())
     }
 }

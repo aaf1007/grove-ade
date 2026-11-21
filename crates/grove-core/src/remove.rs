@@ -123,10 +123,9 @@ impl Core {
         self.end_sessions(vec![path.clone()]).await?;
         // The task owns the rest and the mark, so dropping this future cannot leave the worktree
         // removed from disk but still tracked and unmarked.
-        let (tracked, settings, workspaces, watches, comments, agents, events, state_file) = (
+        let (tracked, settings, watches, comments, agents, events, state_file) = (
             self.worktrees.clone(),
             self.repo_settings.clone(),
-            self.workspaces.clone(),
             self.watches.clone(),
             self.comments.clone(),
             self.agents.clone(),
@@ -177,8 +176,11 @@ impl Core {
             if !sessions.is_empty() {
                 let _ = events.send(CoreEvent::AgentSessionsChanged);
             }
+            // A subagent that ran here leaves the workspace of its top parent elsewhere.
+            for session in agents.drop_panels_of(&sessions) {
+                let _ = events.send(CoreEvent::WorkspaceChanged { session, by: None });
+            }
             untrack(&mut lock(&tracked), |path| path == folder);
-            lock(&workspaces).remove(&folder);
             let outcome = match branch {
                 None => BranchOutcome::Untouched,
                 Some((name, merged)) if !delete_branch => BranchOutcome::Kept { name, merged },
@@ -194,7 +196,7 @@ impl Core {
                     }
                 }
             };
-            state_file.save(&tracked, &settings, &workspaces)?;
+            state_file.save(&tracked, &settings)?;
             Ok(outcome)
         })
         .await
@@ -302,29 +304,30 @@ impl Core {
         untrack(&mut self.tracked(), |path| paths.iter().any(|p| p == path));
         // Settings are keyed by main worktree, so this drops those of a forgotten repo.
         self.settings().retain(|repo, _| !paths.contains(repo));
-        self.workspaces()
-            .retain(|worktree, _| !paths.contains(worktree));
         let stopped: Vec<_> = {
             let mut watches = self.watches();
             paths.iter().filter_map(|p| watches.remove(p)).collect()
         };
         // Dropping a watch joins its thread, so do it off this tokio worker.
         let first = paths.first().cloned().unwrap_or_default();
-        let (state_file, tracked, settings, workspaces, agents) = (
+        let (state_file, tracked, settings, agents) = (
             self.state_file.clone(),
             self.worktrees.clone(),
             self.repo_settings.clone(),
-            self.workspaces.clone(),
             self.agents.clone(),
         );
         if !sessions.is_empty() {
             let _ = self.events.send(CoreEvent::AgentSessionsChanged);
         }
+        // A subagent that ran there leaves the workspace of its top parent elsewhere.
+        for owner in self.agents.drop_panels_of(&sessions) {
+            self.workspace_changed(owner);
+        }
         self.blocking(&first, move || {
             drop(stopped);
             // The worktrees are forgotten by now, so a folder that stays is only left behind.
             let _ = agents.remove_session_folders(&sessions);
-            state_file.save(&tracked, &settings, &workspaces)
+            state_file.save(&tracked, &settings)
         })
         .await
     }

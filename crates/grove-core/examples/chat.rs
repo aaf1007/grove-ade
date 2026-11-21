@@ -49,12 +49,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .find(|path| *path == repo)
         .ok_or("not a repo's main worktree")?;
     let spec = AgentSpec {
-        agent: Agent::Claude,
+        agent: Some(Agent::Claude),
         mode: Mode::Chat,
         prompt: None,
         cols: 120,
         rows: 40,
-        panel: None,
     };
     let session = core.spawn_agent(&worktree, spec)?;
 

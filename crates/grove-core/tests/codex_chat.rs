@@ -114,12 +114,11 @@ impl Drop for Setup {
 
 fn spec(mode: Mode, prompt: Option<&str>) -> AgentSpec {
     AgentSpec {
-        agent: Agent::Codex,
+        agent: Some(Agent::Codex),
         mode,
         prompt: prompt.map(str::to_owned),
         cols: 120,
         rows: 40,
-        panel: None,
     }
 }
 

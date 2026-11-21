@@ -12,6 +12,7 @@ use crate::agent::Agents;
 use crate::chat::ModelChoice;
 use crate::error::with_causes;
 use crate::session::{Kind, Probe};
+use crate::state::SavedWorkspace;
 use crate::{Agent, Core, CoreEvent, Mode, Result, SessionId, Warning};
 
 /// A session in a worktree, as `Core::sessions` lists it.
@@ -75,6 +76,10 @@ pub(crate) struct AgentRecord {
     /// version 9 kept no ended session.
     #[serde(default, skip_serializing_if = "is_false")]
     pub(crate) ended: bool,
+    /// Its workspace. None in a state file from before version 10, for a session whose
+    /// worktree had no saved workspace. Such a session starts from the profile layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) workspace: Option<SavedWorkspace>,
 }
 
 fn is_false(flag: &bool) -> bool {

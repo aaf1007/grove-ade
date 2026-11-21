@@ -1,6 +1,7 @@
 //! Restore after a restart, against the fake agents in fixtures/fake-agents. A second core started
 //! on the same home folder brings back agent sessions in their mode with the integration of their
-//! first launch, shells as fresh shells, run sessions stopped, review comments and workspaces.
+//! first launch, shells as fresh shells, run sessions stopped, review comments, and each agent
+//! session's workspace.
 //! Agent session records are here too: each lasts until the user deletes it, so an ended one
 //! comes back ended.
 
@@ -272,7 +273,7 @@ fn subagent_info(
     }
 }
 
-fn panel(agent: Agent, session: Option<SessionId>, shown: bool) -> AgentPanel {
+fn panel(agent: Agent, session: SessionId, shown: bool) -> AgentPanel {
     AgentPanel {
         agent,
         session,
@@ -299,12 +300,11 @@ impl Setup {
 
     fn spawn_in(&self, worktree: &Path, agent: Agent, mode: Mode) -> SessionId {
         let spec = AgentSpec {
-            agent,
+            agent: Some(agent),
             mode,
             prompt: None,
             cols: 100,
             rows: 30,
-            panel: None,
         };
         self.core().spawn_agent(worktree, spec).unwrap()
     }
@@ -560,12 +560,12 @@ fn a_claude_chat_session_that_never_got_a_message_comes_back_fresh_in_its_panel(
     });
     let claude = s.spawn(Agent::Claude, Mode::Chat);
     let workspace = Workspace {
-        chat: vec![panel(Agent::Claude, Some(claude), true)],
+        chat: vec![panel(Agent::Claude, claude, true)],
         panels: vec![PanelKind::Diff],
         selected: Some(PanelKind::Diff),
         terminal: false,
     };
-    block_on(s.core().set_workspace(&s.worktree, workspace.clone(), None)).unwrap();
+    block_on(s.core().set_workspace(claude, workspace.clone(), None)).unwrap();
     wait_launches(&s.claude_chat, 1);
 
     s.restart();
@@ -575,7 +575,7 @@ fn a_claude_chat_session_that_never_got_a_message_comes_back_fresh_in_its_panel(
         s.sessions(),
         [agent_info(claude, Agent::Claude, Mode::Chat)]
     );
-    assert_eq!(s.core().workspace(&s.worktree).unwrap(), workspace);
+    assert_eq!(s.core().workspace(claude).unwrap(), workspace);
     let (sink, _frames) = unbounded_channel();
     assert_eq!(s.core().subscribe(claude, sink).unwrap(), []);
     s.core().send_message(claude, "hi").unwrap();
@@ -1169,42 +1169,37 @@ fn each_workspace_comes_back_with_its_panels_on_the_restored_sessions() {
     let _serial = serial();
     let mut s = setup(Scenarios::default());
     let claude = s.spawn(Agent::Claude, Mode::Chat);
+    // In the same place, with a workspace of its own.
     let codex = s.spawn(Agent::Codex, Mode::Chat);
-    let ended = s.spawn(Agent::Claude, Mode::Chat);
-    s.core().kill(ended).unwrap();
-    s.wait_state(ended, AgentState::Exited);
-    let workspace = Workspace {
+    let helper = s.spawn_subagent(claude);
+    let ended = s.spawn_subagent(claude);
+    s.end(ended);
+    let of_claude = Workspace {
         chat: vec![
-            panel(Agent::Codex, Some(codex), true),
-            panel(Agent::Claude, Some(ended), true),
-            panel(Agent::Claude, Some(claude), false),
-            panel(Agent::Codex, None, true),
+            panel(Agent::Claude, helper, true),
+            panel(Agent::Claude, ended, true),
+            panel(Agent::Claude, claude, false),
         ],
         panels: vec![PanelKind::Diff, PanelKind::Logs],
         selected: Some(PanelKind::Logs),
         terminal: false,
     };
-    block_on(s.core().set_workspace(&s.worktree, workspace, None)).unwrap();
+    let of_codex = Workspace {
+        chat: vec![panel(Agent::Codex, codex, true)],
+        panels: vec![PanelKind::Browser],
+        selected: None,
+        terminal: true,
+    };
+    block_on(s.core().set_workspace(claude, of_claude.clone(), None)).unwrap();
+    block_on(s.core().set_workspace(codex, of_codex.clone(), None)).unwrap();
 
     s.restart();
-    // The session that had ended keeps its id and its saved panel, which stays hidden, so
-    // this one never shows in it.
+    // The session that had ended keeps its id and its panel, so this one never shows in it.
     let shell = s.core().spawn_shell(&s.worktree, 80, 24).unwrap();
 
-    assert!(![claude, codex, ended].contains(&shell));
-    assert_eq!(
-        s.core().workspace(&s.worktree).unwrap(),
-        Workspace {
-            chat: vec![
-                panel(Agent::Codex, Some(codex), true),
-                panel(Agent::Claude, Some(claude), false),
-                panel(Agent::Codex, None, true),
-            ],
-            panels: vec![PanelKind::Diff, PanelKind::Logs],
-            selected: Some(PanelKind::Logs),
-            terminal: false,
-        }
-    );
+    assert!(![claude, codex, helper, ended].contains(&shell));
+    assert_eq!(s.core().workspace(claude).unwrap(), of_claude);
+    assert_eq!(s.core().workspace(codex).unwrap(), of_codex);
 }
 
 #[test]
@@ -1352,11 +1347,15 @@ fn deleting_a_running_session_leaves_no_process_record_panel_or_folder_of_it_or_
     let folders = [parent, child, grandchild].map(folder);
     assert!(folders.iter().all(|folder| folder.is_dir()));
     let kept_folder = folder(kept);
+    // Whether some workspace still has an agent panel for the session.
     let has_panel = |s: &Setup, session| {
-        let workspace = s.core().workspace(&s.worktree).unwrap();
-        workspace.chat.iter().any(|p| p.session == Some(session))
+        let listed = s.core().agent_sessions().into_iter();
+        let mut workspaces = listed.filter_map(|info| s.core().workspace(info.session).ok());
+        workspaces.any(|workspace| workspace.chat.iter().any(|p| p.session == session))
     };
-    assert!(has_panel(&s, parent));
+    for session in [parent, child, grandchild, kept] {
+        assert!(has_panel(&s, session));
+    }
     s.drain_events();
 
     block_on(s.core().delete_agent_session(parent)).unwrap();
@@ -1366,7 +1365,14 @@ fn deleting_a_running_session_leaves_no_process_record_panel_or_folder_of_it_or_
     for session in [parent, child, grandchild] {
         assert!(not_running(s.core().kill(session), session));
     }
-    assert!(!has_panel(&s, parent));
+    for session in [parent, child, grandchild] {
+        assert!(!has_panel(&s, session));
+        // Its workspace went with its record.
+        assert!(matches!(
+            s.core().workspace(session),
+            Err(CoreError::NotAnAgentSession(_))
+        ));
+    }
     assert!(has_panel(&s, kept));
     assert!(folders.iter().all(|folder| !folder.exists()));
     assert!(kept_folder.is_dir());
@@ -1425,7 +1431,7 @@ fn deleting_a_session_when_the_state_cannot_be_saved_still_drops_its_record_and_
 }
 
 #[test]
-fn resuming_an_ended_session_starts_it_again_under_the_same_id_in_its_one_panel() {
+fn resuming_an_ended_session_starts_it_again_under_the_same_id_with_the_layout_it_had() {
     let _serial = serial();
     let mut s = setup(Scenarios {
         claude_chat: one_recorded_turn(),
@@ -1435,15 +1441,18 @@ fn resuming_an_ended_session_starts_it_again_under_the_same_id_in_its_one_panel(
     s.core().send_message(claude, "fix the bug").unwrap();
     s.wait_state(claude, AgentState::Done);
     let first = wait_launches(&s.claude_chat, 1).remove(0);
-    let shown = s.core().workspace(&s.worktree).unwrap();
-    assert_eq!(
-        shown.chat.last(),
-        Some(&panel(Agent::Claude, Some(claude), true))
-    );
+    let layout = Workspace {
+        chat: vec![panel(Agent::Claude, claude, true)],
+        panels: vec![PanelKind::Logs, PanelKind::Diff],
+        selected: Some(PanelKind::Diff),
+        terminal: false,
+    };
+    block_on(s.core().set_workspace(claude, layout.clone(), None)).unwrap();
     s.end(claude);
+    // An ended session keeps its workspace, with its own panel.
+    assert_eq!(s.core().workspace(claude).unwrap(), layout);
     s.restart();
-    let hidden = s.core().workspace(&s.worktree).unwrap();
-    assert!(hidden.chat.iter().all(|p| p.session != Some(claude)));
+    assert_eq!(s.core().workspace(claude).unwrap(), layout);
     s.drain_events();
 
     s.core().resume_agent_session(claude).unwrap();
@@ -1459,8 +1468,8 @@ fn resuming_an_ended_session_starts_it_again_under_the_same_id_in_its_one_panel(
     assert!(!record.ended);
     assert_eq!(record.state, Some(AgentState::Idle));
     assert_eq!(record.title, "fix the bug");
-    // Its panel was saved all along, so it is back and no second one is added.
-    assert_eq!(s.core().workspace(&s.worktree).unwrap(), shown);
+    // The layout is the one it had, and no second panel is added.
+    assert_eq!(s.core().workspace(claude).unwrap(), layout);
     s.wait_list_changed();
     let history = wait_for("the history", || {
         let (sink, _frames) = unbounded_channel();
@@ -1481,37 +1490,42 @@ fn resuming_a_session_whose_panel_the_workspace_dropped_gives_it_one_panel() {
     let mut s = setup(Scenarios::default());
     let claude = s.spawn(Agent::Claude, Mode::Chat);
     s.end(claude);
-    // The UI saves the workspace as it sees it, without the ended session's panel.
-    let seen = s.core().workspace(&s.worktree).unwrap();
-    assert!(seen.chat.iter().all(|p| p.session != Some(claude)));
-    block_on(s.core().set_workspace(&s.worktree, seen.clone(), None)).unwrap();
+    // A workspace saved without the ended session's panel.
+    let mut seen = s.core().workspace(claude).unwrap();
+    seen.chat.clear();
+    block_on(s.core().set_workspace(claude, seen.clone(), None)).unwrap();
+    s.drain_events();
 
     s.core().resume_agent_session(claude).unwrap();
 
     let mut with_panel = seen;
-    with_panel
-        .chat
-        .push(panel(Agent::Claude, Some(claude), true));
-    assert_eq!(s.core().workspace(&s.worktree).unwrap(), with_panel);
+    with_panel.chat.push(panel(Agent::Claude, claude, true));
+    assert_eq!(s.core().workspace(claude).unwrap(), with_panel);
+    let changed = wait_for("the workspace change", || match s.events.try_recv() {
+        Ok(CoreEvent::WorkspaceChanged { session, by }) => Some((session, by)),
+        _ => None,
+    });
+    assert_eq!(changed, (claude, None));
 }
 
 #[test]
-fn resuming_a_session_whose_panel_is_hidden_shows_that_panel() {
+fn resuming_a_subagent_whose_panel_is_hidden_shows_that_panel_in_its_top_parents_workspace() {
     let _serial = serial();
     let mut s = setup(Scenarios::default());
-    let claude = s.spawn(Agent::Claude, Mode::Chat);
-    let mut hidden = s.core().workspace(&s.worktree).unwrap();
+    let parent = s.spawn(Agent::Claude, Mode::Chat);
+    let claude = s.spawn_subagent(parent);
+    let mut hidden = s.core().workspace(parent).unwrap();
     let last = hidden.chat.last_mut().unwrap();
-    assert_eq!(*last, panel(Agent::Claude, Some(claude), true));
+    assert_eq!(*last, panel(Agent::Claude, claude, true));
     last.shown = false;
-    block_on(s.core().set_workspace(&s.worktree, hidden.clone(), None)).unwrap();
+    block_on(s.core().set_workspace(parent, hidden.clone(), None)).unwrap();
     s.end(claude);
 
     s.core().resume_agent_session(claude).unwrap();
 
     let mut shown = hidden;
     shown.chat.last_mut().unwrap().shown = true;
-    assert_eq!(s.core().workspace(&s.worktree).unwrap(), shown);
+    assert_eq!(s.core().workspace(parent).unwrap(), shown);
     // The shown panel is saved.
     wait_for("the panel saved as shown", || {
         let state: Value =
@@ -1629,10 +1643,10 @@ fn a_version_8_state_file_loads_with_every_session_listed() {
     let (history_id, child_id) = (s.resume_id(with_history), s.resume_id(child));
     drop(s.core.take());
     // The sessions as a version 8 grove wrote them, field by field, so this does not follow
-    // what version 9 writes: no title, created time or ended flag.
+    // what later versions write: no title, created time, ended flag or workspace.
     let path = s.cfg.home.join("state.json");
     let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(state["version"], json!(9));
+    assert_eq!(state["version"], json!(10));
     let id = |session: SessionId| session.to_string().parse::<u64>().unwrap();
     state["repos"][0]["main_worktree"]["sessions"] = json!([
         {"kind": "agent", "id": id(with_history), "agent": "claude", "mode": "chat",
@@ -1737,7 +1751,8 @@ fn a_session_that_cannot_relaunch_is_left_out_with_a_warning() {
     assert!(s.core().resume_id(claude).is_none());
 }
 
-// Version 4 saved workspaces with no sessions in their panels, and no sessions or comments.
+// Version 4 saved workspaces with no sessions in their panels, and no sessions or comments. A
+// workspace with no session has no session to go to, so it is dropped.
 #[test]
 fn a_state_file_from_before_restore_starts_with_no_sessions_or_comments() {
     let _serial = serial();
@@ -1779,11 +1794,11 @@ fn a_state_file_from_before_restore_starts_with_no_sessions_or_comments() {
     assert_eq!(core.sessions(&repo).unwrap(), []);
     assert_eq!(core.comments(&repo).unwrap(), []);
     assert_eq!(
-        core.workspace(&repo).unwrap(),
+        core.starting_workspace(&repo).unwrap(),
         Workspace {
-            chat: vec![panel(Agent::Codex, None, true)],
-            panels: vec![PanelKind::Diff],
-            selected: Some(PanelKind::Diff),
+            chat: vec![],
+            panels: vec![PanelKind::Files, PanelKind::Diff],
+            selected: Some(PanelKind::Files),
             terminal: true,
         }
     );
@@ -1843,7 +1858,7 @@ fn a_session_saved_before_grove_kept_models_comes_back_with_no_choice() {
     // The state file as grove wrote it before version 7: no model on any session.
     let path = s.cfg.home.join("state.json");
     let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(state["version"], json!(9));
+    assert_eq!(state["version"], json!(10));
     fn forget_models(value: &mut Value) {
         match value {
             Value::Object(object) => {
