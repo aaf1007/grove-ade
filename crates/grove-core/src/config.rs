@@ -60,7 +60,7 @@ impl CoreConfig {
             codex_command: "codex".into(),
             // The app points it at the sidecar inside its bundle.
             claude_sidecar_command: "claude-sidecar".into(),
-            // The app sets it when its bundle has one.
+            // The app sets it when grove-mcp is next to its executable.
             mcp_server: None,
             hook_relay: home.join("bin/grove-hook"),
             hook_relay_source: None,
