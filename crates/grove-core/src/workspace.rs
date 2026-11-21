@@ -227,6 +227,41 @@ impl Core {
         });
     }
 
+    /// Shows resumed agent session `session` in an agent panel of `worktree`: the one saved for
+    /// it, which `workspace` left out while it was ended, shown even if it was hidden, or else
+    /// a new shown one after the last. Sends one `WorkspaceChanged` with no `by` either way.
+    pub(crate) fn show_agent_panel(&self, worktree: &Path, session: SessionId, agent: Agent) {
+        let saved = self.workspaces().get_mut(worktree).is_some_and(|saved| {
+            let mut panels = saved.workspace.chat.iter_mut();
+            let panel = panels.find(|panel| panel.session == Some(session));
+            panel.map(|panel| panel.shown = true).is_some()
+        });
+        if !saved {
+            return self.place_agent(worktree, session, agent, None, &[]);
+        }
+        self.saves.request();
+        // Having no receivers is fine.
+        let _ = self.events.send(CoreEvent::WorkspaceChanged {
+            worktree: worktree.to_path_buf(),
+            by: None,
+        });
+    }
+
+    /// Drops the agent panels of `sessions`, which were deleted, from every saved workspace.
+    /// Returns the worktrees that lost one.
+    pub(crate) fn drop_agent_panels(&self, sessions: &[SessionId]) -> Vec<PathBuf> {
+        let mut lost_a_panel = Vec::new();
+        for (worktree, saved) in self.workspaces().iter_mut() {
+            let chat = &mut saved.workspace.chat;
+            let before = chat.len();
+            chat.retain(|panel| panel.session.is_none_or(|s| !sessions.contains(&s)));
+            if chat.len() != before {
+                lost_a_panel.push(worktree.clone());
+            }
+        }
+        lost_a_panel
+    }
+
     /// Saves `workspace` for `worktree` and sends one `WorkspaceChanged` with `by`. `by` is the
     /// agent session that changed it, None for the user. Undo restores the workspace from before
     /// the last change an agent made.

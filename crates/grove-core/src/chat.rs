@@ -316,17 +316,25 @@ impl Chat {
     }
 
     /// Queues the user's message for the agent and adds `text` to the conversation, before any
-    /// reply can. Codex holds it until its thread starts and the turn before ends.
-    fn send(&self, session: SessionId, input: &mpsc::Sender<Vec<u8>>, text: &str) -> Result<()> {
+    /// reply can. Codex holds it until its thread starts and the turn before ends. `sent` is
+    /// as in `send_as`.
+    fn send(
+        &self,
+        session: SessionId,
+        input: &mpsc::Sender<Vec<u8>>,
+        text: &str,
+        sent: impl FnOnce(),
+    ) -> Result<()> {
         let shown = AgentMessage::User {
             text: text.to_owned(),
         };
-        self.send_as(session, input, text, shown, Vec::new())
+        self.send_as(session, input, text, shown, Vec::new(), sent)
     }
 
     /// `send`, with `shown` in the conversation in place of `text`. `comments` open again if the
     /// message never reaches the agent. Fails once the process has ended, or while `set_mode`
-    /// ends it.
+    /// ends it. `sent` runs once the message is in the conversation, under the chat's lock, so
+    /// what it does keeps the order of the messages.
     pub(crate) fn send_as(
         &self,
         session: SessionId,
@@ -334,6 +342,7 @@ impl Chat {
         text: &str,
         shown: AgentMessage,
         comments: Vec<CommentId>,
+        sent: impl FnOnce(),
     ) -> Result<()> {
         let mut s = self.state();
         if s.closed {
@@ -356,6 +365,7 @@ impl Chat {
             comments,
         });
         self.push_locked(&mut s, shown);
+        sent();
         Ok(())
     }
 
@@ -518,7 +528,7 @@ impl Core {
         }
         if let Some(text) = prompt {
             // The writer waits for the process, so this queues.
-            let _ = chat.send(session, &input, text);
+            let _ = chat.send(session, &input, text, || ());
         }
         let (stdout_tx, stdout_rx) = mpsc::channel::<ChildStdout>();
         // Dropped once the reader has stopped.
@@ -563,7 +573,11 @@ impl Core {
     pub fn send_message(&self, session: SessionId, text: &str) -> Result<()> {
         let chat = self.agents.chat(session)?;
         let input = self.input(session)?;
-        chat.send(session, &input, text)
+        // Titled under the chat's lock, so of two sends at once the first in the conversation
+        // gives the title.
+        chat.send(session, &input, text, || {
+            self.agents.title_from(session, text, &self.events);
+        })
     }
 
     /// Answers a pending approval request or question. The session goes back to `Working`, or
@@ -792,6 +806,11 @@ fn apply(
         FromAgent::History { messages } => {
             for message in messages {
                 if let Some(message) = recorded(message) {
+                    // A session with no title yet takes it from its record, as one saved
+                    // before grove kept titles.
+                    if let AgentMessage::User { text } = &message {
+                        agents.title_from(session, text, events);
+                    }
                     chat.push_locked(s, message);
                 }
             }
