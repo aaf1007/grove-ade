@@ -72,6 +72,7 @@ function FakeChatPanel({
   onBlur,
   onOpenDiff,
   onChangeAgent,
+  onLoginFailed,
 }: {
   session: string;
   agent: Agent;
@@ -81,6 +82,7 @@ function FakeChatPanel({
   onBlur?: () => void;
   onOpenDiff(path?: string): void;
   onChangeAgent?: (agent: Agent) => void;
+  onLoginFailed?: (failed: boolean) => void;
 }) {
   const [draft, setDraft] = useState("");
   return (
@@ -105,6 +107,9 @@ function FakeChatPanel({
       <button onClick={() => onOpenDiff()}>Review diff</button>
       <button onClick={() => onOpenDiff("b.rs")}>Open b.rs in the diff</button>
       <button onClick={() => onChangeAgent?.("Codex")}>Switch to Codex</button>
+      {/* Stands in for the real panel's latest turn failing to log in, and a later one working. */}
+      <button onClick={() => onLoginFailed?.(true)}>Fail to log in</button>
+      <button onClick={() => onLoginFailed?.(false)}>Finish a turn</button>
     </section>
   );
 }
@@ -1070,17 +1075,62 @@ test("a worktree's Files panel stays open, hidden, while another worktree is sel
   expect(screen.getByRole("tabpanel", { name: "Files" }).textContent).toContain(`Files of ${main}`);
 });
 
-test("the sidebar footer shows Claude's account, also one reported before the window opened", async () => {
+function footer() {
+  return screen.getByRole("group", { name: "Account and settings" });
+}
+
+test("the sidebar footer shows the selected agent session's agent's account, also one reported before the window opened", async () => {
   const bridge = await trackedBridge();
   const account = { email: "ann@example.com", organization: null, plan: "max", apiKeySource: null };
   bridge.accountChanged({ agent: "Claude", account });
+  bridge.accountChanged({ agent: "Codex", account: null });
   render(<App bridge={bridge} />);
-  const footer = screen.getByRole("group", { name: "Account and settings" });
-  expect(within(footer).getByText("ann@example.com · max plan")).toBeTruthy();
+  await screen.findByRole("button", { name: "feat-36" });
+  // No agent session is selected, so no agent's.
+  expect(within(footer()).queryByRole("listitem")).toBeNull();
 
+  await select("feat-36");
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 0" });
+
+  expect(within(footer()).getByRole("listitem").textContent).toBe("ann@example.com · max plan");
   act(() => bridge.accountChanged({ agent: "Claude", account: null }));
+  expect(within(footer()).getByRole("listitem").textContent).toBe("Not logged in");
 
-  expect(within(footer).getByText("Not logged in")).toBeTruthy();
+  let codex = "";
+  await act(async () => void (codex = await bridge.spawnAgent(main, "Codex", null)));
+  await act(async () => fireEvent.click(await findSessionRow("main")));
+  await screen.findByRole("region", { name: `Panel ${codex}` });
+  expect(within(footer()).getByRole("listitem").title).toBe("Codex");
+});
+
+test("the footer never says Logged in after a turn of that agent failed to log in, until one works", async () => {
+  const bridge = await trackedBridge();
+  // What the agent reports for a login it has a token for, even an expired one.
+  bridge.accountChanged({ agent: "Claude", account: { email: null, organization: null, plan: null, apiKeySource: null } });
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  startAgent();
+  const panel = await screen.findByRole("region", { name: "Panel 0" });
+  expect(within(footer()).getByRole("listitem").textContent).toBe("Logged in");
+
+  fireEvent.click(within(panel).getByRole("button", { name: "Fail to log in" }));
+
+  expect(footer().textContent).not.toContain("Logged in");
+  // The agent reports the same login again, as a new process does after a mode switch.
+  act(() =>
+    bridge.accountChanged({ agent: "Claude", account: { email: null, organization: null, plan: null, apiKeySource: null } }),
+  );
+  expect(footer().textContent).not.toContain("Logged in");
+  // Another session of the same agent says nothing of its login.
+  await startAnother(bridge, feature);
+  await screen.findByRole("region", { name: "Panel 1" });
+  await act(async () => fireEvent.click(await findSessionRow("feat-36", 1)));
+  expect(footer().textContent).not.toContain("Logged in");
+
+  fireEvent.click(within(panel).getByRole("button", { name: "Finish a turn" }));
+
+  expect(within(footer()).getByRole("listitem").textContent).toBe("Logged in");
 });
 
 test("picking Codex before the first message starts a Codex session in the same panel and ends the Claude one", async () => {
@@ -1379,6 +1429,30 @@ test("New worktree… in New session makes a worktree, which opens selected with
   // The title bar names the worktree once the new worktree's list comes.
   await waitFor(() => expect(selectedWorktree()).toBe("feat-52"));
   expect((await findSessionRow("feat-52")).getAttribute("aria-current")).toBe("true");
+});
+
+test("New worktree… without Claude Code selects the worktree as soon as it exists, with Start session", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await pickPlace("New worktree…");
+  const dialog = await screen.findByRole("dialog", { name: "New worktree" });
+  fireEvent.change(within(dialog).getByLabelText("Branch name"), { target: { value: "feat-52" } });
+  fireEvent.change(within(dialog).getByLabelText<HTMLSelectElement>("Profile"), { target: { value: "none" } });
+  fireEvent.click(within(dialog).getByLabelText("Start Claude Code"));
+  // Each frame from the create on, as the user sees it.
+  const frames: string[] = [];
+  const watch = new MutationObserver(() => frames.push(document.querySelector(".chat-area")?.textContent ?? ""));
+  watch.observe(document.body, { subtree: true, childList: true, characterData: true });
+  onTestFinished(() => watch.disconnect());
+
+  await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Create worktree" })));
+
+  await waitFor(() => expect(selectedWorktree()).toBe("feat-52"));
+  expect(screen.getByRole("button", { name: "feat-52" }).getAttribute("aria-current")).toBe("true");
+  await screen.findByRole("heading", { name: "No agent session yet" });
+  expect(screen.getByRole("button", { name: "Start session" })).toBeTruthy();
+  expect(frames.filter((frame) => frame.includes("No worktree selected"))).toEqual([]);
+  expect(bridge.spawnedAgents).toEqual([]);
 });
 
 // A repo whose Cargo.toml gets it the Rust crate profile, with its setup script.

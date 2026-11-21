@@ -153,10 +153,9 @@ export function App({ bridge }: { bridge: Bridge }) {
   const focusedAgent = useRef<SessionId | null>(null);
   // The agent session whose panel last had focus, by worktree, for the Details card.
   const [lastFocused, setLastFocused] = useState<Record<string, SessionId>>({});
-  // Each agent session's mode and model, as its panel reports them, by session.
-  const [sessionDetails, setSessionDetails] = useState<
-    Record<SessionId, { mode?: Mode; model?: ModelChoice | null }>
-  >({});
+  // Each agent session's mode and model, and whether its latest turn failed to log in, as its panel
+  // reports them, by session.
+  const [sessionDetails, setSessionDetails] = useState<Record<SessionId, SessionDetails>>({});
   // Whether the user opened Details. It shows while the chat area has room for it.
   const [detailsOpen, setDetailsOpen] = useSetting("grove.detailsOpen", false, (open) => typeof open === "boolean");
   const [chatLane, setChatLane] = useState<HTMLElement | null>(null);
@@ -576,7 +575,7 @@ export function App({ bridge }: { bridge: Bridge }) {
     forgetWorkspace(worktree);
   }
 
-  function reportDetails(session: SessionId, details: { mode?: Mode; model?: ModelChoice | null }) {
+  function reportDetails(session: SessionId, details: SessionDetails) {
     setSessionDetails((known) => ({ ...known, [session]: { ...known[session], ...details } }));
   }
 
@@ -596,6 +595,15 @@ export function App({ bridge }: { bridge: Bridge }) {
       mode,
       state: agentStates[found.session],
     };
+  }
+
+  // The footer shows only the selected agent's login. The agent reports a login it has a token for
+  // even when the token no longer works, so after a turn of any of its sessions failed to log in,
+  // the footer shows nothing for it until that session's latest turn is not one.
+  function selectedAgentAccount(agent: Agent | undefined): Partial<Record<Agent, Account | null>> {
+    if (!agent || accounts[agent] === undefined) return {};
+    const loginFailed = agents.some((a) => a.agent === agent && sessionDetails[a.session]?.loginFailed);
+    return loginFailed ? {} : { [agent]: accounts[agent] };
   }
 
   const workspace = selected ? workspaces[selected] : undefined;
@@ -632,6 +640,7 @@ export function App({ bridge }: { bridge: Bridge }) {
   const agentError = selected && startErrors[startKey("agent", selected)];
   const workspaceError = selected && workspaceErrors[selected];
   const detailsSession = selected ? focusedSession(selected) : null;
+  const footerAccounts = selectedAgentAccount(detailsSession?.agent);
   const selectedRepo = byRepo(worktrees ?? []).find((repo) => repo.some((w) => w.path === selected));
   const selectedWorktree = selectedRepo?.find((w) => w.path === selected);
   const regions = ["regions"];
@@ -702,7 +711,7 @@ export function App({ bridge }: { bridge: Bridge }) {
               onOpenProfiles={() => selected && open(selected, "Profile")}
               onShowSidebar={() => layout.sidebarOpen || toggleSidebar()}
               onHideSidebar={hideSidebarFromSwitch}
-              accounts={accounts}
+              accounts={footerAccounts}
               appearance={appearance}
               onAppearance={setAppearance}
               ref={sidebarRef}
@@ -771,6 +780,7 @@ export function App({ bridge }: { bridge: Bridge }) {
                   }
                   onMode={(mode) => reportDetails(started.session, { mode })}
                   onModelChoice={(model) => reportDetails(started.session, { model })}
+                  onLoginFailed={(loginFailed) => reportDetails(started.session, { loginFailed })}
                   onFocus={() => focus(started.session, started.worktree)}
                   onBlur={() => {
                     if (focusedAgent.current === started.session) focusedAgent.current = null;
@@ -997,6 +1007,8 @@ export function App({ bridge }: { bridge: Bridge }) {
 const PLACEHOLDER_TABS: PanelKind[] = ["Browser", "Logs"];
 
 type StartKind = "shell" | "agent" | `run ${string}`;
+
+type SessionDetails = { mode?: Mode; model?: ModelChoice | null; loginFailed?: boolean };
 
 // JSON keeps any two kinds and worktrees apart, whatever a run session's name or a path holds.
 function startKey(kind: StartKind, worktree: string): string {
