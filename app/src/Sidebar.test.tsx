@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { createRef } from "react";
 import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 
-import type { AgentStateChanged, Worktree } from "./bridge";
+import type { Worktree } from "./bridge";
 import { fakeBridge, type FakeBridge } from "./fakeBridge";
 import sidebarStyles from "./styles.css?raw";
 import { Sidebar, type SidebarHandle } from "./Sidebar";
@@ -22,15 +22,15 @@ const groveRepo = [
 
 // These tests start no agent session, and nothing waits.
 const noAgents = {
-  agents: [],
   agentStates: {},
   shownAgents: [],
   onStartAgent() {},
   onStartAgentAfterSetup() {},
   onDeleting() {},
   onRemoved() {},
-  onShowAgent() {},
   onFocusAgent() {},
+  onSessionResumed() {},
+  onSessionsDeleted() {},
   waiting: 0,
   onJump() {},
   onHideSidebar() {},
@@ -115,60 +115,72 @@ test("clicking a worktree selects it, and the selected one is marked", async () 
   );
 });
 
-test("session rows name the agent, numbered from the second, show the state without its source, and never the session id", async () => {
+// Each session row's title, branch and status dot, and whether it has the worktree badge, in order.
+function sessionRowsShown() {
+  return sessionRows().map((row) => ({
+    title: row.querySelector(".session-title")?.textContent,
+    branch: row.querySelector(".session-branch")?.textContent,
+    worktree: within(row).queryByRole("img", { name: "Worktree" }) !== null,
+    dot: dot(row),
+  }));
+}
+
+test("session rows come from the core's list under their project, with the state, title, branch and a worktree badge", async () => {
   const bridge = fakeBridge({ "/code/grove": groveRepo });
   await bridge.addRepo("/code/grove");
-  const feature = "/code/grove-wt/feat-35";
-  const agents = [
-    { session: "7731", worktree: feature, agent: "Claude" as const, panel: "7731" },
-    { session: "7732", worktree: feature, agent: "Codex" as const, panel: "7732" },
-    { session: "7733", worktree: feature, agent: "Claude" as const, panel: "7733" },
-  ];
+  const local = await bridge.spawnAgent("/code/grove", "Claude", null);
+  await bridge.sendMessage(local, "\n  fix the login bug \nthen test");
+  const inWorktree = await bridge.spawnAgent(feature, "Codex", null);
+  bridge.agentStateChanged({ session: inWorktree, state: "NeedsInput", kind: "Approval", source: "Hook" });
 
-  render(
-    <Sidebar
-      bridge={bridge}
-      selected={feature}
-      onSelect={() => {}}
-      {...noAgents}
-      agents={agents}
-      agentStates={{
-        "7731": { session: "7731", state: "NeedsInput", kind: "Approval", source: "Hook" },
-        "7733": { session: "7733", state: "Working", source: "Protocol" },
-      }}
-    />,
-  );
-  await screen.findByRole("region", { name: "grove" });
-  const rows = sessionRows();
+  // Neither worktree was opened, and the sidebar has no state for either session.
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
 
-  expect(rows.map((row) => row.textContent)).toEqual(["Claude Code", "Codex", "Claude Code 2"]);
-  expect(rows.map(dot)).toEqual(["Approval", null, "Working"]);
-  const sidebar = screen.getByRole("complementary", { name: "Worktrees" });
-  expect(sidebar.textContent).not.toMatch(/Hook|Protocol|773\d/);
-  expect(sidebar.innerHTML).not.toMatch(/773\d/);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(2));
+  const repo = screen.getByRole("region", { name: "grove" });
+  expect(sessionRows().every((row) => repo.contains(row))).toBe(true);
+  expect(sessionRowsShown()).toEqual([
+    { title: "fix the login bug", branch: "main", worktree: false, dot: null },
+    { title: "New session", branch: "feat-35-tauri-sidebar", worktree: true, dot: "Approval" },
+  ]);
+  expect(repo.textContent).not.toMatch(/Hook/);
 });
+
 const feature = "/code/grove-wt/feat-35";
 
-// The button that selects a worktree. It holds the name.
+// The button that selects a worktree with no session. It holds the name.
 async function worktreeRow(name: string) {
   return await screen.findByRole("button", { name });
 }
 
-// The nested agent session rows, in order.
+// The agent session rows' buttons, in order.
 function sessionRows() {
-  return screen.getAllByRole("button").filter((button) => button.classList.contains("session-row"));
+  return screen.queryAllByRole("button").filter((button) => button.classList.contains("session-row"));
 }
 
-// The state a row's status dot names, or null when it has none. A worktree's dot sits beside its
-// button, which the dot describes. A session's dot sits in its button.
+// A session row's whole row: its button, its menu and its dot.
+function sessionItem(row: HTMLElement) {
+  return row.closest<HTMLElement>(".session-item")!;
+}
+
+// The state a row's status dot names, or null when it has none. The dot sits beside the row's
+// button, which it describes.
 function dot(row: HTMLElement) {
-  const own = row.querySelector(".status-dot") ?? row.closest(".wt-row")?.querySelector(".status-dot");
+  const own = row.closest(".wt-row, .session-item")?.querySelector(".status-dot");
   return own?.getAttribute("aria-label") ?? null;
 }
 
-test("a worktree with a session in Approval and one Working shows the Approval dot", async () => {
+// A tracked grove repo with one Claude Code session in feat-35, which the sidebar lists.
+async function oneSession() {
   const bridge = fakeBridge({ "/code/grove": groveRepo });
   await bridge.addRepo("/code/grove");
+  const session = await bridge.spawnAgent(feature, "Claude", null);
+  return { bridge, session };
+}
+
+test("a session's dot shows its latest state, without its source, and never the session id", async () => {
+  const { bridge, session } = await oneSession();
+  bridge.agentStateChanged({ session, state: "NeedsInput", kind: "Approval", source: "Hook" });
 
   render(
     <Sidebar
@@ -176,22 +188,19 @@ test("a worktree with a session in Approval and one Working shows the Approval d
       selected={null}
       onSelect={() => {}}
       {...noAgents}
-      agents={[
-        { session: "1", worktree: feature, agent: "Claude", panel: "1" },
-        { session: "2", worktree: feature, agent: "Codex", panel: "2" },
-      ]}
-      agentStates={{
-        "1": { session: "1", state: "Working", source: "Protocol" },
-        "2": { session: "2", state: "NeedsInput", kind: "Approval", source: "Hook" },
-      }}
+      agentStates={{ [session]: { session, state: "Working", source: "Protocol" } }}
     />,
   );
 
-  const row = await worktreeRow("feat-35-tauri-sidebar");
-  expect(dot(row)).toBe("Approval");
-  // The dot's word is its tooltip, and a screen reader reads it after the name.
-  expect(row.closest(".wt-row")!.querySelector(".status-dot")!.getAttribute("title")).toBe("Approval");
-  expect(screen.getByRole("button", { name: "feat-35-tauri-sidebar", description: "Approval" })).toBe(row);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+  // The state the window got last beats the one the list has.
+  expect(dot(sessionRows()[0])).toBe("Working");
+  // The dot's word is its tooltip, and a screen reader reads it after the row's name.
+  expect(sessionItem(sessionRows()[0]).querySelector(".status-dot")!.getAttribute("title")).toBe("Working");
+  expect(screen.getByRole("button", { description: "Working" })).toBe(sessionRows()[0]);
+  const sidebar = screen.getByRole("complementary", { name: "Worktrees" });
+  expect(sidebar.textContent).not.toMatch(/Hook|Protocol/);
+  expect(sidebar.innerHTML).not.toMatch(new RegExp(`"${session}"`));
 });
 
 test.each([
@@ -200,9 +209,8 @@ test.each([
   ["Done", { state: "Done" as const }, "Done"],
   ["Failed", { state: "Failed" as const }, "Failed"],
   ["Question", { state: "NeedsInput" as const, kind: "Question" as const }, "Question"],
-])("a worktree whose session is %s shows the dot %s", async (_, state, shown) => {
-  const bridge = fakeBridge({ "/code/grove": groveRepo });
-  await bridge.addRepo("/code/grove");
+])("a session that is %s shows the dot %s", async (_, state, shown) => {
+  const { bridge, session } = await oneSession();
 
   render(
     <Sidebar
@@ -210,78 +218,251 @@ test.each([
       selected={null}
       onSelect={() => {}}
       {...noAgents}
-      agents={[{ session: "1", worktree: feature, agent: "Claude", panel: "1" }]}
-      agentStates={{ "1": { session: "1", ...state, source: "Protocol" } }}
+      agentStates={{ [session]: { session, ...state, source: "Protocol" } }}
     />,
   );
 
-  expect(dot(await worktreeRow("feat-35-tauri-sidebar"))).toBe(shown);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+  expect(dot(sessionRows()[0])).toBe(shown);
 });
-test("a worktree's one session nests under its row, and clicking the worktree shows that session", async () => {
-  const bridge = fakeBridge({ "/code/grove": groveRepo });
-  await bridge.addRepo("/code/grove");
-  const only = { session: "1", worktree: feature, agent: "Claude" as const, panel: "1" };
-  const shown: unknown[] = [];
 
+test("selecting a running session focuses it, and its row is marked while its panel shows", async () => {
+  const { bridge, session } = await oneSession();
+  const resumed = vi.spyOn(bridge, "resumeAgentSession");
+  const focused: unknown[] = [];
+  const sidebar = (shownAgents: string[]) => (
+    <Sidebar
+      bridge={bridge}
+      selected={null}
+      onSelect={() => {}}
+      {...noAgents}
+      shownAgents={shownAgents}
+      onFocusAgent={(agent) => focused.push(agent)}
+    />
+  );
+  const { rerender } = render(sidebar([]));
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+
+  await act(async () => fireEvent.click(sessionRows()[0]));
+  rerender(sidebar([session]));
+
+  expect(focused).toEqual([{ session, worktree: feature, agent: "Claude", panel: session }]);
+  expect(resumed).not.toHaveBeenCalled();
+  expect(sessionRows()[0].getAttribute("aria-current")).toBe("true");
+  expect(sessionItem(sessionRows()[0]).classList.contains("selected")).toBe(true);
+});
+
+test("sessions sharing a worktree each get a row, in the order they started", async () => {
+  const { bridge, session } = await oneSession();
+  const second = await bridge.spawnAgent(feature, "Codex", null);
+  await bridge.sendMessage(second, "review the diff");
+
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(2));
+  expect(sessionRowsShown().map(({ title }) => title)).toEqual(["New session", "review the diff"]);
+  expect(session).not.toBe(second);
+});
+
+test("an ended session is dimmed, and selecting it resumes it before focusing it", async () => {
+  const { bridge, session } = await oneSession();
+  await bridge.exit(session);
+  const steps: string[] = [];
+  const resume = bridge.resumeAgentSession.bind(bridge);
+  vi.spyOn(bridge, "resumeAgentSession").mockImplementation(async (id) => {
+    steps.push(`resume ${id}`);
+    return resume(id);
+  });
   render(
     <Sidebar
       bridge={bridge}
       selected={null}
       onSelect={() => {}}
       {...noAgents}
-      agents={[only]}
-      agentStates={{ "1": { session: "1", state: "Idle", source: "Protocol" } }}
-      onShowAgent={(agent) => shown.push(agent)}
+      onSessionResumed={(id) => steps.push(`resumed ${id}`)}
+      onFocusAgent={({ session: id }) => steps.push(`focus ${id}`)}
     />,
   );
-  fireEvent.click(await worktreeRow("feat-35-tauri-sidebar"));
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+  expect(sessionItem(sessionRows()[0]).classList.contains("dimmed")).toBe(true);
 
-  expect(sessionRows().map((row) => row.textContent)).toEqual(["Claude Code"]);
-  expect(shown).toEqual([only]);
-});
-test("two agent sessions in a worktree show as two nested rows, and clicking the second focuses it", async () => {
-  const bridge = fakeBridge({ "/code/grove": groveRepo });
-  await bridge.addRepo("/code/grove");
-  const agents = [
-    { session: "1", worktree: feature, agent: "Claude" as const, panel: "1" },
-    { session: "2", worktree: feature, agent: "Claude" as const, panel: "2" },
-  ];
-  const shown: unknown[] = [];
+  await act(async () => fireEvent.click(sessionRows()[0]));
 
-  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} agents={agents} onFocusAgent={(agent) => shown.push(agent)} />);
-  await worktreeRow("feat-35-tauri-sidebar");
-
-  expect(sessionRows().map((row) => row.textContent)).toEqual(["Claude Code", "Claude Code 2"]);
-  fireEvent.click(sessionRows()[1]);
-  expect(shown).toEqual([agents[1]]);
+  // The panel learns of the new process before it shows.
+  expect(steps).toEqual([`resume ${session}`, `resumed ${session}`, `focus ${session}`]);
+  // The core says it runs again, and the row is no longer dimmed.
+  await vi.waitFor(() => expect(sessionItem(sessionRows()[0]).classList.contains("dimmed")).toBe(false));
 });
 
-test("a worktree's chevron folds and unfolds its session rows", async () => {
-  const bridge = fakeBridge({ "/code/grove": groveRepo });
-  await bridge.addRepo("/code/grove");
+test("an ended session that cannot resume says why, and is not focused", async () => {
+  const { bridge, session } = await oneSession();
+  await bridge.exit(session);
+  vi.spyOn(bridge, "resumeAgentSession").mockRejectedValueOnce("could not start the session's command");
+  const focused: unknown[] = [];
+  const resumed: unknown[] = [];
   render(
     <Sidebar
       bridge={bridge}
       selected={null}
       onSelect={() => {}}
       {...noAgents}
-      agents={[{ session: "1", worktree: feature, agent: "Claude", panel: "1" }]}
+      onSessionResumed={(id) => resumed.push(id)}
+      onFocusAgent={(agent) => focused.push(agent)}
     />,
   );
-  await worktreeRow("feat-35-tauri-sidebar");
-  const chevron = screen.getByRole("button", { name: "Sessions of feat-35-tauri-sidebar" });
-  expect(chevron.getAttribute("aria-expanded")).toBe("true");
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
 
-  fireEvent.click(chevron);
-  expect(chevron.getAttribute("aria-expanded")).toBe("false");
-  expect(screen.queryAllByRole("button").filter((b) => b.classList.contains("session-row"))).toEqual([]);
+  await act(async () => fireEvent.click(sessionRows()[0]));
 
-  fireEvent.click(chevron);
+  expect(screen.getByRole("alert").textContent).toBe("could not start the session's command");
+  expect(focused).toEqual([]);
+  expect(resumed).toEqual([]);
+});
+
+test("a subagent session sits under the session that spawned it, in another worktree too", async () => {
+  const { bridge, session } = await oneSession();
+  const subagent = bridge.spawnAgentWithoutPanel("/code/grove-wt/spike", "Claude", session);
+  const nested = bridge.spawnAgentWithoutPanel(feature, "Codex", subagent);
+  await bridge.sendMessage(subagent, "write the tests");
+  await bridge.sendMessage(nested, "check the tests");
+
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(3));
+  // Each row's title, and the title of the row it sits under. null at the top of its project.
+  const under = (row: HTMLElement) =>
+    row.closest("li")!.parentElement!.closest("li")?.querySelector(".session-title")?.textContent ?? null;
+  expect(sessionRows().map((row) => [row.querySelector(".session-title")!.textContent, under(row)])).toEqual([
+    ["New session", null],
+    ["write the tests", "New session"],
+    ["check the tests", "write the tests"],
+  ]);
+  expect(sessionRowsShown()[1].branch).toBe("spike");
+});
+
+// Opens the session row's menu and picks Delete session.
+function pickDeleteSession(row: HTMLElement) {
+  fireEvent.click(within(sessionItem(row)).getByRole("button", { name: /^Actions for / }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Delete session" }));
+}
+
+test("Delete session asks first, then deletes the session, and its row goes", async () => {
+  const { bridge, session } = await oneSession();
+  await bridge.sendMessage(session, "fix the login bug");
+  const deleted: string[][] = [];
+  render(
+    <Sidebar
+      bridge={bridge}
+      selected={null}
+      onSelect={() => {}}
+      {...noAgents}
+      onSessionsDeleted={(sessions) => deleted.push(sessions)}
+    />,
+  );
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+
+  pickDeleteSession(sessionRows()[0]);
+  const dialog = screen.getByRole("dialog", { name: "Delete session" });
+  expect(dialog.textContent).toContain("grove ends “fix the login bug” and deletes its conversation for good.");
+  expect(dialog.textContent).not.toMatch(/subagent/);
+  expect(await bridge.agentSessions()).toHaveLength(1);
+  await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Delete session" })));
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(sessionRows()).toEqual([]);
+  expect(await bridge.agentSessions()).toEqual([]);
+  expect(deleted).toEqual([[session]]);
+  // Its worktree stays, now with no session.
+  expect(await worktreeRow("feat-35-tauri-sidebar")).toBeTruthy();
+});
+
+test("Delete session says its subagent sessions are deleted too, and deletes them", async () => {
+  const { bridge, session } = await oneSession();
+  const subagent = bridge.spawnAgentWithoutPanel(feature, "Claude", session);
+  const nested = bridge.spawnAgentWithoutPanel(feature, "Claude", subagent);
+  const deleted: string[][] = [];
+  render(
+    <Sidebar
+      bridge={bridge}
+      selected={null}
+      onSelect={() => {}}
+      {...noAgents}
+      onSessionsDeleted={(sessions) => deleted.push(sessions)}
+    />,
+  );
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(3));
+
+  pickDeleteSession(sessionRows()[0]);
+  const dialog = screen.getByRole("dialog", { name: "Delete session" });
+  expect(dialog.textContent).toContain("Its 2 subagent sessions are deleted too.");
+  await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Delete session" })));
+
+  expect(sessionRows()).toEqual([]);
+  expect(deleted).toEqual([[session, subagent, nested]]);
+  expect(bridge.killed).toEqual([session, subagent, nested]);
+});
+
+test("Cancel in Delete session deletes nothing, and a failed delete says why", async () => {
+  const { bridge, session } = await oneSession();
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+
+  pickDeleteSession(sessionRows()[0]);
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
   expect(sessionRows()).toHaveLength(1);
-  // Only a worktree with sessions has one.
-  expect(screen.queryByRole("button", { name: "Sessions of spike" })).toBeNull();
+
+  const why = `sessions in ${feature} did not exit in time, so grove left it as it was`;
+  vi.spyOn(bridge, "deleteAgentSession").mockRejectedValueOnce(why);
+  pickDeleteSession(sessionRows()[0]);
+  const dialog = screen.getByRole("dialog", { name: "Delete session" });
+  await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Delete session" })));
+
+  expect(within(dialog).getByRole("alert").textContent).toBe(why);
+  expect(sessionRows()).toHaveLength(1);
+  expect(session).toBe("0");
 });
-test("a worktree whose setup script runs shows Setup running in place of its state", async () => {
+
+test("a worktree with no session is dimmed at the bottom of its project, and selecting it selects the worktree", async () => {
+  const { bridge } = await oneSession();
+  const selected: (string | null)[] = [];
+  render(<Sidebar bridge={bridge} selected={null} onSelect={(path) => selected.push(path)} {...noAgents} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+  const repo = screen.getByRole("region", { name: "grove" });
+
+  // feat-35 has the session, so it has no worktree row.
+  expect(listed(repo)).toEqual([
+    ["main (main worktree)", "/code/grove"],
+    ["spike", "/code/grove-wt/spike"],
+  ]);
+  const rows = [...repo.querySelectorAll(".session-item, .wt-row")];
+  expect(rows.map((row) => row.classList.contains("session-item"))).toEqual([true, false, false]);
+  expect(rows.slice(1).every((row) => row.classList.contains("dimmed"))).toBe(true);
+  expect(menuItems("spike")).toEqual(["Start Claude Code", "Change base branch", "Forget", "Delete"]);
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+
+  fireEvent.click(screen.getByRole("button", { name: "spike" }));
+  expect(selected).toEqual(["/code/grove-wt/spike"]);
+});
+
+test("dimmed rows show in the muted color", () => {
+  expect(sidebarStyles).toMatch(/\.dimmed \.session-title[^{]*\{[^}]*color: var\(--muted\)/);
+  expect(sidebarStyles).toMatch(/\.dimmed \.wt-name[^{]*\{[^}]*color: var\(--muted\)/);
+});
+
+test("the core saying the sessions changed lists them again", async () => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  await bridge.addRepo("/code/grove");
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await screen.findByRole("region", { name: "grove" });
+  expect(sessionRows()).toEqual([]);
+
+  await act(async () => void (await bridge.spawnAgent(feature, "Claude", null)));
+
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+});
+
+test("a worktree whose setup script runs shows Setup running on its row", async () => {
   const repo = [
     { path: "/code/grove", branch: "main", isMain: true },
     { path: feature, branch: "feat-35-tauri-sidebar", isMain: false, setup: { state: "Running" as const } },
@@ -289,16 +470,7 @@ test("a worktree whose setup script runs shows Setup running in place of its sta
   const bridge = fakeBridge({ "/code/grove": repo });
   await bridge.addRepo("/code/grove");
 
-  render(
-    <Sidebar
-      bridge={bridge}
-      selected={null}
-      onSelect={() => {}}
-      {...noAgents}
-      agents={[{ session: "1", worktree: feature, agent: "Claude", panel: "1" }]}
-      agentStates={{ "1": { session: "1", state: "Working", source: "Protocol" } }}
-    />,
-  );
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
   const row = await worktreeRow("feat-35-tauri-sidebar");
 
   expect(dot(row)).toBe("Setup running");
@@ -319,13 +491,18 @@ test("the top rows fit the sidebar's width, so each key hint shows in full", asy
   expect([search.minWidth, search.width]).toEqual(["0px", "0px"]);
 });
 
-test("a long worktree name is cut and fades out, and its dot is never squeezed", async () => {
+test("a long worktree name or session title is cut and fades out, and the dot is never squeezed", async () => {
   const style = document.createElement("style");
   style.textContent = sidebarStyles;
   document.head.append(style);
   onTestFinished(() => style.remove());
-  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  const repo = [
+    { path: "/code/grove", branch: "main", isMain: true },
+    { path: "/code/grove-wt/spike", branch: "spike", isMain: false, setup: { state: "Running" as const } },
+  ];
+  const bridge = fakeBridge({ "/code/grove": repo });
   await bridge.addRepo("/code/grove");
+  const session = await bridge.spawnAgent("/code/grove", "Claude", null);
 
   render(
     <Sidebar
@@ -333,46 +510,41 @@ test("a long worktree name is cut and fades out, and its dot is never squeezed",
       selected={null}
       onSelect={() => {}}
       {...noAgents}
-      agents={[{ session: "1", worktree: feature, agent: "Claude", panel: "1" }]}
-      agentStates={{ "1": { session: "1", state: "NeedsInput", kind: "Question", source: "Hook" } }}
+      agentStates={{ [session]: { session, state: "NeedsInput", kind: "Question", source: "Hook" } }}
     />,
   );
-  const row = await worktreeRow("feat-35-tauri-sidebar");
-  const title = getComputedStyle(row.querySelector(".wt-title")!);
-  const statusDot = getComputedStyle(row.closest(".wt-row")!.querySelector(".status-dot")!);
+  const row = await worktreeRow("spike");
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
 
-  expect([title.overflow, title.whiteSpace, title.minWidth]).toEqual(["hidden", "nowrap", "0px"]);
-  expect(statusDot.flexShrink).toBe("0");
+  for (const title of [row.querySelector(".wt-title")!, sessionRows()[0].querySelector(".session-title")!]) {
+    const box = getComputedStyle(title);
+    expect([box.overflow, box.whiteSpace, box.minWidth]).toEqual(["hidden", "nowrap", "0px"]);
+  }
+  // The title gives way first. The branch keeps its width, up to a third of the row.
+  const branch = getComputedStyle(sessionRows()[0].querySelector(".session-branch")!);
+  expect([branch.flexShrink, branch.maxWidth]).toEqual(["0", "33%"]);
+  for (const each of [row, sessionRows()[0]]) {
+    expect(getComputedStyle(each.closest(".wt-row, .session-item")!.querySelector(".status-dot")!).flexShrink).toBe("0");
+  }
 });
-test("Tab moves from a worktree's row to its chevron, its menu, then its session rows", async () => {
-  const bridge = fakeBridge({ "/code/grove": groveRepo });
-  await bridge.addRepo("/code/grove");
 
-  render(
-    <Sidebar
-      bridge={bridge}
-      selected={feature}
-      onSelect={() => {}}
-      {...noAgents}
-      agents={[
-        { session: "1", worktree: feature, agent: "Claude", panel: "1" },
-        { session: "2", worktree: feature, agent: "Codex", panel: "2" },
-      ]}
-    />,
-  );
-  const row = await worktreeRow("feat-35-tauri-sidebar");
-  const item = row.closest("li")!;
+test("Tab moves from a session's row to its menu, then to its subagent session's row", async () => {
+  const { bridge, session } = await oneSession();
+  bridge.spawnAgentWithoutPanel(feature, "Codex", session);
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(2));
+  const item = sessionRows()[0].closest("li")!;
 
   // No element in the sidebar sets tabIndex, so the order of its buttons is the Tab order.
   expect(within(item).getAllByRole("button")).toEqual([
-    row,
-    screen.getByRole("button", { name: "Sessions of feat-35-tauri-sidebar" }),
-    screen.getByRole("button", { name: "Actions for feat-35-tauri-sidebar" }),
-    screen.getByRole("button", { name: "Claude Code" }),
-    screen.getByRole("button", { name: "Codex" }),
+    sessionRows()[0],
+    within(sessionItem(sessionRows()[0])).getByRole("button", { name: /^Actions for / }),
+    sessionRows()[1],
+    within(sessionItem(sessionRows()[1])).getByRole("button", { name: /^Actions for / }),
   ]);
   expect(item.querySelector("[tabindex]")).toBeNull();
 });
+
 // The sidebar's frame: the rows at its top and its footer (#29).
 
 const siteRepo = [
@@ -414,6 +586,23 @@ test("Search hides rows whose display name and branch do not match, and clearing
   search("");
   expect(rowNames()).toEqual(all);
   expect(all).toHaveLength(5);
+});
+
+test("Search finds a session by its title or its worktree's branch", async () => {
+  const bridge = await twoRepos();
+  const login = await bridge.spawnAgent("/code/grove", "Claude", null);
+  await bridge.sendMessage(login, "fix the login bug");
+  await bridge.spawnAgent("/code/site-wt/fix-12", "Claude", null);
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(2));
+
+  search("LOGIN");
+  expect(sessionRowsShown().map(({ title }) => title)).toEqual(["fix the login bug"]);
+  expect(rowNames()).toEqual([]);
+
+  search("pty");
+  expect(sessionRowsShown().map(({ branch }) => branch)).toEqual(["fix-12-pty"]);
+  expect(screen.queryByRole("region", { name: "grove" })).toBeNull();
 });
 
 test("Cmd-K puts focus in Search, and Escape there clears it", async () => {
@@ -667,23 +856,23 @@ test("a worktree whose setup script runs has no Start Claude Code in its menu", 
   expect(menuItems("feat-35-tauri-sidebar")).toEqual(["Change base branch", "Forget", "Delete"]);
 });
 
-test("the selected worktree's row is marked, and a Working dot pulses", async () => {
-  const bridge = fakeBridge({ "/code/grove": groveRepo });
-  await bridge.addRepo("/code/grove");
+test("the selected worktree's row is marked, and a session's Working dot pulses", async () => {
+  const { bridge, session } = await oneSession();
   render(
     <Sidebar
       bridge={bridge}
-      selected={feature}
+      selected="/code/grove-wt/spike"
       onSelect={() => {}}
       {...noAgents}
-      agents={[{ session: "1", worktree: feature, agent: "Claude", panel: "1" }]}
-      agentStates={{ "1": { session: "1", state: "Working", source: "Protocol" } }}
+      agentStates={{ [session]: { session, state: "Working", source: "Protocol" } }}
     />,
   );
-  const row = await worktreeRow("feat-35-tauri-sidebar");
+  const row = await worktreeRow("spike");
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
 
   expect(row.closest(".wt-row")!.classList.contains("selected")).toBe(true);
-  expect(row.closest(".wt-row")!.querySelector(".status-dot")!.classList.contains("status-working")).toBe(true);
+  expect(row.getAttribute("aria-current")).toBe("true");
+  expect(sessionItem(sessionRows()[0]).querySelector(".status-dot")!.classList.contains("status-working")).toBe(true);
   expect(sidebarStyles).toMatch(/\.status-working\s*\{[^}]*animation/);
   expect(sidebarStyles).toMatch(/prefers-reduced-motion[\s\S]*\.status-working[^}]*animation: none/);
 });
@@ -751,118 +940,4 @@ test("the sidebar's addRepo handle opens the picker and adds the folder, as Add 
 
   expect(await screen.findByRole("region", { name: "grove" })).toBeTruthy();
   expect(bridge.foldersPicked).toBe(1);
-});
-
-// Each worktree row's name and the path of the worktree row it nests under, null at the top level.
-function nesting() {
-  return screen
-    .getAllByRole("button")
-    .filter((button) => button.classList.contains("wt-name"))
-    .map((button) => [button.textContent, button.closest("li")!.parentElement!.closest("li")?.title ?? null]);
-}
-
-const nestingRepo = [
-  { path: "/code/grove", branch: "main", isMain: true },
-  { path: "/code/grove-wt/feat-35", branch: "feat-35", isMain: false, nestedUnder: "/code/grove-wt/plan" },
-  { path: "/code/grove-wt/plan", branch: "plan", isMain: false },
-  { path: "/code/grove-wt/deep", branch: "deep", isMain: false, nestedUnder: "/code/grove-wt/feat-35" },
-  { path: "/code/grove-wt/spike", branch: "spike", isMain: false, nestedUnder: "/code/other-repo" },
-  { path: "/code/grove-wt/loop-a", branch: "loop-a", isMain: false, nestedUnder: "/code/grove-wt/loop-b" },
-  { path: "/code/grove-wt/loop-b", branch: "loop-b", isMain: false, nestedUnder: "/code/grove-wt/loop-a" },
-];
-
-test("a nested worktree shows one level deep under the top worktree of its chain", async () => {
-  const bridge = fakeBridge({ "/code/grove": nestingRepo });
-  await bridge.addRepo("/code/grove");
-  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
-  await screen.findByRole("region", { name: "grove" });
-
-  // A worktree of another repo, or a loop, nests nothing. An old state file may hold either.
-  expect(nesting()).toEqual([
-    ["main (main worktree)", null],
-    ["plan", null],
-    ["feat-35", "/code/grove-wt/plan"],
-    ["deep", "/code/grove-wt/plan"],
-    ["spike", null],
-    ["loop-a", null],
-    ["loop-b", null],
-  ]);
-  fireEvent.click(screen.getByRole("button", { name: "Sessions of plan" }));
-  expect(nesting().map(([name]) => name)).not.toContain("feat-35");
-});
-
-test("a nested worktree's row starts right of the tree line, so the line never crosses its ring", async () => {
-  const style = document.createElement("style");
-  style.textContent = sidebarStyles;
-  document.head.append(style);
-  onTestFinished(() => style.remove());
-  const bridge = fakeBridge({ "/code/grove": nestingRepo });
-  await bridge.addRepo("/code/grove");
-  render(<Sidebar bridge={bridge} selected="/code/grove-wt/feat-35" onSelect={() => {}} {...noAgents} />);
-  const row = (await worktreeRow("feat-35")).closest<HTMLElement>(".wt-row")!;
-
-  const box = getComputedStyle(row);
-  expect([box.marginLeft, box.paddingLeft]).toEqual(["calc(var(--space-32) - var(--space-2))", "0"]);
-});
-
-test("a nested worktree stays nested after the agent session that nested it ended", async () => {
-  const bridge = fakeBridge({ "/code/grove": nestingRepo });
-  await bridge.addRepo("/code/grove");
-  render(
-    <Sidebar
-      bridge={bridge}
-      selected={null}
-      onSelect={() => {}}
-      {...noAgents}
-      agents={[{ session: "1", worktree: "/code/grove-wt/plan", agent: "Claude", panel: "1" }]}
-      agentStates={{ "1": { session: "1", state: "Exited", source: "Protocol" } }}
-    />,
-  );
-  await screen.findByRole("region", { name: "grove" });
-
-  expect(nesting()).toContainEqual(["feat-35", "/code/grove-wt/plan"]);
-});
-
-test("a nested worktree keeps its own agent session rows, nested under its row", async () => {
-  const bridge = fakeBridge({ "/code/grove": nestingRepo });
-  await bridge.addRepo("/code/grove");
-  const nested = "/code/grove-wt/feat-35";
-  render(
-    <Sidebar
-      bridge={bridge}
-      selected={null}
-      onSelect={() => {}}
-      {...noAgents}
-      agents={[
-        { session: "1", worktree: nested, agent: "Claude", panel: "1" },
-        { session: "2", worktree: nested, agent: "Codex", panel: "2" },
-      ]}
-    />,
-  );
-  await screen.findByRole("region", { name: "grove" });
-
-  expect(sessionRows().map((row) => [row.textContent, row.closest("ul")!.closest("li")!.title])).toEqual([
-    ["Claude Code", nested],
-    ["Codex", nested],
-  ]);
-  fireEvent.click(screen.getByRole("button", { name: "Sessions of feat-35" }));
-  expect(screen.queryAllByRole("button").filter((b) => b.classList.contains("session-row"))).toEqual([]);
-  expect(nesting()).toContainEqual(["feat-35", "/code/grove-wt/plan"]);
-});
-
-test("the first state of a session the sidebar has not seen lists the worktrees again", async () => {
-  const bridge = fakeBridge({ "/code/grove": groveRepo });
-  await bridge.addRepo("/code/grove");
-  const sidebar = (agentStates: Record<string, AgentStateChanged>) => (
-    <Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} agentStates={agentStates} />
-  );
-  const { rerender } = render(sidebar({}));
-  await screen.findByRole("region", { name: "grove" });
-  expect(nesting()).toContainEqual(["feat-35-tauri-sidebar", null]);
-
-  // A subagent of a session in the main worktree starts in feat-35, which nests it there.
-  bridge.nestWorktree(feature, "/code/grove");
-  rerender(sidebar({ "9": { session: "9", state: "Working", source: "Protocol" } }));
-
-  await vi.waitFor(() => expect(nesting()).toContainEqual(["feat-35-tauri-sidebar", "/code/grove"]));
 });

@@ -470,6 +470,13 @@ export interface Bridge {
    * mode, ended, was resumed or was deleted. A new state comes through `onAgentState` alone.
    */
   onAgentSessionsChanged(listener: () => void): () => void;
+  /** Deletes the agent session and every subagent session below it, for good. */
+  deleteAgentSession(session: SessionId): Promise<void>;
+  /**
+   * Starts the ended agent session again under the same id, resuming its conversation. It shows in
+   * the agent panel it had, or in a new one after the last. A running one stays as it is.
+   */
+  resumeAgentSession(session: SessionId): Promise<void>;
   /**
    * Calls `listener` each time the user clicks an agent session's notification, after grove came
    * forward. Returns the unsubscribe.
@@ -684,6 +691,8 @@ export const tauriBridge: Bridge = {
     const unlisten = listen("agent-sessions-changed", () => listener());
     return () => void unlisten.then((stop) => stop());
   },
+  deleteAgentSession: (session) => invoke("delete_agent_session", { session }),
+  resumeAgentSession: (session) => invoke("resume_agent_session", { session }),
   onNotificationClicked(listener) {
     const unlisten = listen<NotificationClicked>("notification-clicked", (event) => listener(event.payload));
     return () => void unlisten.then((stop) => stop());

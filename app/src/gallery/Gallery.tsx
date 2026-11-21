@@ -1,12 +1,12 @@
 import { Copy, Ellipsis, Plus } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 
-import type { AgentState as State, AgentStateChanged, Workspace } from "../bridge";
+import type { AgentState as State, Workspace } from "../bridge";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { ChatPanel } from "../ChatPanel";
 import type { FakeBridge, FakeWorktree } from "../fakeBridge";
 import { PanelTabs } from "../PanelTabs";
-import { type AgentSession, Sidebar } from "../Sidebar";
+import { Sidebar } from "../Sidebar";
 import { AgentState } from "../ui/AgentState";
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
@@ -70,17 +70,33 @@ const WORKSPACE: Workspace = {
   terminal: false,
 };
 
-/** One agent session per state, so the sidebar shows each, numbered as the app numbers them. */
-const SESSIONS: AgentSession[] = STATES.map((_, at) => ({
-  session: String(100 + at),
-  worktree: FEATURE,
-  agent: at % 3 === 2 ? "Codex" : "Claude",
-  panel: String(100 + at),
-}));
+// What each gallery session's first message asks, one per state.
+const TITLES = [
+  "Fix the login redirect",
+  "Add the diff parity test",
+  "Check the parser edge cases",
+  "Run the gates",
+  "Review the sidebar",
+  "Rename the profile field",
+  "Spike the port router",
+];
 
-const SESSION_STATES: Record<string, AgentStateChanged> = Object.fromEntries(
-  SESSIONS.map(({ session }, at) => [session, { ...STATES[at], session, source: "Protocol" }]),
-);
+/**
+ * Starts one agent session per state on the fake bridge, so the sidebar shows each: the Question
+ * one as a subagent of the first, the Idle one in the local checkout, and the Exited one ended.
+ */
+export async function addGallerySessions(bridge: FakeBridge) {
+  let first: string | undefined;
+  for (const [at, state] of STATES.entries()) {
+    const worktree = state.state === "Idle" ? MAIN : FEATURE;
+    const parent = state.state === "NeedsInput" && state.kind === "Question" ? first : undefined;
+    const session = bridge.spawnAgentWithoutPanel(worktree, at % 3 === 2 ? "Codex" : "Claude", parent);
+    first ??= session;
+    await bridge.sendMessage(session, TITLES[at]);
+    bridge.agentStateChanged({ session, ...state, source: "Protocol" });
+    if (state.state === "Exited") bridge.exit(session);
+  }
+}
 
 /**
  * Every UI component in every state, on the fake bridge, with a light and dark switch. The dev
@@ -301,13 +317,13 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
             bridge={bridge}
             selected={FEATURE}
             onSelect={() => {}}
-            agents={SESSIONS}
-            agentStates={SESSION_STATES}
-            shownAgents={[SESSIONS[0].session]}
+            agentStates={{}}
+            shownAgents={pane ? [pane] : []}
             onStartAgent={() => {}}
             onStartAgentAfterSetup={() => {}}
-            onShowAgent={() => {}}
             onFocusAgent={() => {}}
+            onSessionResumed={() => {}}
+            onSessionsDeleted={() => {}}
             onHideSidebar={() => {}}
             onDeleting={() => {}}
             onRemoved={() => {}}
