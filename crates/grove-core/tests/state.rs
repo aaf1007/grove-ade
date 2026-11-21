@@ -318,7 +318,7 @@ fn a_state_file_from_before_profiles_moves_run_sessions_and_launch_args_into_ove
     // The next save writes the new version, which reads back the same.
     block_on(core.set_repo_settings(&app, migrated.clone())).unwrap();
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&state).unwrap()).unwrap();
-    assert_eq!(saved["version"], 8);
+    assert_eq!(saved["version"], 9);
     let core = restart(core, dir.path());
     assert_eq!(core.repo_settings(&app).unwrap(), migrated);
 }
