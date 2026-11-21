@@ -160,15 +160,25 @@ const everyTheme = {
 };
 
 test.each(Object.entries(everyTheme))("the surface steps of %s are far enough apart", (_, values) => {
+  expect(surfacesTooClose(values)).toEqual([]);
+});
+
+test("the surface step check names the pair that is too close", () => {
+  const values = { "--sidebar": "#000000", "--bg": "#202020", "--panel": "#404040", "--code-bg": "#424242" };
+  expect(surfacesTooClose(values)).toEqual(["panel and code-bg"]);
+});
+
+// Each pair of neighbouring surfaces, sorted by lightness, that sits closer than the minimum step.
+function surfacesTooClose(values: Record<string, string>): string[] {
   const steps = surfaces
     .map((surface) => ({ surface, lightness: lightness(resolve(values, surface)) }))
     .sort((first, second) => first.lightness - second.lightness);
-  const tooClose = steps
+  return steps
     .slice(1)
-    .filter((step, index) => step.lightness - steps[index].lightness < minimumLightnessStep)
-    .map((step, index) => `${steps[index].surface} and ${step.surface}`);
-  expect(tooClose).toEqual([]);
-});
+    .map((upper, index) => ({ lower: steps[index], upper }))
+    .filter(({ lower, upper }) => upper.lightness - lower.lightness < minimumLightnessStep)
+    .map(({ lower, upper }) => `${lower.surface} and ${upper.surface}`);
+}
 
 test("the chat area is the darkest surface in the default dark theme", () => {
   const chat = lightness(resolve(defaultDark, "bg"));
