@@ -593,6 +593,8 @@ function ChatView({
   const [error, setError] = useState<string | null>(null);
   // Requests the core refused an answer to: they ended before the panel heard.
   const [refused, setRefused] = useState<string[]>([]);
+  // Requests with an answer on its way. The core would refuse a second one.
+  const [answering, setAnswering] = useState<string[]>([]);
   // How many messages the conversation had when it came back from terminal mode.
   const resumedAt = useRef<number | null>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -726,7 +728,7 @@ function ChatView({
     draft.trim() !== "" &&
     !changingAgent &&
     !switchingMode &&
-    (declining !== undefined || (!turnRunning && models !== null));
+    (declining ? !answering.includes(declining.request) : !turnRunning && models !== null);
   const agentLocked =
     unechoed.length > 0 || messages.some((m) => m.type === "User" || m.type === "ReviewBatch");
 
@@ -782,6 +784,8 @@ function ChatView({
 
   // A refused answer means the request has ended.
   function answer(request: string, reply: Reply) {
+    if (answering.includes(request)) return Promise.resolve();
+    setAnswering((known) => [...known, request]);
     return bridge.answer(session, request, reply).catch((e: unknown) => {
       setRefused((known) => [...known, request]);
       throw e;

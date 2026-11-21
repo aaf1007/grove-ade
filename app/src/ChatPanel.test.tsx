@@ -1322,6 +1322,7 @@ test("a declined call keeps its call's clock time", async () => {
 
 test("an approval's buttons send once, even when pressed again before the answer is back", async () => {
   const bridge = await asked(bashCall, approval);
+  const answer = vi.spyOn(bridge, "answer");
 
   const approve = screen.getByRole("button", { name: "Approve" });
   fireEvent.click(approve);
@@ -1329,7 +1330,37 @@ test("an approval's buttons send once, even when pressed again before the answer
   fireEvent.click(screen.getByRole("button", { name: "Decline" }));
   await settle();
 
+  expect(answer).toHaveBeenCalledTimes(1);
   expect(bridge.answered).toHaveLength(1);
+});
+
+test("a message sent while an approval's answer is on its way sends no second reply and stays in the composer", async () => {
+  const bridge = await asked(bashCall, approval);
+  const answer = vi.spyOn(bridge, "answer");
+
+  fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+  fireEvent.change(composer(), { target: { value: "use vitest instead" } });
+  fireEvent.keyDown(composer(), { key: "Enter" });
+  await settle();
+
+  expect(answer).toHaveBeenCalledTimes(1);
+  expect(bridge.answered.map((a) => a.reply)).toEqual([{ type: "AllowOnce" }]);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect((composer() as HTMLTextAreaElement).value).toBe("use vitest instead");
+});
+
+test("an approval's buttons send nothing while a decline from the composer is on its way", async () => {
+  const bridge = await asked(bashCall, approval);
+  const answer = vi.spyOn(bridge, "answer");
+
+  fireEvent.change(composer(), { target: { value: "use vitest instead" } });
+  fireEvent.keyDown(composer(), { key: "Enter" });
+  fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+  await settle();
+
+  expect(answer).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByText("Declined: use vitest instead")).toBeTruthy();
 });
 
 test("while an approval waits, a message from the composer declines it with that message", async () => {
