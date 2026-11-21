@@ -14,6 +14,7 @@ import type {
   Worktree,
 } from "./bridge";
 import { useSetting } from "./settings";
+import { keyHint, shortcut } from "./shortcuts";
 import { stateWord } from "./ui/AgentState";
 import { IconButton } from "./ui/IconButton";
 import { Menu } from "./ui/Menu";
@@ -54,6 +55,10 @@ export interface SidebarHandle {
   addRepo(): void;
   /** Puts focus on the sidebar switch in the top row. */
   focusSidebarSwitch(): void;
+  /** Opens New worktree, as the sidebar's row does. */
+  newWorktree(): void;
+  /** Shows the sidebar and puts focus in Search. */
+  focusSearch(): void;
 }
 
 /** What a worktree's menu does. */
@@ -229,12 +234,6 @@ export function Sidebar({
     refresh();
   }
 
-  const sidebarSwitch = useRef<HTMLButtonElement>(null);
-  useImperativeHandle(ref, () => ({
-    addRepo: () => void addRepo(),
-    focusSidebarSwitch: () => sidebarSwitch.current?.focus(),
-  }));
-
   function toggleRepo(path: string) {
     setFoldedRepos((folded) => toggled(folded, path));
   }
@@ -250,24 +249,17 @@ export function Sidebar({
     if (newWorktreeRepo) setDialog({ kind: "new", repo: newWorktreeRepo });
   }
 
-  // Cmd-N and Cmd-K, unless a dialog is open or a terminal or an editor took the key.
-  const onKey = useEffectEvent((event: KeyboardEvent) => {
-    if (event.defaultPrevented || dialog || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-    const key = event.key.toLowerCase();
-    if (key === "n" && newWorktreeRepo) {
-      event.preventDefault();
-      newWorktree();
-    } else if (key === "k") {
-      event.preventDefault();
+  const sidebarSwitch = useRef<HTMLButtonElement>(null);
+  useImperativeHandle(ref, () => ({
+    addRepo: () => void addRepo(),
+    focusSidebarSwitch: () => sidebarSwitch.current?.focus(),
+    newWorktree,
+    focusSearch() {
       // Shown first, since a hidden box takes no focus.
       flushSync(() => onShowSidebar?.());
       searchBox.current?.focus();
-    }
-  });
-  useEffect(() => {
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+    },
+  }));
 
   const names = sessionNames(agents);
   // A worktree's row, then under it its agent sessions and the worktrees nested under it. A nested
@@ -334,13 +326,13 @@ export function Sidebar({
       <nav className="sidebar-nav" aria-label="Sidebar">
         <button
           className="nav-row"
-          aria-keyshortcuts="Meta+N"
+          aria-keyshortcuts={shortcut("newWorktree").keys}
           disabled={!newWorktreeRepo}
           onClick={newWorktree}
         >
           <Plus aria-hidden="true" />
           New worktree
-          <kbd aria-hidden="true">⌘N</kbd>
+          <kbd aria-hidden="true">{keyHint(shortcut("newWorktree").keys)}</kbd>
         </button>
         <label className="nav-row search-row">
           <Search aria-hidden="true" />
@@ -348,7 +340,7 @@ export function Sidebar({
             ref={searchBox}
             type="search"
             aria-label="Search"
-            aria-keyshortcuts="Meta+K"
+            aria-keyshortcuts={shortcut("search").keys}
             placeholder="Search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -356,13 +348,13 @@ export function Sidebar({
               if (event.key === "Escape") setQuery("");
             }}
           />
-          <kbd aria-hidden="true">⌘K</kbd>
+          <kbd aria-hidden="true">{keyHint(shortcut("search").keys)}</kbd>
         </label>
-        <button className="nav-row" aria-keyshortcuts="Meta+J" onClick={onJump}>
+        <button className="nav-row" aria-keyshortcuts={shortcut("jump").keys} onClick={onJump}>
           <Bell aria-hidden="true" />
           Needs you{" "}
           <span className={waiting > 0 ? "count waiting" : "count"}>{waiting}</span>
-          <kbd aria-hidden="true">⌘J</kbd>
+          <kbd aria-hidden="true">{keyHint(shortcut("jump").keys)}</kbd>
         </button>
         <button className="nav-row" disabled={!selected} onClick={onOpenProfiles}>
           <SlidersHorizontal aria-hidden="true" />

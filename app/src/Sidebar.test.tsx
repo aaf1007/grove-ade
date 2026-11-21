@@ -5,6 +5,7 @@ import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 import type { AgentStateChanged, Worktree } from "./bridge";
 import { fakeBridge, type FakeBridge } from "./fakeBridge";
 import sidebarStyles from "./styles.css?raw";
+import { keyHint, type ShortcutId, SHORTCUTS } from "./shortcuts";
 import { Sidebar, type SidebarHandle } from "./Sidebar";
 import agentStateStyles from "./ui/AgentState.css?raw";
 import { menuItems } from "./testing";
@@ -416,12 +417,13 @@ test("Search hides rows whose display name and branch do not match, and clearing
   expect(all).toHaveLength(5);
 });
 
-test("Cmd-K puts focus in Search, and Escape there clears it", async () => {
-  render(<Sidebar bridge={await twoRepos()} selected={null} onSelect={() => {}} {...noAgents} />);
+test("focusing Search puts focus in it, and Escape there clears it", async () => {
+  const handle = createRef<SidebarHandle>();
+  render(<Sidebar ref={handle} bridge={await twoRepos()} selected={null} onSelect={() => {}} {...noAgents} />);
   await worktreeRow("Terminal resize");
   const box = screen.getByRole("searchbox", { name: "Search" });
 
-  fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+  act(() => handle.current!.focusSearch());
   expect(document.activeElement).toBe(box);
 
   search("resize");
@@ -430,10 +432,11 @@ test("Cmd-K puts focus in Search, and Escape there clears it", async () => {
   expect(rowNames()).toHaveLength(5);
 });
 
-test("New worktree and Cmd-N open the new worktree dialog for the selected worktree's repo", async () => {
+test("New worktree, by click or by key, opens the new worktree dialog for the selected worktree's repo", async () => {
   const bridge = await twoRepos();
   const asked = vi.spyOn(bridge, "suggestProfile");
-  render(<Sidebar bridge={bridge} selected="/code/site-wt/fix-12" onSelect={() => {}} {...noAgents} />);
+  const handle = createRef<SidebarHandle>();
+  render(<Sidebar ref={handle} bridge={bridge} selected="/code/site-wt/fix-12" onSelect={() => {}} {...noAgents} />);
   await worktreeRow("Terminal resize");
 
   fireEvent.click(screen.getByRole("button", { name: "New worktree" }));
@@ -442,9 +445,23 @@ test("New worktree and Cmd-N open the new worktree dialog for the selected workt
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
   await expect.poll(() => screen.queryByRole("dialog")).toBeNull();
 
-  fireEvent.keyDown(document.body, { key: "n", metaKey: true });
+  act(() => handle.current!.newWorktree());
   expect(await screen.findByRole("dialog", { name: "New worktree" })).toBeTruthy();
   expect(asked).toHaveBeenCalledTimes(2);
+});
+
+test("the sidebar's key hints come from the shortcut list", () => {
+  render(<Sidebar bridge={fakeBridge({})} selected={null} onSelect={() => {}} {...noAgents} />);
+  const rows: [ShortcutId, HTMLElement][] = [
+    ["newWorktree", screen.getByRole("button", { name: "New worktree" })],
+    ["search", screen.getByRole("searchbox", { name: "Search" })],
+    ["jump", screen.getByRole("button", { name: /^Needs you/ })],
+  ];
+  for (const [id, control] of rows) {
+    const { keys } = SHORTCUTS.find((shortcut) => shortcut.id === id)!;
+    expect(control.getAttribute("aria-keyshortcuts")).toBe(keys);
+    expect(control.closest(".nav-row")!.querySelector("kbd")!.textContent).toBe(keyHint(keys));
+  }
 });
 
 test("with no worktree selected, New worktree uses the first repo, and with no repo it is off", async () => {
