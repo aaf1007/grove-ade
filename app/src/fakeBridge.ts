@@ -2,7 +2,6 @@ import type {
   AccountChanged,
   AgentChange,
   Agent,
-  AgentSessionRecord,
   AgentMessage,
   AgentStateChanged,
   BatchComment,
@@ -335,6 +334,15 @@ export function fakeBridge(
   const acks: FakeBridge["acks"] = [];
   const focused: SessionId[] = [];
   const agentStates = new Map<SessionId, AgentStateChanged>();
+  // Each agent session's title, start and the time it entered its state, as the core records them.
+  const titles = new Map<SessionId, string>();
+  const created = new Map<SessionId, number>();
+  const sinces = new Map<SessionId, number>();
+  // Each listed agent session's parent, until it is deleted or its worktree removed.
+  const parents = new Map<SessionId, SessionId | null>();
+  const sessionsListeners = new Set<() => void>();
+  // As the core: what `agentSessions` lists changed.
+  const sessionsChanged = () => sessionsListeners.forEach((listener) => listener());
   // Attention queue (#53): each agent session's worktree, and when it entered its state, as a count.
   const agentWorktrees = new Map<SessionId, string>();
   const entered = new Map<SessionId, number>();
@@ -349,13 +357,6 @@ export function fakeBridge(
   const printed = new Map<SessionId, Uint8Array>();
   // Shell and agent sessions share the core's ids.
   let sessions = 0;
-  // Agent session records (#62): each listed agent session's parent, title and start, until it is
-  // deleted or its worktree removed.
-  const records = new Map<SessionId, { parent: SessionId | null; title: string | null; createdUnixMs: number }>();
-  const recordListeners = new Set<() => void>();
-  function agentSessionsChanged() {
-    recordListeners.forEach((listener) => listener());
-  }
   // Files panel (#124).
   const readFiles: FakeBridge["readFiles"] = [];
   const writtenFiles: FakeBridge["writtenFiles"] = [];
@@ -420,13 +421,13 @@ export function fakeBridge(
 
   function sessionExited(session: SessionId) {
     running.delete(session);
-    if (records.has(session)) agentSessionsChanged();
     const run = spawnedRuns.find((s) => s.session === session);
     if (run) {
       dropStoppedRun(run.worktree, run.name);
       stoppedRuns.push({ session, worktree: run.worktree, name: run.name, kept: true });
     }
     exitListeners.forEach((listener) => listener(session));
+    if (modes.has(session)) sessionsChanged();
   }
 
   function dropStoppedRun(worktree: string, name: string) {
@@ -485,6 +486,9 @@ export function fakeBridge(
     if (last?.state !== change.state || attentionRank(last) !== attentionRank(change)) {
       entered.set(change.session, changesSoFar++);
     }
+    // As in the core: the same state from another source keeps the time it was entered.
+    const kind = (state: AgentStateChanged) => (state.state === "NeedsInput" ? state.kind : null);
+    if (last?.state !== change.state || kind(last) !== kind(change)) sinces.set(change.session, Date.now());
     agentStates.set(change.session, change);
     stateListeners.forEach((listener) => listener(change));
   }
@@ -530,17 +534,19 @@ export function fakeBridge(
     modes.set(session, "Chat");
     agentWorktrees.set(session, worktree);
     spawnedAgents.push({ session, worktree, agent });
-    records.set(session, { parent, title: null, createdUnixMs: Date.now() });
-    agentSessionsChanged();
+    created.set(session, Date.now());
+    sinces.set(session, Date.now());
+    parents.set(session, parent);
+    sessionsChanged();
     return session;
   }
 
   // As the core: `session`, then every subagent session below it.
   function withSubagents(session: SessionId): SessionId[] {
-    if (!records.has(session)) throw `session ${session} is not an agent session`;
+    if (!parents.has(session)) throw `session ${session} is not an agent session`;
     const found = [session];
     for (let at = 0; at < found.length; at++) {
-      for (const [other, { parent }] of records) {
+      for (const [other, parent] of parents) {
         if (parent === found[at] && !found.includes(other)) found.push(other);
       }
     }
@@ -601,11 +607,13 @@ export function fakeBridge(
       const own = [...spawned, ...spawnedRuns].some((s) => s.session === session && s.worktree === worktree);
       if (own || agentWorktrees.get(session) === worktree) running.delete(session);
     }
+    // The core lists only the sessions of tracked worktrees.
+    for (const session of [...parents.keys()]) {
+      if (agentWorktrees.get(session) === worktree) parents.delete(session);
+    }
+    sessionsChanged();
     tracked.splice(tracked.findIndex((w) => w.path === worktree), 1);
     workspaces.delete(worktree);
-    const dropped = [...records.keys()].filter((session) => agentWorktrees.get(session) === worktree);
-    dropped.forEach((session) => records.delete(session));
-    if (dropped.length > 0) agentSessionsChanged();
     stoppedRuns.splice(0, stoppedRuns.length, ...stoppedRuns.filter((s) => s.worktree !== worktree));
   }
 
@@ -694,6 +702,28 @@ export function fakeBridge(
     onAgentState(listener) {
       stateListeners.add(listener);
       return () => stateListeners.delete(listener);
+    },
+    async agentSessions() {
+      return spawnedAgents.filter(({ session }) => parents.has(session)).map(({ session, worktree, agent }) => {
+        const state = agentStates.get(session);
+        const parent = parents.get(session)!;
+        return {
+          session,
+          worktree,
+          agent,
+          mode: modes.get(session)!,
+          parent: parent !== null && parents.has(parent) ? parent : null,
+          title: titles.get(session) ?? "New session",
+          createdUnixMs: created.get(session)!,
+          ended: !running.has(session) && !switching.has(session),
+          ...(state && (state.state === "NeedsInput" ? { state: state.state, kind: state.kind } : { state: state.state })),
+          sinceUnixMs: sinces.get(session)!,
+        };
+      });
+    },
+    onAgentSessionsChanged(listener) {
+      sessionsListeners.add(listener);
+      return () => sessionsListeners.delete(listener);
     },
     onWarning(listener) {
       warningListeners.add(listener);
@@ -787,12 +817,13 @@ export function fakeBridge(
       chat(session);
       sent.push({ session, text });
       addMessages(session, [{ type: "User", text }]);
-      // As the core: the first line with text of the first message titles the session.
-      const record = records.get(session);
-      const title = text.split("\n").map((line) => line.trim()).find((line) => line !== "");
-      if (record && record.title === null && title) {
-        record.title = title;
-        agentSessionsChanged();
+      const title = text
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line !== "");
+      if (title && !titles.has(session)) {
+        titles.set(session, title);
+        sessionsChanged();
       }
     },
     async interrupt(session) {
@@ -1253,7 +1284,7 @@ export function fakeBridge(
       lastSeq.delete(session);
       printed.set(session, new Uint8Array());
       running.add(session);
-      agentSessionsChanged();
+      sessionsChanged();
     },
     modesSet,
     holdModeSwitches() {
@@ -1337,33 +1368,6 @@ export function fakeBridge(
     reviewBatches,
 
     // Agent session records (#62). As in the core.
-    async agentSessions() {
-      return spawnedAgents
-        .filter(({ session }) => records.has(session))
-        .map(({ session, worktree, agent }): AgentSessionRecord => {
-          const { parent, title, createdUnixMs } = records.get(session)!;
-          const latest = agentStates.get(session);
-          // Left out before its first state, with the kind of a NeedsInput.
-          const state = !latest
-            ? {}
-            : latest.state === "NeedsInput"
-              ? { state: latest.state, kind: latest.kind }
-              : { state: latest.state };
-          return {
-            session,
-            worktree,
-            agent,
-            mode: modes.get(session)!,
-            parent: parent !== null && records.has(parent) ? parent : null,
-            title: title ?? "New session",
-            createdUnixMs,
-            ended: !running.has(session) && !switching.has(session),
-            // The fake does not keep when a session entered its state.
-            sinceUnixMs: createdUnixMs,
-            ...state,
-          };
-        });
-    },
     async deleteAgentSession(session) {
       const deleting = withSubagents(session);
       for (const each of deleting) {
@@ -1371,18 +1375,17 @@ export function fakeBridge(
           killed.push(each);
           sessionExited(each);
         }
-        records.delete(each);
+        parents.delete(each);
       }
       // As the core: their panels go, and each worktree that lost one hears of it.
       const gone = (panel: Workspace["chat"][number]) => panel.session !== null && deleting.includes(panel.session);
       const lostAPanel = [...workspaces].filter(([, saved]) => saved.chat.some(gone));
       for (const [, saved] of lostAPanel) saved.chat = saved.chat.filter((panel) => !gone(panel));
-      agentSessionsChanged();
+      sessionsChanged();
       lostAPanel.forEach(([worktree]) => workspaceChanged(worktree));
     },
     async resumeAgentSession(session) {
-      const record = records.get(session);
-      if (!record) throw `session ${session} is not an agent session`;
+      if (!parents.has(session)) throw `session ${session} is not an agent session`;
       if (switching.has(session)) throw `agent session ${session} is already switching mode`;
       if (running.has(session)) return;
       // As in the core: a new process takes the id, so its output and its subscription start over.
@@ -1401,12 +1404,8 @@ export function fakeBridge(
       if (had) had.shown = true;
       else saved.chat.push({ agent, session, shown: true });
       workspaces.set(worktree, saved);
-      agentSessionsChanged();
+      sessionsChanged();
       workspaceChanged(worktree);
-    },
-    onAgentSessionsChanged(listener) {
-      recordListeners.add(listener);
-      return () => recordListeners.delete(listener);
     },
   };
 }
