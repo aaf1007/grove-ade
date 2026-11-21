@@ -1,10 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { SlidersHorizontal } from "lucide-react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { DetailsCard, type FocusedSession } from "./DetailsCard";
 import { FAKE_MODELS, type FakeChange, fakeBridge } from "./fakeBridge";
-import { Menu } from "./ui/Menu";
 
 afterEach(() => {
   cleanup();
@@ -73,19 +71,13 @@ async function renderCard(
     onStartRun: vi.fn(),
     onOpenDiff: vi.fn(),
     onOpenProfile: vi.fn(),
-    onClose: vi.fn(),
-    onRoom: vi.fn(),
-    onShowOverText: vi.fn(),
   };
-  // With no chat lane to measure, the card always has room. App.test.tsx covers hiding it.
   const card = (more: typeof props) => (
     <DetailsCard
       bridge={bridge}
       worktree={feature}
       runs={[]}
       session={claude}
-      lane={null}
-      hidden={false}
       {...handlers}
       {...props}
       {...more}
@@ -368,65 +360,6 @@ test("the session row shows the focused session's agent, model, effort and mode"
 
   expect(within(row("Session")).getByText("Claude Code")).toBeTruthy();
   expect(within(row("Session")).getByText("Default (recommended) · max · Chat")).toBeTruthy();
-});
-
-test("Escape and a click outside close the card, a click inside does not", async () => {
-  const bridge = await setup();
-  const { onClose } = await renderCard(bridge);
-
-  fireEvent.pointerDown(row("Branch"));
-  expect(onClose).not.toHaveBeenCalled();
-
-  fireEvent.pointerDown(document.body);
-  expect(onClose).toHaveBeenCalledTimes(1);
-
-  fireEvent.keyDown(document.body, { key: "Escape" });
-  expect(onClose).toHaveBeenCalledTimes(2);
-});
-
-test("Escape in the branch menu or in the Change base dialog leaves the card open", async () => {
-  const bridge = await setup();
-  const { onClose } = await renderCard(bridge);
-
-  fireEvent.click(within(row("Branch")).getByRole("button", { name: "Branch" }));
-  fireEvent.keyDown(screen.getByRole("menuitem", { name: "Change base" }), {
-    key: "Escape",
-  });
-  expect(screen.queryByRole("menu")).toBeNull();
-
-  fireEvent.click(within(row("Branch")).getByRole("button", { name: "Branch" }));
-  fireEvent.click(screen.getByRole("menuitem", { name: "Change base" }));
-  const dialog = screen.getByRole("dialog", { name: "Change base branch" });
-  fireEvent.pointerDown(within(dialog).getByLabelText("Base branch"));
-  fireEvent.keyDown(within(dialog).getByLabelText("Base branch"), {
-    key: "Escape",
-  });
-
-  expect(screen.queryByRole("dialog")).toBeNull();
-  expect(onClose).not.toHaveBeenCalled();
-});
-
-test("Escape meant for another popup leaves the card open", async () => {
-  const bridge = await setup();
-  const { onClose } = await renderCard(bridge);
-  render(
-    <>
-      <Menu label="Other" icon={SlidersHorizontal} items={[{ key: "a", label: "A", onSelect: () => {} }]} />
-      <div role="dialog" aria-label="Send review batch" />
-    </>,
-  );
-
-  fireEvent.click(screen.getByRole("button", { name: "Other" }));
-  fireEvent.keyDown(screen.getByRole("menuitem", { name: "A" }), {
-    key: "Escape",
-  });
-  expect(screen.queryByRole("menu")).toBeNull();
-
-  fireEvent.keyDown(screen.getByRole("dialog", { name: "Send review batch" }), {
-    key: "Escape",
-  });
-
-  expect(onClose).not.toHaveBeenCalled();
 });
 
 test("a failed action says why in the card", async () => {

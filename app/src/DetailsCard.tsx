@@ -7,13 +7,12 @@ import {
   GitBranch,
   Laptop,
   type LucideIcon,
-  Pin,
   Play,
   Plus,
   Server,
   Square,
 } from "lucide-react";
-import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useState } from "react";
 
 import type {
   Agent,
@@ -31,7 +30,6 @@ import type {
 import type { ModelChoice } from "./Picker";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { CHAT_MIN_WIDTH } from "./layout";
-import { useSetting } from "./settings";
 import { AgentState } from "./ui/AgentState";
 import { ChangeBaseDialog } from "./WorktreeDialogs";
 import { IconButton } from "./ui/IconButton";
@@ -41,8 +39,8 @@ import "./DetailsCard.css";
 /** The card's id, which the button that opens it names in aria-controls. */
 export const DETAILS_CARD_ID = "details-card";
 
-// An open popup: a menu or picker, by the button that opened it, or a dialog.
-const OTHER_POPUP = '[aria-haspopup][aria-expanded="true"], [role="dialog"]';
+/** The column's width, as `--details-card-width` in DetailsCard.css. */
+const DETAILS_WIDTH = 320;
 
 const EDITORS: [Editor, string][] = [
   ["Zed", "Zed"],
@@ -72,55 +70,33 @@ export interface RunTab {
 }
 
 /**
- * The chat's text column: the messages and the composer of each shown agent panel. It runs the
- * lane's height, so only its left and right edges count, also while it holds no message yet.
- */
-const TEXT_COLUMN = ".thread, .composer";
-
-/**
  * The focused agent session at the top: its title, its state since when, and where the state came
  * from. Then where the selected worktree is, what runs in it and what changed, one row each: its
  * folder, the editors to open it in, a row per run session that starts or stops it, its branch, its
  * changes since the base branch, its servers and the focused agent session. A row whose data the
  * worktree does not have is left out.
  *
- * Unpinned, it floats over the chat lane's top right corner, Escape or a click outside closes it,
- * except on the button that opens it, which closes it itself, and it reports whether it has room
- * beside the text column, so the app can hide it rather than cover the text. Pinned, it is a column
- * at the lane's right edge that stays open until that button closes it.
+ * It is a column at the chat area's right edge, as tall as the area, and the chat's text keeps out
+ * of it. Only the button that opens it closes it.
  */
 export function DetailsCard({
   bridge,
   worktree,
   runs,
   session,
-  lane,
-  hidden,
   onStartRun,
   onOpenDiff,
   onOpenProfile,
-  onClose,
-  onRoom,
-  onShowOverText,
 }: {
   bridge: Bridge;
   worktree: string;
   runs: RunTab[];
   /** null when the worktree has no agent session. */
   session: FocusedSession | null;
-  /** The chat lane the card floats in, measured with its text column. null measures nothing. */
-  lane: HTMLElement | null;
-  /** Hidden for lack of room. A hidden card keeps its box, to be measured, and ignores keys and clicks. */
-  hidden: boolean;
   onStartRun(name: string): void;
   /** Opens the Diff on the base the Changes row counts against. */
   onOpenDiff(base: DiffBase): void;
   onOpenProfile(): void;
-  onClose(): void;
-  /** Called with whether the card covers none of the text column, each time the layout changes. */
-  onRoom(fits: boolean): void;
-  /** Asks to show the card over the text when it has no room, as after an unpin. */
-  onShowOverText(): void;
 }) {
   const [tracked, setTracked] = useState<{
     worktree: Worktree;
@@ -140,12 +116,6 @@ export function DetailsCard({
   // The focused session as the core lists it, for its title and the time it entered its state.
   const [record, setRecord] = useState<AgentSessionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const card = useRef<HTMLElement>(null);
-  // Kept in the window's settings, so the card of each worktree opens as the last one was left.
-  const [pinned, setPinned] = useSetting("grove.detailsPinned", false, (value) => typeof value === "boolean");
-  // Whether the lane is wide enough for the pinned column beside a chat of its minimum width.
-  const [roomForColumn, setRoomForColumn] = useState(true);
-  const column = pinned && roomForColumn;
 
   useEffect(() => {
     let current = true;
@@ -229,79 +199,6 @@ export function DetailsCard({
     };
   }, [bridge, worktree, base, diffChanges]);
 
-  const onPointerDown = useEffectEvent((event: PointerEvent) => {
-    const target = event.target as Element;
-    if (card.current?.contains(target) || target.closest(`[aria-controls="${DETAILS_CARD_ID}"]`)) return;
-    onClose();
-  });
-
-  // The card listens before anything else, so while a menu, picker or dialog is open, here or
-  // elsewhere, it leaves Escape to that popup.
-  const onKeyDown = useEffectEvent((event: KeyboardEvent) => {
-    if (event.key !== "Escape" || document.querySelector(OTHER_POPUP)) return;
-    if (card.current?.contains(document.activeElement)) {
-      document.querySelector<HTMLElement>(`[aria-controls="${DETAILS_CARD_ID}"]`)?.focus();
-    }
-    onClose();
-  });
-
-  // A pinned card always shows: as a column while the chat keeps its minimum width beside it, and
-  // floating otherwise. The card is as wide either way, so the choice does not flip back and forth.
-  const measure = useEffectEvent(() => {
-    const box = card.current!.getBoundingClientRect();
-    if (pinned) {
-      setRoomForColumn(lane!.getBoundingClientRect().width - box.width >= CHAT_MIN_WIDTH);
-      return onRoom(true);
-    }
-    const text = [...lane!.querySelectorAll(TEXT_COLUMN)].map((column) => column.getBoundingClientRect());
-    onRoom(!text.some((column) => overlapsAcross(box, column)));
-  });
-
-  // The lane, the card and each text column resize as the window, the sidebar and the panel area
-  // do. A text column that comes or goes with an agent panel is watched or dropped as it does.
-  useEffect(() => {
-    if (!lane) return;
-    const sizes = new ResizeObserver(() => measure());
-    const watch = () => {
-      sizes.disconnect();
-      [lane, card.current!, ...lane.querySelectorAll(TEXT_COLUMN)].forEach((element) => sizes.observe(element));
-    };
-    const columnsChange = (changes: MutationRecord[]) =>
-      changes.some((change) =>
-        [...change.addedNodes, ...change.removedNodes].some(
-          (node) => node instanceof Element && (node.matches(TEXT_COLUMN) || node.querySelector(TEXT_COLUMN)),
-        ),
-      );
-    const panels = new MutationObserver((changes) => {
-      if (!columnsChange(changes)) return;
-      watch();
-      measure();
-    });
-    watch();
-    panels.observe(lane, { childList: true, subtree: true });
-    return () => {
-      sizes.disconnect();
-      panels.disconnect();
-    };
-  }, [lane]);
-
-  useEffect(() => {
-    if (lane) measure();
-  }, [lane, pinned]);
-
-  // The Change base dialog is modal, so while it is open the card leaves its keys and clicks
-  // alone. In the capture phase, so the Escape or click that closes the dialog has passed by the
-  // time the card listens again. A card hidden for lack of room is still on, so it ignores them too.
-  useEffect(() => {
-    if (changingBase || hidden || pinned) return;
-    document.addEventListener("pointerdown", onPointerDown, true);
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown, true);
-      document.removeEventListener("keydown", onKeyDown, true);
-    };
-  }, [changingBase, hidden, pinned]);
-
   function act(action: Promise<void>) {
     action.then(
       () => setError(null),
@@ -335,46 +232,24 @@ export function DetailsCard({
   const focusedRecord = record?.session === focused ? record : null;
 
   return (
-    <div className={column ? "details-holder details-pinned" : "details-holder"}>
-      <section
-        ref={card}
-        id={DETAILS_CARD_ID}
-        className="details-card"
-        aria-label="Details"
-        // Hidden for lack of room, it keeps its box, which tells when room returns.
-        inert={hidden}
-        aria-hidden={hidden || undefined}
-      >
-        <div className="details-head">
-          {session && (
-            <div role="group" aria-label="Agent session" className="details-session">
-              {focusedRecord && <h2 className="details-title">{focusedRecord.title}</h2>}
-              {session.state && (
-                <>
-                  <p className="details-state">
-                    <AgentState state={session.state} />
-                    {focusedRecord?.state && (
-                      <span className="details-muted">since {clockTime(focusedRecord.sinceUnixMs)}</span>
-                    )}
-                  </p>
-                  <p className="details-meta">State from {session.state.source}</p>
-                </>
-              )}
-            </div>
-          )}
-          <IconButton
-            icon={Pin}
-            label="Pin"
-            title={pinned ? "Unpin: float over the chat" : "Pin beside the chat"}
-            size="xs"
-            className="details-pin"
-            aria-pressed={pinned}
-            onClick={() => {
-              if (pinned) onShowOverText();
-              setPinned((was) => !was);
-            }}
-          />
-        </div>
+    <div className="details-holder">
+      <section id={DETAILS_CARD_ID} className="details-card" aria-label="Details">
+        {session && (
+          <div role="group" aria-label="Agent session" className="details-session">
+            {focusedRecord && <h2 className="details-title">{focusedRecord.title}</h2>}
+            {session.state && (
+              <>
+                <p className="details-state">
+                  <AgentState state={session.state} />
+                  {focusedRecord?.state && (
+                    <span className="details-muted">since {clockTime(focusedRecord.sinceUnixMs)}</span>
+                  )}
+                </p>
+                <p className="details-meta">State from {session.state.source}</p>
+              </>
+            )}
+          </div>
+        )}
         <ul className="details-rows">
           <li aria-label="Worktree" className="details-row">
             <Laptop aria-hidden="true" />
@@ -531,6 +406,25 @@ export function DetailsCard({
   );
 }
 
+/**
+ * Whether the chat area has room for the Details column beside `panels` agent panels of at least
+ * `CHAT_MIN_WIDTH` each. It is measured before the browser paints, so a chat area too narrow never
+ * shows the column, and again each time the area resizes. The column sits inside the area, so it
+ * leaves the measured width alone and cannot make the answer flip back and forth.
+ */
+export function useDetailsRoom(chatArea: HTMLElement | null, panels: number): boolean {
+  const [width, setWidth] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (!chatArea) return;
+    const measure = () => setWidth(chatArea.getBoundingClientRect().width);
+    measure();
+    const sizes = new ResizeObserver(measure);
+    sizes.observe(chatArea);
+    return () => sizes.disconnect();
+  }, [chatArea]);
+  return width !== null && width - DETAILS_WIDTH >= Math.max(panels, 1) * CHAT_MIN_WIDTH;
+}
+
 /** A row's icon, its label, and what sits at its right edge. */
 function RowContent({ icon: Icon, label, end }: { icon: LucideIcon; label: ReactNode; end?: ReactNode }) {
   return (
@@ -544,15 +438,6 @@ function RowContent({ icon: Icon, label, end }: { icon: LucideIcon; label: React
 
 function Chevron() {
   return <ChevronDown aria-hidden="true" className="details-chevron" />;
-}
-
-/**
- * Whether two boxes overlap from left to right. A box with no width, such as a hidden panel's,
- * overlaps nothing.
- */
-function overlapsAcross(a: DOMRect, b: DOMRect): boolean {
-  if (a.width === 0 || b.width === 0) return false;
-  return a.left < b.right && b.left < a.right;
 }
 
 /** A time as "14:05" today, and as "Nov 19, 14:05" on another day. */

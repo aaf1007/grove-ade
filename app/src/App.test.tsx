@@ -123,6 +123,8 @@ function setSystemDark(dark: boolean) {
 // jsdom lays nothing out. Tests give an element a box here, by a selector it matches, and
 // `relayout` tells every ResizeObserver that sizes changed.
 let boxes: [string, { left: number; right: number; top: number; bottom: number }][] = [];
+// A chat area with room for the Details column beside one or two agent panels.
+const WIDE_LANE = { left: 300, right: 1240, top: 52, bottom: 860 };
 const resizeObservers = new Set<() => void>();
 
 class FakeResizeObserver {
@@ -146,6 +148,7 @@ function relayout(next: typeof boxes) {
 }
 
 beforeEach(() => {
+  boxes = [[".chat-area", WIDE_LANE]];
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
     const box = boxes.find(([selector]) => this.matches(selector))?.[1] ?? { left: 0, right: 0, top: 0, bottom: 0 };
@@ -1766,33 +1769,10 @@ test("the Details button opens the card, shows whether it is open, and closes it
   expect(within(detailsCard()).getByTitle(feature)).toBeTruthy();
   expect(button.getAttribute("aria-pressed")).toBe("true");
 
-  // Its own button closes it, rather than a click outside that the button then opens again.
   fireEvent.pointerDown(button);
   await act(async () => fireEvent.click(button));
   expect(screen.queryByRole("region", { name: "Details" })).toBeNull();
   expect(button.getAttribute("aria-pressed")).toBe("false");
-
-  await act(async () => fireEvent.click(button));
-  fireEvent.keyDown(document.body, { key: "Escape" });
-  expect(screen.queryByRole("region", { name: "Details" })).toBeNull();
-
-  await act(async () => fireEvent.click(button));
-  fireEvent.pointerDown(screen.getByRole("button", { name: "feat-36" }));
-  expect(screen.queryByRole("region", { name: "Details" })).toBeNull();
-});
-
-test("the Details card stays closed after its worktree is deleted, until it is opened again", async () => {
-  const bridge = await trackedBridge();
-  render(<App bridge={bridge} />);
-  await createFeat52({ startAgent: false });
-  await clickButton("Details");
-  expect(detailsCard()).toBeTruthy();
-
-  await deleteFeat52();
-  await select("feat-36");
-
-  expect(screen.queryByRole("region", { name: "Details" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Details" }).getAttribute("aria-pressed")).toBe("false");
 });
 
 test("Start and Stop in the Details card's scripts row follow the run session's state", async () => {
@@ -1940,7 +1920,7 @@ test("the Details card shows the new session of a panel that changed agent while
   expect(within(session).getByText("Codex")).toBeTruthy();
 });
 
-test("a pinned Details card stays open on a click outside, Escape, and after selecting another agent session", async () => {
+test("the Details card stays open on a click outside, Escape, and after selecting another agent session and another worktree", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);
   await select("feat-36");
@@ -1949,7 +1929,6 @@ test("a pinned Details card stays open on a click outside, Escape, and after sel
   startAgent();
   await screen.findByRole("region", { name: "Panel 1" });
   await clickButton("Details");
-  await act(async () => fireEvent.click(within(detailsCard()).getByRole("button", { name: "Pin" })));
 
   fireEvent.pointerDown(screen.getByRole("main"));
   fireEvent.keyDown(document.body, { key: "Escape" });
@@ -1960,7 +1939,7 @@ test("a pinned Details card stays open on a click outside, Escape, and after sel
   fireEvent.pointerDown(other);
   await act(async () => fireEvent.click(other));
 
-  expect(within(detailsCard()).getByRole("button", { name: "Pin" }).getAttribute("aria-pressed")).toBe("true");
+  expect(detailsCard()).toBeTruthy();
   expect(pressed("Details")).toBe("true");
 });
 
@@ -2049,7 +2028,7 @@ test("the Details card opens in the chat lane, under the title bar, with the pan
   }
 });
 
-test("opening the Details card leaves the chat's width as it was", async () => {
+test("the Details column sits at the chat area's right edge, and the chat's text keeps out of it", async () => {
   const style = document.createElement("style");
   style.textContent = appStyles + detailsStyles;
   document.head.append(style);
@@ -2058,93 +2037,65 @@ test("opening the Details card leaves the chat's width as it was", async () => {
   await select("feat-36");
   startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
-  await clickButton("Panel area");
-  const chat = document.querySelector<HTMLElement>(".chat-panels")!;
-  const before = getComputedStyle(chat).marginRight;
+  const lane = screen.getByRole("main");
 
   await clickButton("Details");
 
-  expect(getComputedStyle(chat).marginRight).toBe(before);
+  expect(getComputedStyle(lane).paddingRight).toBe("var(--details-card-width)");
+  expect(getComputedStyle(document.querySelector(".details-holder")!).width).toBe("var(--details-card-width)");
 });
 
-// The card at the lane's top right, and a text column that reaches under it or stops short of it.
-const CARD = { left: 900, right: 1220, top: 60, bottom: 300 };
-const UNDER_CARD = { left: 300, right: 1080, top: 100, bottom: 860 };
-const BESIDE_CARD = { left: 100, right: 880, top: 100, bottom: 860 };
+const detailsShown = () => screen.queryByRole("region", { name: "Details" }) !== null;
 
-async function cardWithText(textColumn: typeof CARD) {
+test("Details hides, and its button shows it closed, while the chat area is too narrow for it, and comes back with room", async () => {
   render(<App bridge={await trackedBridge()} />);
   await select("feat-36");
   startAgent();
   await screen.findByRole("region", { name: "Panel 0" });
-  boxes = [
-    [".details-card", CARD],
-    [".thread", textColumn],
-  ];
-}
-
-const detailsShown = () => screen.queryByRole("region", { name: "Details" }) !== null;
-
-test("the Details card hides while it would cover the chat's text, and shows again when room returns", async () => {
-  await cardWithText(BESIDE_CARD);
   await clickButton("Details");
-  expect(detailsShown()).toBe(true);
 
-  relayout([
-    [".details-card", CARD],
-    [".thread", UNDER_CARD],
-  ]);
-  expect(detailsShown()).toBe(false);
-  expect(pressed("Details")).toBe("true");
-
-  // A click in the chat leaves a card hidden for lack of room on.
-  await act(async () => fireEvent.pointerDown(screen.getByRole("main")));
-  expect(pressed("Details")).toBe("true");
-
-  relayout([
-    [".details-card", CARD],
-    [".thread", BESIDE_CARD],
-  ]);
-  expect(detailsShown()).toBe(true);
-  expect(pressed("Details")).toBe("true");
-});
-
-test("a click on Details while the card is hidden for lack of room shows it over the text, and Escape turns it off", async () => {
-  await cardWithText(BESIDE_CARD);
-  await clickButton("Details");
-  relayout([
-    [".details-card", CARD],
-    [".thread", UNDER_CARD],
-  ]);
-  expect(detailsShown()).toBe(false);
-
-  await clickButton("Details");
-  expect(detailsShown()).toBe(true);
-  expect(pressed("Details")).toBe("true");
-
-  await act(async () => fireEvent.keyDown(document.body, { key: "Escape" }));
+  relayout([[".chat-area", { ...WIDE_LANE, right: WIDE_LANE.left + 619 }]]);
   expect(detailsShown()).toBe(false);
   expect(pressed("Details")).toBe("false");
+
+  relayout([[".chat-area", { ...WIDE_LANE, right: WIDE_LANE.left + 620 }]]);
+  expect(detailsShown()).toBe(true);
+  expect(pressed("Details")).toBe("true");
 });
 
-test("turning Details on with no room beside the text shows the card over it, until room comes and goes", async () => {
-  await cardWithText(UNDER_CARD);
-
+test("with two agent panels, Details shows only while each panel keeps its minimum width beside it", async () => {
+  render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 0" });
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 1" });
   await clickButton("Details");
-  relayout(boxes);
   expect(detailsShown()).toBe(true);
 
-  // Once it has room, it is an ordinary card again, so losing the room hides it.
-  relayout([
-    [".details-card", CARD],
-    [".thread", BESIDE_CARD],
-  ]);
-  relayout([
-    [".details-card", CARD],
-    [".thread", UNDER_CARD],
-  ]);
+  relayout([[".chat-area", { ...WIDE_LANE, right: WIDE_LANE.left + 919 }]]);
   expect(detailsShown()).toBe(false);
-  expect(pressed("Details")).toBe("true");
+  expect(pressed("Details")).toBe("false");
+
+  relayout([[".chat-area", { ...WIDE_LANE, right: WIDE_LANE.left + 920 }]]);
+  expect(detailsShown()).toBe(true);
+});
+
+test("Details stays open after a reload once opened, and opens closed when its saved choice is broken", async () => {
+  render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+  await clickButton("Details");
+  cleanup();
+
+  render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+  expect(detailsShown()).toBe(true);
+  cleanup();
+
+  localStorage.setItem("grove.detailsOpen", "{not json");
+  render(<App bridge={await trackedBridge()} />);
+  await select("feat-36");
+  expect(detailsShown()).toBe(false);
 });
 
 test("the title bar names the selected worktree's repo, with its badge, then the worktree", async () => {
@@ -2363,52 +2314,4 @@ test("quick icon changes leave the last requested Dock icon applied, even when a
     await Promise.resolve();
   }
   await waitFor(() => expect(applied.at(-1)).toBe("blue-dark"));
-});
-
-// The chat lane, wide enough for the pinned column beside a chat of the minimum width, or not.
-const WIDE_LANE = { left: 300, right: 1240, top: 52, bottom: 860 };
-const NARROW_LANE = { left: 300, right: 820, top: 52, bottom: 860 };
-
-test("a pinned Details card is a column beside the chat only while the chat keeps its minimum width, and floats otherwise", async () => {
-  const style = document.createElement("style");
-  style.textContent = appStyles + detailsStyles;
-  document.head.append(style);
-  onTestFinished(() => style.remove());
-  await cardWithText(BESIDE_CARD);
-  boxes.push([".chat-area", NARROW_LANE]);
-  const lane = screen.getByRole("main");
-  const unpinnedPadding = getComputedStyle(lane).paddingRight;
-  await clickButton("Details");
-  await act(async () => fireEvent.click(within(detailsCard()).getByRole("button", { name: "Pin" })));
-  relayout(boxes);
-
-  expect(getComputedStyle(lane).paddingRight).toBe(unpinnedPadding);
-  expect(within(detailsCard()).getByRole("button", { name: "Pin" }).getAttribute("aria-pressed")).toBe("true");
-  fireEvent.pointerDown(lane);
-  expect(detailsShown()).toBe(true);
-
-  relayout([
-    [".details-card", CARD],
-    [".thread", BESIDE_CARD],
-    [".chat-area", WIDE_LANE],
-  ]);
-  expect(getComputedStyle(lane).paddingRight).not.toBe(unpinnedPadding);
-});
-
-test("unpinning the Details card in a lane with no room beside the text keeps it shown over the text, with focus on Pin", async () => {
-  await cardWithText(UNDER_CARD);
-  boxes.push([".chat-area", WIDE_LANE]);
-  await clickButton("Details");
-  const pin = () => within(detailsCard()).getByRole("button", { name: "Pin" });
-  await act(async () => fireEvent.click(pin()));
-  relayout(boxes);
-
-  pin().focus();
-  await act(async () => fireEvent.click(pin()));
-  relayout(boxes);
-
-  expect(detailsShown()).toBe(true);
-  expect(pin().getAttribute("aria-pressed")).toBe("false");
-  expect(document.activeElement).toBe(pin());
-  expect(pressed("Details")).toBe("true");
 });
