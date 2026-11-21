@@ -11,6 +11,7 @@ use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::task::Poll;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use grove_core::{
@@ -815,6 +816,103 @@ impl From<grove_core::AttentionEntry> for AttentionEntry {
             worktree: entry.worktree,
         }
     }
+}
+
+// Agent session records (#62).
+
+/// An agent session, running or ended, as `agent_sessions` lists it for the UI. `state`, with
+/// the `kind` of a `NeedsInput`, is left out before the session's first state. Times are in
+/// milliseconds since the Unix epoch.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSession {
+    session: String,
+    worktree: PathBuf,
+    agent: Agent,
+    mode: Mode,
+    parent: Option<String>,
+    title: String,
+    created_unix_ms: u64,
+    ended: bool,
+    #[serde(flatten)]
+    state: Option<AgentState>,
+    since_unix_ms: u64,
+}
+
+impl AgentSession {
+    /// Remembers the session, so the UI can call session commands with one it never started,
+    /// such as one that ended before the last restart.
+    fn from_core(info: grove_core::AgentSessionInfo, sessions: &Sessions) -> Self {
+        AgentSession {
+            session: remember(sessions, info.session),
+            worktree: info.worktree,
+            agent: info.agent.into(),
+            mode: info.mode.into(),
+            // The core lists a parent only while the parent is listed, so its own row
+            // remembers it.
+            parent: info.parent.map(|parent| parent.to_string()),
+            title: info.title,
+            created_unix_ms: unix_ms(info.created),
+            ended: info.ended,
+            state: info.state.map(Into::into),
+            since_unix_ms: unix_ms(info.since),
+        }
+    }
+}
+
+/// `time` in milliseconds since the Unix epoch. 0 for a time before it.
+fn unix_ms(time: SystemTime) -> u64 {
+    let since_epoch = time.duration_since(UNIX_EPOCH).unwrap_or_default();
+    u64::try_from(since_epoch.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Every agent session of every tracked worktree, ended ones too. The UI asks again on each
+/// `agent-sessions-changed` event.
+#[tauri::command]
+fn agent_sessions(
+    grove: State<'_, Grove>,
+    sessions: State<'_, Sessions>,
+) -> Result<Vec<AgentSession>, String> {
+    // Only quitting holds the write lock, so this never waits.
+    let core = grove.0.try_read().map_err(|_| QUITTING)?;
+    let core = core.as_ref().ok_or(QUITTING)?;
+    let listed = core.agent_sessions().into_iter();
+    Ok(listed
+        .map(|info| AgentSession::from_core(info, &sessions))
+        .collect())
+}
+
+/// Deletes the agent session and the subagent sessions below it, for good.
+#[tauri::command]
+async fn delete_agent_session(
+    grove: State<'_, Grove>,
+    sessions: State<'_, Sessions>,
+    session: String,
+) -> Result<(), String> {
+    let id = *lock(&sessions)
+        .get(&session)
+        .ok_or_else(|| format!("grove has no session {session}"))?;
+    // Quitting waits for the delete, at most the core's wait for the processes to exit.
+    let core = grove.0.read().await;
+    let core = core.as_ref().ok_or(QUITTING)?;
+    core.delete_agent_session(id)
+        .await
+        .map_err(|e| with_causes(&e))
+}
+
+/// Starts the ended agent session again under the same id, resuming its conversation.
+#[tauri::command]
+fn resume_agent_session(
+    grove: State<'_, Grove>,
+    sessions: State<'_, Sessions>,
+    session: String,
+) -> Result<(), String> {
+    let id = *lock(&sessions)
+        .get(&session)
+        .ok_or_else(|| format!("grove has no session {session}"))?;
+    let core = grove.0.try_read().map_err(|_| QUITTING)?;
+    let core = core.as_ref().ok_or(QUITTING)?;
+    core.resume_agent_session(id).map_err(|e| with_causes(&e))
 }
 
 // Workspaces (#122).
@@ -2145,10 +2243,11 @@ fn main() -> anyhow::Result<()> {
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_menu(menu(app.handle())?)?;
-            // Only SessionExited, DiffChanged, AgentState, each agent's account, the login shell's
-            // warning, the warning for a session a restart could not bring back, each worktree's
-            // setup, ProfilesChanged, RepoSettingsChanged, CommentsChanged and WorkspaceChanged
-            // reach the UI so far. Notify becomes a macOS notification.
+            // Only SessionExited, DiffChanged, AgentState, AgentSessionsChanged, each agent's
+            // account, the login shell's warning, the warning for a session a restart could not
+            // bring back, each worktree's setup, ProfilesChanged, RepoSettingsChanged,
+            // CommentsChanged and WorkspaceChanged reach the UI so far. Notify becomes a macOS
+            // notification.
             let app = app.handle().clone();
             // Registered before any notification shows, since one shown earlier reports no click.
             let clicks = app.clone();
@@ -2175,6 +2274,10 @@ fn main() -> anyhow::Result<()> {
                                 source: source.into(),
                             };
                             let _ = app.emit("agent-state", change);
+                        }
+                        // The UI lists the agent sessions again.
+                        Ok(CoreEvent::AgentSessionsChanged) => {
+                            let _ = app.emit("agent-sessions-changed", ());
                         }
                         Ok(CoreEvent::Notify {
                             session,
@@ -2277,6 +2380,10 @@ fn main() -> anyhow::Result<()> {
             accounts,
             // Attention queue (#53).
             attention_queue,
+            // Agent session records (#62).
+            agent_sessions,
+            delete_agent_session,
+            resume_agent_session,
             // Workspaces (#122).
             workspace,
             set_workspace,
@@ -2782,6 +2889,42 @@ mod tests {
         );
         let back: Workspace = serde_json::from_str(&sent).unwrap();
         assert_eq!(back.into_core(&sessions), Ok(core));
+    }
+
+    #[test]
+    fn a_listed_agent_session_reaches_the_ui_with_its_times_and_is_remembered() {
+        let sessions = Sessions(Mutex::default());
+        let id = |n: u64| serde_json::from_value::<SessionId>(serde_json::json!(n)).unwrap();
+        let at = |ms: u64| UNIX_EPOCH + std::time::Duration::from_millis(ms);
+        let info = |state| grove_core::AgentSessionInfo {
+            session: id(7),
+            worktree: "/repo/feat".into(),
+            agent: grove_core::Agent::Codex,
+            mode: grove_core::Mode::Terminal,
+            parent: Some(id(3)),
+            title: "fix the login bug".into(),
+            created: at(1_763_560_920_000),
+            ended: true,
+            state,
+            since: at(1_763_560_983_000),
+        };
+
+        let ended = json(AgentSession::from_core(
+            info(Some(grove_core::AgentState::Exited)),
+            &sessions,
+        ));
+        let no_state_yet = json(AgentSession::from_core(info(None), &sessions));
+
+        assert_eq!(
+            ended,
+            r#"{"session":"7","worktree":"/repo/feat","agent":"Codex","mode":"Terminal","parent":"3","title":"fix the login bug","createdUnixMs":1763560920000,"ended":true,"state":"Exited","sinceUnixMs":1763560983000}"#
+        );
+        assert_eq!(
+            no_state_yet,
+            r#"{"session":"7","worktree":"/repo/feat","agent":"Codex","mode":"Terminal","parent":"3","title":"fix the login bug","createdUnixMs":1763560920000,"ended":true,"sinceUnixMs":1763560983000}"#
+        );
+        // Every call on a listed session finds it, one the UI never started too.
+        assert_eq!(lock(&sessions).get("7"), Some(&id(7)));
     }
 
     #[test]

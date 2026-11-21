@@ -1,6 +1,8 @@
 //! Restore after a restart, against the fake agents in fixtures/fake-agents. A second core started
 //! on the same home folder brings back agent sessions in their mode with the integration of their
 //! first launch, shells as fresh shells, run sessions stopped, review comments and workspaces.
+//! Agent session records are here too: each lasts until the user deletes it, so an ended one
+//! comes back ended.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -11,13 +13,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Barrier, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use grove_core::{
-    Agent, AgentMessage, AgentPanel, AgentSpec, AgentState, CommentId, Core, CoreConfig, CoreError,
-    CoreEvent, Mode, ModelChoice, NewReviewComment, NewWorktree, PanelKind, ProfileSettings,
-    RemoveOpts, RepoSettings, ReviewComment, RunSession, RunSpec, SessionId, SessionInfo,
-    SessionKind, TurnOutcome, Warning, Workspace,
+    Agent, AgentMessage, AgentPanel, AgentSessionInfo, AgentSpec, AgentState, CommentId, Core,
+    CoreConfig, CoreError, CoreEvent, Mode, ModelChoice, NewReviewComment, NewWorktree, PanelKind,
+    ProfileSettings, RemoveOpts, RepoSettings, ReviewComment, RunSession, RunSpec, SessionId,
+    SessionInfo, SessionKind, TurnOutcome, Warning, Workspace,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -384,6 +386,18 @@ impl Setup {
         self.core().sessions(&self.worktree).unwrap()
     }
 
+    // The record of agent session `session`, as the list of all agent sessions has it.
+    fn record(&self, session: SessionId) -> Option<AgentSessionInfo> {
+        let mut listed = self.core().agent_sessions().into_iter();
+        listed.find(|info| info.session == session)
+    }
+
+    // Ends the session's process and waits until the core has marked it ended.
+    fn end(&mut self, session: SessionId) {
+        self.core().kill(session).unwrap();
+        self.wait_state(session, AgentState::Exited);
+    }
+
     fn wait_state(&mut self, session: SessionId, state: AgentState) {
         let deadline = Instant::now() + TIMEOUT;
         loop {
@@ -401,6 +415,27 @@ impl Setup {
                 Err(e) => panic!("{e}"),
             }
         }
+    }
+
+    // Waits for the event that says the list of agent sessions changed.
+    fn wait_list_changed(&mut self) {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            match self.events.try_recv() {
+                Ok(CoreEvent::AgentSessionsChanged) => return,
+                Ok(_) => {}
+                Err(TryRecvError::Empty) => {
+                    assert!(Instant::now() < deadline, "the list never changed");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
+    }
+
+    // Drops the events so far, so a wait sees only what comes next.
+    fn drain_events(&mut self) {
+        while self.events.try_recv().is_ok() {}
     }
 
     // The thread the latest `codex app-server` was asked to resume.
@@ -1152,11 +1187,11 @@ fn each_workspace_comes_back_with_its_panels_on_the_restored_sessions() {
     block_on(s.core().set_workspace(&s.worktree, workspace, None)).unwrap();
 
     s.restart();
-    // The panel of the session that had ended is gone, so this one, which may take its id,
-    // never shows in it.
+    // The session that had ended keeps its id and its saved panel, which stays hidden, so
+    // this one never shows in it.
     let shell = s.core().spawn_shell(&s.worktree, 80, 24).unwrap();
 
-    assert!(![claude, codex].contains(&shell));
+    assert!(![claude, codex, ended].contains(&shell));
     assert_eq!(
         s.core().workspace(&s.worktree).unwrap(),
         Workspace {
@@ -1172,8 +1207,475 @@ fn each_workspace_comes_back_with_its_panels_on_the_restored_sessions() {
     );
 }
 
-// What grove would restore if it stopped now, from the state file.
-fn saved_session_ids(home: &Path) -> Vec<u64> {
+#[test]
+fn a_restart_starts_a_process_only_for_the_sessions_that_had_not_ended() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let running = s.spawn(Agent::Claude, Mode::Chat);
+    let ended = s.spawn(Agent::Claude, Mode::Chat);
+    wait_launches(&s.claude_chat, 2);
+    s.end(ended);
+
+    s.restart();
+
+    assert!(s.record(ended).unwrap().ended);
+    assert!(!s.record(running).unwrap().ended);
+    assert_eq!(
+        s.sessions(),
+        [agent_info(running, Agent::Claude, Mode::Chat)]
+    );
+    // The restore starts each process before `Core::start` returns, so one for the ended
+    // session would be running by now.
+    let killed = s.core().kill(ended);
+    assert!(
+        matches!(killed, Err(CoreError::SessionNotRunning(session)) if session == ended),
+        "{killed:?}"
+    );
+    assert_eq!(wait_launches(&s.claude_chat, 3).len(), 3);
+}
+
+#[test]
+fn a_new_session_after_a_restart_never_gets_the_id_of_an_ended_one() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let running = s.spawn(Agent::Claude, Mode::Chat);
+    // The newest session, so its id is the one a restart would hand out next.
+    let ended = s.spawn(Agent::Claude, Mode::Chat);
+    s.end(ended);
+
+    s.restart();
+    let new = s.spawn(Agent::Claude, Mode::Chat);
+
+    assert!(new > ended, "{new} after {ended}");
+    let listed: Vec<SessionId> = s
+        .core()
+        .agent_sessions()
+        .into_iter()
+        .map(|info| info.session)
+        .collect();
+    assert_eq!(listed, [running, ended, new]);
+}
+
+#[test]
+fn a_session_that_ended_on_an_error_comes_back_exited_and_out_of_the_attention_queue() {
+    let _serial = serial();
+    let mut s = setup(Scenarios {
+        claude_chat: json!([{"wait_message": "user_message"}, {"exit": 1}]),
+        ..Scenarios::default()
+    });
+    let failed = s.spawn(Agent::Claude, Mode::Chat);
+    s.core().send_message(failed, "boom").unwrap();
+    s.wait_state(failed, AgentState::Failed);
+    let waiting: Vec<SessionId> = s
+        .core()
+        .attention_queue()
+        .iter()
+        .map(|e| e.session)
+        .collect();
+    assert_eq!(waiting, [failed]);
+
+    s.restart();
+
+    let record = s.record(failed).unwrap();
+    assert!(record.ended);
+    assert_eq!(record.state, Some(AgentState::Exited));
+    assert_eq!(s.core().attention_queue(), []);
+}
+
+#[test]
+fn a_first_message_titles_the_session_and_says_the_list_changed() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let claude = s.spawn(Agent::Claude, Mode::Chat);
+    assert_eq!(s.record(claude).unwrap().title, "New session");
+    s.drain_events();
+
+    s.core()
+        .send_message(claude, "\n  fix the login bug  \nand add a test")
+        .unwrap();
+
+    s.wait_list_changed();
+    assert_eq!(s.record(claude).unwrap().title, "fix the login bug");
+    // Only the first message titles it.
+    s.core().send_message(claude, "also the logout").unwrap();
+    assert_eq!(s.record(claude).unwrap().title, "fix the login bug");
+}
+
+#[test]
+fn an_ended_session_comes_back_listed_and_ended_with_its_title_and_created_time() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let started = SystemTime::now() - Duration::from_millis(1);
+    let claude = s.spawn(Agent::Claude, Mode::Chat);
+    s.core().send_message(claude, "fix the login bug").unwrap();
+    let before = s.record(claude).unwrap();
+    assert!(before.created >= started && before.created <= SystemTime::now());
+    assert!(!before.ended);
+    s.end(claude);
+
+    s.restart();
+
+    let after = s.record(claude).unwrap();
+    assert_eq!(
+        after,
+        AgentSessionInfo {
+            ended: true,
+            state: Some(AgentState::Exited),
+            since: after.since,
+            ..before
+        }
+    );
+    assert_eq!(after.title, "fix the login bug");
+    assert_eq!(after.worktree, s.worktree);
+}
+
+// The agent sessions listed, oldest first.
+fn listed(s: &Setup) -> Vec<SessionId> {
+    let listed = s.core().agent_sessions().into_iter();
+    listed.map(|info| info.session).collect()
+}
+
+fn not_running(killed: Result<(), CoreError>, session: SessionId) -> bool {
+    matches!(killed, Err(CoreError::SessionNotRunning(s)) if s == session)
+}
+
+#[test]
+fn deleting_a_running_session_leaves_no_process_record_panel_or_folder_of_it_or_its_subagents() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let kept = s.spawn(Agent::Claude, Mode::Chat);
+    let parent = s.spawn(Agent::Claude, Mode::Chat);
+    let child = s.spawn_subagent(parent);
+    let grandchild = s.spawn_subagent(child);
+    wait_launches(&s.claude_chat, 4);
+    let folder = |session: SessionId| s.cfg.home.join("sessions").join(session.to_string());
+    let folders = [parent, child, grandchild].map(folder);
+    assert!(folders.iter().all(|folder| folder.is_dir()));
+    let kept_folder = folder(kept);
+    let has_panel = |s: &Setup, session| {
+        let workspace = s.core().workspace(&s.worktree).unwrap();
+        workspace.chat.iter().any(|p| p.session == Some(session))
+    };
+    assert!(has_panel(&s, parent));
+    s.drain_events();
+
+    block_on(s.core().delete_agent_session(parent)).unwrap();
+
+    assert_eq!(listed(&s), [kept]);
+    assert_eq!(s.sessions(), [agent_info(kept, Agent::Claude, Mode::Chat)]);
+    for session in [parent, child, grandchild] {
+        assert!(not_running(s.core().kill(session), session));
+    }
+    assert!(!has_panel(&s, parent));
+    assert!(has_panel(&s, kept));
+    assert!(folders.iter().all(|folder| !folder.exists()));
+    assert!(kept_folder.is_dir());
+    s.wait_list_changed();
+    let again = block_on(s.core().delete_agent_session(parent));
+    assert!(
+        matches!(again, Err(CoreError::NotAnAgentSession(session)) if session == parent),
+        "{again:?}"
+    );
+
+    s.restart();
+
+    assert_eq!(listed(&s), [kept]);
+    assert!(!has_panel(&s, parent));
+}
+
+#[test]
+fn deleting_an_ended_session_drops_its_record_and_folder() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let ended = s.spawn(Agent::Claude, Mode::Chat);
+    let folder = s.cfg.home.join("sessions").join(ended.to_string());
+    s.end(ended);
+    s.restart();
+    assert_eq!(listed(&s), [ended]);
+    // It has no process, so no exit says the list changed. Only the delete does.
+    s.drain_events();
+
+    block_on(s.core().delete_agent_session(ended)).unwrap();
+
+    assert_eq!(listed(&s), []);
+    assert!(!folder.exists());
+    s.wait_list_changed();
+    s.restart();
+    assert_eq!(listed(&s), []);
+}
+
+#[test]
+fn deleting_a_session_when_the_state_cannot_be_saved_still_drops_its_record_and_folder() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let ended = s.spawn(Agent::Claude, Mode::Chat);
+    let folder = s.cfg.home.join("sessions").join(ended.to_string());
+    s.end(ended);
+    // The state file's temp file cannot be made in a home folder that takes no new files.
+    let home = s.cfg.home.clone();
+    let writable = fs::metadata(&home).unwrap().permissions();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let deleted = block_on(s.core().delete_agent_session(ended));
+
+    fs::set_permissions(&home, writable).unwrap();
+    assert!(matches!(deleted, Err(CoreError::Io { .. })), "{deleted:?}");
+    assert_eq!(listed(&s), []);
+    assert!(!folder.exists());
+}
+
+#[test]
+fn resuming_an_ended_session_starts_it_again_under_the_same_id_in_its_one_panel() {
+    let _serial = serial();
+    let mut s = setup(Scenarios {
+        claude_chat: one_recorded_turn(),
+        ..Scenarios::default()
+    });
+    let claude = s.spawn(Agent::Claude, Mode::Chat);
+    s.core().send_message(claude, "fix the bug").unwrap();
+    s.wait_state(claude, AgentState::Done);
+    let first = wait_launches(&s.claude_chat, 1).remove(0);
+    let shown = s.core().workspace(&s.worktree).unwrap();
+    assert_eq!(
+        shown.chat.last(),
+        Some(&panel(Agent::Claude, Some(claude), true))
+    );
+    s.end(claude);
+    s.restart();
+    let hidden = s.core().workspace(&s.worktree).unwrap();
+    assert!(hidden.chat.iter().all(|p| p.session != Some(claude)));
+    s.drain_events();
+
+    s.core().resume_agent_session(claude).unwrap();
+
+    let mut resumed = first;
+    resumed.push("--resume".into());
+    assert_eq!(wait_launches(&s.claude_chat, 2)[1], resumed);
+    assert_eq!(
+        s.sessions(),
+        [agent_info(claude, Agent::Claude, Mode::Chat)]
+    );
+    let record = s.record(claude).unwrap();
+    assert!(!record.ended);
+    assert_eq!(record.state, Some(AgentState::Idle));
+    assert_eq!(record.title, "fix the bug");
+    // Its panel was saved all along, so it is back and no second one is added.
+    assert_eq!(s.core().workspace(&s.worktree).unwrap(), shown);
+    s.wait_list_changed();
+    let history = wait_for("the history", || {
+        let (sink, _frames) = unbounded_channel();
+        let history = s.core().subscribe(claude, sink).ok()?;
+        (!history.is_empty()).then_some(history)
+    });
+    assert_eq!(history, turn_messages("fix the bug"));
+    // Resuming a session that runs starts nothing more.
+    s.core().resume_agent_session(claude).unwrap();
+    s.core().send_message(claude, "and the test").unwrap();
+    s.wait_state(claude, AgentState::Done);
+    assert_eq!(wait_launches(&s.claude_chat, 2).len(), 2);
+}
+
+#[test]
+fn resuming_a_session_whose_panel_the_workspace_dropped_gives_it_one_panel() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let claude = s.spawn(Agent::Claude, Mode::Chat);
+    s.end(claude);
+    // The UI saves the workspace as it sees it, without the ended session's panel.
+    let seen = s.core().workspace(&s.worktree).unwrap();
+    assert!(seen.chat.iter().all(|p| p.session != Some(claude)));
+    block_on(s.core().set_workspace(&s.worktree, seen.clone(), None)).unwrap();
+
+    s.core().resume_agent_session(claude).unwrap();
+
+    let mut with_panel = seen;
+    with_panel
+        .chat
+        .push(panel(Agent::Claude, Some(claude), true));
+    assert_eq!(s.core().workspace(&s.worktree).unwrap(), with_panel);
+}
+
+#[test]
+fn resuming_a_session_whose_panel_is_hidden_shows_that_panel() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let claude = s.spawn(Agent::Claude, Mode::Chat);
+    let mut hidden = s.core().workspace(&s.worktree).unwrap();
+    let last = hidden.chat.last_mut().unwrap();
+    assert_eq!(*last, panel(Agent::Claude, Some(claude), true));
+    last.shown = false;
+    block_on(s.core().set_workspace(&s.worktree, hidden.clone(), None)).unwrap();
+    s.end(claude);
+
+    s.core().resume_agent_session(claude).unwrap();
+
+    let mut shown = hidden;
+    shown.chat.last_mut().unwrap().shown = true;
+    assert_eq!(s.core().workspace(&s.worktree).unwrap(), shown);
+    // The shown panel is saved.
+    wait_for("the panel saved as shown", || {
+        let state: Value =
+            serde_json::from_slice(&fs::read(s.cfg.home.join("state.json")).ok()?).ok()?;
+        let saved = state.to_string();
+        (!saved.contains(r#""shown":false"#)).then_some(())
+    });
+}
+
+#[test]
+fn a_resume_that_cannot_start_leaves_the_session_ended_and_saved_as_ended() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let claude = s.spawn(Agent::Claude, Mode::Chat);
+    s.end(claude);
+    s.cfg.claude_sidecar_command = s.dir.path().join("no-such-sidecar");
+    s.restart();
+
+    let resumed = s.core().resume_agent_session(claude);
+
+    assert!(resumed.is_err(), "{resumed:?}");
+    let record = s.record(claude).unwrap();
+    assert!(record.ended);
+    assert_eq!(record.state, Some(AgentState::Exited));
+    assert_eq!(s.sessions(), []);
+    let id = claude.to_string().parse::<u64>().unwrap();
+    wait_for("the session saved as ended", || {
+        (saved_sessions(&s.cfg.home) == [(id, true)]).then_some(())
+    });
+    // It is not left resuming, so a later resume is tried and not refused.
+    let again = s.core().resume_agent_session(claude);
+    assert!(
+        matches!(again, Err(ref e) if !matches!(e, CoreError::SwitchingMode(_))),
+        "{again:?}"
+    );
+}
+
+#[test]
+fn a_resumed_session_whose_process_exits_at_once_ends_again_with_the_state_of_that_exit() {
+    let _serial = serial();
+    let mut s = setup(Scenarios {
+        claude_chat: json!([{"exit": 3}]),
+        ..Scenarios::default()
+    });
+    let claude = s.spawn(Agent::Claude, Mode::Chat);
+    s.wait_state(claude, AgentState::Failed);
+
+    s.core().resume_agent_session(claude).unwrap();
+
+    // `Idle` from the resume, then the exit.
+    s.wait_state(claude, AgentState::Idle);
+    s.wait_state(claude, AgentState::Failed);
+    let record = s.record(claude).unwrap();
+    assert!(record.ended);
+    assert_eq!(record.state, Some(AgentState::Failed));
+}
+
+#[test]
+fn resuming_a_session_grove_does_not_know_is_refused() {
+    let _serial = serial();
+    let s = setup(Scenarios::default());
+    let shell = s.core().spawn_shell(&s.worktree, 80, 24).unwrap();
+
+    let resumed = s.core().resume_agent_session(shell);
+
+    assert!(
+        matches!(resumed, Err(CoreError::NotAnAgentSession(session)) if session == shell),
+        "{resumed:?}"
+    );
+}
+
+#[test]
+fn removing_a_worktree_drops_the_records_and_folders_of_its_sessions() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let forgotten = s.add_worktree("forgotten");
+    let deleted = s.add_worktree("deleted");
+    let kept = s.spawn(Agent::Claude, Mode::Chat);
+    let in_forgotten = s.spawn_in(&forgotten, Agent::Claude, Mode::Chat);
+    let ended_in_forgotten = s.spawn_in(&forgotten, Agent::Claude, Mode::Chat);
+    let in_deleted = s.spawn_in(&deleted, Agent::Claude, Mode::Chat);
+    s.end(ended_in_forgotten);
+    let dropped = [in_forgotten, ended_in_forgotten, in_deleted];
+    let folders = dropped.map(|session| s.cfg.home.join("sessions").join(session.to_string()));
+    assert_eq!(listed(&s).len(), 4);
+    s.drain_events();
+
+    block_on(s.core().remove_worktree(&forgotten, RemoveOpts::Forget)).unwrap();
+    let delete = RemoveOpts::Delete {
+        confirmed: true,
+        delete_branch: false,
+    };
+    block_on(s.core().remove_worktree(&deleted, delete)).unwrap();
+
+    assert_eq!(listed(&s), [kept]);
+    assert!(folders.iter().all(|folder| !folder.exists()));
+    s.wait_list_changed();
+    s.restart();
+    assert_eq!(listed(&s), [kept]);
+}
+
+#[test]
+fn a_version_8_state_file_loads_with_every_session_listed() {
+    let _serial = serial();
+    let mut s = setup(Scenarios {
+        claude_chat: one_recorded_turn(),
+        ..Scenarios::default()
+    });
+    let with_history = s.spawn(Agent::Claude, Mode::Chat);
+    s.core().send_message(with_history, "fix the bug").unwrap();
+    s.wait_state(with_history, AgentState::Done);
+    let codex = s.spawn(Agent::Codex, Mode::Terminal);
+    let codex_id = s.resume_id(codex);
+    let child = s.spawn_subagent(with_history);
+    let (history_id, child_id) = (s.resume_id(with_history), s.resume_id(child));
+    drop(s.core.take());
+    // The sessions as a version 8 grove wrote them, field by field, so this does not follow
+    // what version 9 writes: no title, created time or ended flag.
+    let path = s.cfg.home.join("state.json");
+    let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(state["version"], json!(9));
+    let id = |session: SessionId| session.to_string().parse::<u64>().unwrap();
+    state["repos"][0]["main_worktree"]["sessions"] = json!([
+        {"kind": "agent", "id": id(with_history), "agent": "claude", "mode": "chat",
+         "resume_id": history_id, "cols": 100, "rows": 30},
+        {"kind": "agent", "id": id(codex), "agent": "codex", "mode": "terminal",
+         "resume_id": codex_id, "cols": 100, "rows": 30},
+        {"kind": "agent", "id": id(child), "agent": "claude", "mode": "chat",
+         "resume_id": child_id, "cols": 80, "rows": 24, "parent": id(with_history)},
+    ]);
+    state["version"] = json!(8);
+    fs::write(&path, state.to_string()).unwrap();
+    let loaded = SystemTime::now() - Duration::from_millis(1);
+
+    let (core, events) = Core::start(s.cfg.clone()).unwrap();
+    s.core = Some(core);
+    s.events = events;
+
+    let records = s.core().agent_sessions();
+    let summary: Vec<_> = records
+        .iter()
+        .map(|r| (r.session, r.agent, r.mode, r.parent, r.ended))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (with_history, Agent::Claude, Mode::Chat, None, false),
+            (codex, Agent::Codex, Mode::Terminal, None, false),
+            (child, Agent::Claude, Mode::Chat, Some(with_history), false),
+        ]
+    );
+    assert!(records.iter().all(|r| r.worktree == s.worktree));
+    assert!(records.iter().all(|r| r.created >= loaded));
+    assert_eq!(s.record(codex).unwrap().title, "New session");
+    assert_eq!(s.core().resume_id(codex), Some(codex_id));
+    // Its history titles it once it is read.
+    wait_for("the title from the history", || {
+        (s.record(with_history).unwrap().title == "fix the bug").then_some(())
+    });
+}
+
+// What grove would restore if it stopped now, from the state file: each session's id, and
+// whether it is saved as ended.
+fn saved_sessions(home: &Path) -> Vec<(u64, bool)> {
     let state: Value =
         serde_json::from_slice(&fs::read(home.join("state.json")).unwrap_or_default())
             .unwrap_or(Value::Null);
@@ -1181,11 +1683,11 @@ fn saved_session_ids(home: &Path) -> Vec<u64> {
         .as_array()
         .into_iter()
         .flatten()
-        .map(|s| s["id"].as_u64().unwrap())
+        .map(|s| (s["id"].as_u64().unwrap(), s["ended"] == json!(true)))
         .collect()
 }
 
-// So a crash keeps the sessions that ran.
+// So a crash keeps the sessions that ran, and starts no process for one that had ended.
 #[test]
 fn the_state_file_follows_sessions_as_they_start_and_end() {
     let _serial = serial();
@@ -1196,12 +1698,17 @@ fn the_state_file_follows_sessions_as_they_start_and_end() {
     let id = |session: SessionId| session.to_string().parse::<u64>().unwrap();
 
     wait_for("both saved", || {
-        (saved_session_ids(&home) == [id(agent), id(shell)]).then_some(())
+        (saved_sessions(&home) == [(id(agent), false), (id(shell), false)]).then_some(())
     });
     s.core().kill(agent).unwrap();
     s.wait_state(agent, AgentState::Exited);
-    wait_for("the agent gone", || {
-        (saved_session_ids(&home) == [id(shell)]).then_some(())
+    // The agent session stays, marked ended. A shell that ends is gone.
+    wait_for("the agent saved as ended", || {
+        (saved_sessions(&home) == [(id(agent), true), (id(shell), false)]).then_some(())
+    });
+    s.core().kill(shell).unwrap();
+    wait_for("the shell gone", || {
+        (saved_sessions(&home) == [(id(agent), true)]).then_some(())
     });
 }
 
@@ -1336,7 +1843,7 @@ fn a_session_saved_before_grove_kept_models_comes_back_with_no_choice() {
     // The state file as grove wrote it before version 7: no model on any session.
     let path = s.cfg.home.join("state.json");
     let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(state["version"], json!(8));
+    assert_eq!(state["version"], json!(9));
     fn forget_models(value: &mut Value) {
         match value {
             Value::Object(object) => {

@@ -23,8 +23,9 @@ use crate::{
 // worktree's sessions to bring back and its review comments, and the session in each agent
 // panel. Version 6 added the parent of each agent session that is a subagent. Version 7 added
 // each agent session's model and effort. Version 8 added the worktree each worktree nests
-// under.
-const VERSION: u32 = 8;
+// under. Version 9 keeps each agent session until the user deletes it, with its title, its
+// created time and whether its process had ended.
+const VERSION: u32 = 9;
 
 /// `state.json` in the home folder: the repos and worktrees grove tracks, each repo's settings,
 /// and each worktree's workspace, sessions and review comments, kept across restarts.
@@ -36,7 +37,7 @@ pub(crate) struct StateFile {
     // Held for a whole save, so saves never interleave. True once the core is stopping and has
     // saved for the last time, so the sessions it then ends stay saved.
     closed: Mutex<bool>,
-    // The sessions a restart brings back and the review comments, read at each save.
+    // The sessions the state file keeps and the review comments, read at each save.
     current: Box<dyn Fn() -> SessionsAndComments + Send + Sync>,
 }
 
