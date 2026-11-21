@@ -183,6 +183,20 @@ test("Escape closes the menu, and Enter then sends what was typed", async () => 
   expect(bridge.sent).toEqual([{ session: "0", text: "/rev" }]);
 });
 
+test("after Escape, a new / draft opens the menu again", async () => {
+  await listing(review, init);
+  type("/");
+  key("Escape");
+
+  type("");
+  type("/");
+  expect(rows()).toHaveLength(2);
+
+  key("Escape");
+  type("/in");
+  expect(rows().map((row) => row.textContent)).toEqual(["/initWrite a CLAUDE.md"]);
+});
+
 test("a / that is not at the start of the composer opens nothing", async () => {
   await listing(review);
 

@@ -503,6 +503,19 @@ class FakeCodexTest(unittest.TestCase):
         self.assertEqual([(s["name"], s["enabled"]) for s in asked[0]["skills"]],
                          [("review", True), ("off", False)])
 
+    def test_app_server_reads_its_skills_from_the_file_at_each_request(self):
+        path = os.path.join(self.dir, "skills.json")
+        server = self.chat([], env={"FAKE_CODEX_SKILLS": path})
+        server.handshake()
+
+        before = server.request("skills/list", {})["result"]["data"][0]["skills"]
+        with open(path, "w") as f:
+            json.dump([{"name": "plan", "description": "Plan it", "enabled": True, "path": "/p", "scope": "repo"}], f)
+        after = server.request("skills/list", {})["result"]["data"][0]["skills"]
+
+        self.assertEqual([s["name"] for s in before], ["review", "off"])
+        self.assertEqual([s["name"] for s in after], ["plan"])
+
     def test_app_server_lists_its_models_and_runs_each_turn_with_the_model_and_effort_it_was_given(self):
         says = {"send": {"method": "item/agentMessage/delta",
                          "params": {"threadId": "{{thread_id}}", "turnId": "{{turn_id}}", "itemId": "m1",

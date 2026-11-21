@@ -44,6 +44,19 @@ SKILLS = [
     {"name": "off", "description": "A skill the user turned off", "enabled": False,
      "path": "/skills/off/SKILL.md", "scope": "user"},
 ]
+
+
+def skill_list():
+    """What skills/list returns now: the file FAKE_CODEX_SKILLS names, read at each request, or
+    SKILLS when it is unset or the file is missing."""
+    path = os.environ.get("FAKE_CODEX_SKILLS", "")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return SKILLS
+
+
 ESCAPES = {"b": "\b", "t": "\t", "n": "\n", "f": "\f", "r": "\r", '"': '"', "\\": "\\"}
 BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 NUMBER = re.compile(r"[+-]?[0-9][0-9_]*(\.[0-9_]+)?([eE][+-]?[0-9_]+)?")
@@ -390,7 +403,8 @@ class AppServer:
             return self.send({"id": rid, "result": {"data": MODELS, "nextCursor": None}})
         if method == "skills/list":
             cwds = params.get("cwds") or [os.getcwd()]
-            return self.send({"id": rid, "result": {"data": [{"cwd": cwd, "skills": SKILLS, "errors": []}
+            skills = skill_list()
+            return self.send({"id": rid, "result": {"data": [{"cwd": cwd, "skills": skills, "errors": []}
                                                               for cwd in cwds]}})
         if method == "account/read":
             account = json.loads(os.environ.get("FAKE_CODEX_ACCOUNT", "null"))

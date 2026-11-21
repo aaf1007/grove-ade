@@ -39,13 +39,14 @@ interface CommandMenu {
 /**
  * The `/` menu of the composer. A draft that is `/` and then no space opens it, listing the
  * commands whose names hold the text after the `/`, those that start with it first. Up and Down
- * move, Enter or Tab picks, and Escape closes it until the draft changes. Picking gives `onPick`
+ * move, Enter or Tab picks, and Escape closes it until the draft changes, so a new `/` draft opens it again. Picking gives `onPick`
  * the command's invocation and a space.
  */
 export function useCommandMenu(commands: SlashCommand[], draft: string, onPick: (text: string) => void): CommandMenu {
   const id = useId();
-  // The draft Escape closed the menu on.
+  // The draft Escape closed the menu on, until the draft changes.
   const [dismissed, setDismissed] = useState<string | null>(null);
+  if (dismissed !== null && dismissed !== draft) setDismissed(null);
   // The selected row, for the query it was chosen in. A new query starts at the first row.
   const [active, setActive] = useState({ query: "", index: 0 });
 

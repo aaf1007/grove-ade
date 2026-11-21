@@ -101,6 +101,7 @@ Without `resume` the session id is a random UUID.
 | `FAKE_CODEX_SCENARIO` | Path of the scenario file to play. Required, except for `app-server`, which never reads it. |
 | `FAKE_CODEX_APP_SERVER_SCENARIO` | Path of the scenario `app-server` plays. Optional. See [App server](#app-server). |
 | `FAKE_CODEX_ACCOUNT` | The account `account/read` returns, as JSON. `null` (no login) when unset. |
+| `FAKE_CODEX_SKILLS` | Path of a JSON file with the skills `skills/list` returns, read at each request. The fake's own two when unset or missing. |
 | `FAKE_CODEX_LOG` | Path of the log file. Each run appends to it. No log when unset. |
 | `FAKE_CODEX_RECORD` | The [record](#record) folder, shared by the TUI and `app-server`. |
 | `FAKE_CODEX_HOOK_TRUST` | `trusted` (the default), `untrusted` or `modified`. See [Hooks not trusted](#hooks-not-trusted). |
@@ -158,8 +159,9 @@ reads:
   `medium` and `high`, `medium` by default) and `gpt-5.5-mini` (efforts `low`
   and `medium`, `low` by default), and no next cursor.
 - `skills/list` gets one entry per path in `params.cwds`, or one for the
-  fake's folder when there is none. Each lists two skills: `review`, enabled,
-  and `off`, turned off.
+  fake's folder when there is none. Each lists the skills in the file
+  `FAKE_CODEX_SKILLS` names, read at each request, or else two: `review`,
+  enabled, and `off`, turned off.
 - `turn/start` on that thread, with `input` a list of text items that each
   have `text_elements`, gets a turn with a new UUID. One turn runs at a time:
   it ends when the scenario sends `turn/completed`. An optional `model` and
