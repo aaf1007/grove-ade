@@ -147,17 +147,23 @@ test.each(
 const surfaces = ["sidebar", "bg", "panel", "code-bg"];
 const minimumLightnessStep = 3;
 
-const modernDark = { ...defaultDark, ...declarations(tokens, ':root[data-palette="modern"]') };
+// Modern sets only some tokens. The rest come from the default palette in the same theme.
+const modern = declarations(tokens, ':root[data-palette="modern"]');
 const everyTheme = {
   "default dark": defaultThemes.dark,
   "default light": defaultThemes.light,
-  "modern dark": modernDark,
+  "modern dark": { ...defaultThemes.dark, ...modern },
   "modern light": {
     ...defaultThemes.light,
-    ...modernDark,
+    ...modern,
     ...declarations(tokens, ':root[data-palette="modern"][data-theme="light"]'),
   },
 };
+
+// --syn-fn is set by the default light block and by neither Modern block.
+test("Modern light takes the default light value of a token Modern does not set", () => {
+  expect(everyTheme["modern light"]["--syn-fn"]).toBe(defaultThemes.light["--syn-fn"]);
+});
 
 test.each(Object.entries(everyTheme))("the surface steps of %s are far enough apart", (_, values) => {
   expect(surfacesTooClose(values)).toEqual([]);
