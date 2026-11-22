@@ -1630,7 +1630,7 @@ struct Replayed {
 struct Played {
     /// When it was recorded, in seconds since the recording started.
     recorded: f64,
-    /// The Unix time in seconds the fake heard it, for the core's line, or had sent it.
+    /// The Unix time in seconds when the fake heard it, if the core sent it, or had sent it.
     at_fake: f64,
     /// The message the sink should get for it.
     message: AgentMessage,
@@ -1791,13 +1791,13 @@ impl Replayed {
     /// - the core got each of the fake's lines to the sink, and the user's message to the sink
     ///   and to the fake, without holding it.
     fn assert_on_time(&self, speed: f64) {
-        // The core's share: the flush window of 8 ms, plus a turn on a core for its reader
-        // thread, its flush task and the thread that stamps the frame. With every core busy
+        // What the core may take. Its flush window is 8 ms, and its reader thread, its flush
+        // task and the thread that stamps the frame each wait for a CPU. With every CPU busy
         // building the workspace this took at most 21 ms.
         const CORE_LATE: f64 = 0.25;
-        // The fake's share: Python waking from a sleep to send a line, or to hear the user's
-        // message. A late fake only makes the replay slower than asked. With every core busy
-        // it was at most 80 ms late.
+        // What the fake may take. Python has to wake from a sleep to send a line, or to hear
+        // the user's message. A late fake only makes the replay slower than asked. With every
+        // CPU busy it was at most 80 ms late.
         const FAKE_LATE: f64 = 0.5;
         // The fake paces itself on one clock and logs on another.
         const CLOCK_SKEW: f64 = 0.001;

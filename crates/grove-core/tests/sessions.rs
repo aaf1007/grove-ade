@@ -302,7 +302,7 @@ fn eventually(done: impl Fn() -> bool) -> bool {
     true
 }
 
-// Waits for `session` to exit and returns its exit code. Other events are skipped: the
+// Waits for `session` to exit and returns its exit code. It skips other events, since the
 // worktree's watcher can send `DiffChanged` at any time.
 fn wait_exit(events: &mut broadcast::Receiver<CoreEvent>, session: SessionId) -> Option<i32> {
     wait_exit_within(events, session, TIMEOUT)
@@ -327,7 +327,7 @@ fn wait_exit_within(
     }
 }
 
-// Whether `session` has exited by now. Other events are skipped.
+// Whether `session` has exited by now. It skips other events.
 fn has_exited(events: &mut broadcast::Receiver<CoreEvent>, session: SessionId) -> bool {
     loop {
         match events.try_recv() {
