@@ -533,6 +533,9 @@ function switchBlocked(
   return null;
 }
 
+/** Whether a decline carries the user's message to the agent. Codex's app-server takes none. */
+const DECLINE_TAKES_MESSAGE: Record<Agent, boolean> = { Claude: true, Codex: false };
+
 /** Where the panel came back to chat mode from terminal mode. Only the panel adds it. */
 const RESUMED = { type: "Resumed" } as const;
 
@@ -596,6 +599,8 @@ function ChatView({
   const [error, setError] = useState<string | null>(null);
   // Requests the core refused an answer to: they ended before the panel heard.
   const [refused, setRefused] = useState<string[]>([]);
+  // Requests with an answer on its way. The core would refuse a second one.
+  const [answering, setAnswering] = useState<string[]>([]);
   // How many messages the conversation had when it came back from terminal mode.
   const resumedAt = useRef<number | null>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -731,7 +736,7 @@ function ChatView({
     draft.trim() !== "" &&
     !changingAgent &&
     !switchingMode &&
-    (declining !== undefined || (!turnRunning && models !== null));
+    (declining ? !answering.includes(declining.request) : !turnRunning && models !== null);
   const agentLocked =
     unechoed.length > 0 || messages.some((m) => m.type === "User" || m.type === "ReviewBatch");
 
@@ -790,6 +795,8 @@ function ChatView({
 
   // A refused answer means the request has ended.
   function answer(request: string, reply: Reply) {
+    if (answering.includes(request)) return Promise.resolve();
+    setAnswering((known) => [...known, request]);
     return bridge.answer(session, request, reply).catch((e: unknown) => {
       setRefused((known) => [...known, request]);
       throw e;
@@ -801,15 +808,20 @@ function ChatView({
     return answer(request, reply);
   }
 
-  // The message comes back to the composer if the core refuses it.
+  // The message comes back to the composer if the core refuses it. An agent that takes no message
+  // with a decline gets the decline alone, and the message stays in the composer.
   function decline(request: string, text: string) {
-    setDraft("");
+    const withMessage = DECLINE_TAKES_MESSAGE[agent];
+    if (withMessage) setDraft("");
     following.current = true;
-    answer(request, { type: "Deny", message: text }).then(
-      () => setError(null),
+    answer(request, { type: "Deny", message: withMessage ? text : null }).then(
+      () =>
+        setError(
+          withMessage ? null : `Declined. ${name} takes no message with a decline, so yours was not sent. It is still here.`,
+        ),
       (e: unknown) => {
         setError(String(e));
-        setDraft((typed) => [text, typed].filter(Boolean).join("\n"));
+        if (withMessage) setDraft((typed) => [text, typed].filter(Boolean).join("\n"));
       },
     );
   }
@@ -880,9 +892,7 @@ function ChatView({
             aria-label="Message"
             {...commandMenu.composerProps}
             rows={1}
-            placeholder={
-              declining ? "Send a message to decline and redirect the agent" : `Ask ${name} anything. @ files, / commands`
-            }
+            placeholder={placeholder(name, agent, declining !== undefined)}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
@@ -912,6 +922,13 @@ function ChatView({
       </div>
     </>
   );
+}
+
+/** What the empty composer says. While an approval waits, a message declines it. */
+function placeholder(name: string, agent: Agent, declining: boolean): string {
+  if (!declining) return `Ask ${name} anything. @ files, / commands`;
+  if (DECLINE_TAKES_MESSAGE[agent]) return "Send a message to decline and redirect the agent";
+  return `Send to decline. ${name} takes no message with a decline`;
 }
 
 function fitComposer(el: HTMLTextAreaElement) {
@@ -1416,7 +1433,8 @@ interface AskedFor {
 
 /**
  * What an approval asks for: the action as the card's headline says it, the command or files it
- * acts on, and why, when the agent says. A tool the panel does not know is named as is.
+ * acts on, and why, when the agent says. Requested permissions, and the input of a tool the panel
+ * does not know, show whole, since approving grants all of it.
  */
 function askedFor(item: ApprovalItem, worktree: string): AskedFor {
   const asked = (item.asked ?? {}) as Record<string, unknown>;
@@ -1447,15 +1465,22 @@ function askedFor(item: ApprovalItem, worktree: string): AskedFor {
     }
     // Codex asks for wider sandbox access.
     case "permissions":
-      return { action: "change its permissions", target: null, why };
+      return { action: "change its permissions", target: whole(asked.permissions), why };
   }
-  return { action: `use ${item.call.tool}`, target: null, why };
+  return { action: `use ${item.call.tool}`, target: whole(item.asked), why };
+}
+
+/** `value` as indented JSON. null when it has nothing to show. */
+function whole(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "object" && Object.keys(value).length === 0) return null;
+  return JSON.stringify(value, null, 2);
 }
 
 /**
  * A pending question, as a card above the composer. Each question of the request shows in turn,
  * with its options and a field for the user's own answer, which takes the place of any option
- * picked. The last one sends every answer, once.
+ * picked. Each answer can change until the last one sends every answer, once.
  */
 function QuestionCard({
   item,
@@ -1480,6 +1505,26 @@ function QuestionCard({
   const question = questions[at];
   const last = at === questions.length - 1;
 
+  function submit(answers: string[][]) {
+    setSending(true);
+    // The card goes when the core's `Answered` comes. A refused answer expires it.
+    onAnswer(request, { type: "Answers", answers }).catch(() => {});
+  }
+
+  // A request can come with no questions. Answering it with none lets the agent go on.
+  if (!question) {
+    return (
+      <div className="question-card" role="group" aria-label={`${agentName} is asking`}>
+        <p className="question-text">{agentName} asked nothing. Continue to let it go on.</p>
+        <div className="question-actions">
+          <Button variant="primary" size="sm" disabled={sending} onClick={() => submit([])}>
+            Continue
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   function pick(label: string) {
     const was = picked[at];
     const now = !question.multiSelect ? [label] : was.includes(label) ? was.filter((l) => l !== label) : [...was, label];
@@ -1499,9 +1544,7 @@ function QuestionCard({
           event.preventDefault();
           if (answers[at].length === 0 || sending) return;
           if (!last) return setAt(at + 1);
-          setSending(true);
-          // The card goes when the core's `Answered` comes. A refused answer expires it.
-          onAnswer(request, { type: "Answers", answers }).catch(() => {});
+          submit(answers);
         }}
       >
         <fieldset key={at} className="question" disabled={sending}>
@@ -1530,6 +1573,11 @@ function QuestionCard({
           />
         </fieldset>
         <div className="question-actions">
+          {at > 0 && (
+            <Button variant="ghost" size="sm" disabled={sending} onClick={() => setAt(at - 1)}>
+              Previous question
+            </Button>
+          )}
           <Button
             type="submit"
             variant="primary"
@@ -1562,6 +1610,7 @@ function describeApproval(reply: Reply): string {
 /** The record of an answered question, such as "Answered: vitest". */
 function describeAnswers(item: QuestionItem, reply: Reply): string {
   if (reply.type !== "Answers") return "Declined the question";
+  if (reply.answers.length === 0) return "Answered";
   const headers = item.questions.length > 1 ? item.questions : null;
   const answers = reply.answers.map((a, i) => (headers ? `${headers[i].header}: ` : "") + a.join(", "));
   return `Answered: ${answers.join("; ")}`;

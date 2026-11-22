@@ -110,3 +110,50 @@ test("each command of a folded row reads as the command inside, and keeps the wh
     ["npm run lint", ""],
   ]);
 });
+
+test("each call of a folded row opens to its own output", () => {
+  render(
+    <ToolCalls
+      calls={[
+        command("1", "npm test", { output: "3 passed", isError: false }),
+        command("2", "npm run lint", { output: "no warnings", isError: false }),
+        command("3", "git status"),
+      ]}
+      worktree={worktree}
+      live
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Ran 3 commands" }));
+  const list = screen.getByRole("list", { name: "Ran 3 commands" });
+  expect(screen.queryByText("3 passed")).toBeNull();
+
+  fireEvent.click(within(list).getByRole("button", { name: "npm run lint" }));
+  fireEvent.click(within(list).getByRole("button", { name: "git status" }));
+
+  expect(screen.queryByText("3 passed")).toBeNull();
+  expect(screen.getByText("no warnings")).toBeTruthy();
+  expect(screen.getByText("Running")).toBeTruthy();
+});
+
+test("a file a folded row read twice is listed once, and opens to the output of each read", () => {
+  const read = (id: string, output: string): ToolCall => ({
+    id,
+    tool: "Read",
+    input: { file_path: `${worktree}/a.ts` },
+    result: { output, isError: false },
+  });
+  render(
+    <ToolCalls
+      calls={[read("1", "first"), { ...read("2", "b"), input: { file_path: `${worktree}/b.ts` } }, read("3", "second")]}
+      worktree={worktree}
+      live
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Read 2 files" }));
+
+  fireEvent.click(within(screen.getByRole("list", { name: "Read 2 files" })).getByRole("button", { name: "a.ts" }));
+
+  expect(screen.getByText("first")).toBeTruthy();
+  expect(screen.getByText("second")).toBeTruthy();
+  expect(screen.queryByText("b")).toBeNull();
+});
