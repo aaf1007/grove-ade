@@ -927,7 +927,7 @@ test("the switch in a failed turn is off while the agent works, with why as its 
 test("the panel reports each turn that failed to log in, by its number, once its history has come", async () => {
   const bridge = await started();
   bridge.messages("0", LOGIN_FAILED);
-  const reported: number[] = [];
+  const reported: { turn: number; fromHistory: boolean }[] = [];
   render(
     <ChatPanel
       bridge={bridge}
@@ -938,18 +938,18 @@ test("the panel reports each turn that failed to log in, by its number, once its
       state={undefined}
       focusRequest={0}
       onOpenDiff={() => {}}
-      onLoginFailed={(turn) => reported.push(turn)}
+      onLoginFailed={(turn, fromHistory) => reported.push({ turn, fromHistory })}
     />,
   );
   await act(async () => {});
-  expect(reported).toEqual([1]);
+  expect(reported).toEqual([{ turn: 1, fromHistory: true }]);
 
   act(() => bridge.messages("0", { type: "TurnStarted" }, { type: "TurnEnded", outcome: "Completed" }));
   nextFrame();
   act(() => bridge.messages("0", { type: "TurnStarted" }, LOGIN_FAILED));
   nextFrame();
 
-  expect(reported).toEqual([1, 3]);
+  expect(reported).toEqual([{ turn: 1, fromHistory: true }, { turn: 3, fromHistory: false }]);
 });
 
 test("a message the agent never got says so, with its text", async () => {

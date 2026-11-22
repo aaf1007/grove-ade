@@ -15,6 +15,9 @@ export function useLoginDoubt(bridge: Bridge, follows: (session: SessionId) => b
   const [doubted, setDoubted] = useState<Agent[]>([]);
   // Each panel report counted, as "session turn": a panel reports again each time it is shown.
   const counted = useRef(new Set<string>());
+  // A hidden failure already reached the window through its state event. Its history
+  // can arrive after another session has restored the same account.
+  const hiddenFailures = useRef(new Set<SessionId>());
   const queue = useRef<Promise<unknown>>(Promise.resolve());
 
   function inOrder(step: () => unknown) {
@@ -28,10 +31,19 @@ export function useLoginDoubt(bridge: Bridge, follows: (session: SessionId) => b
     if (change.source === "Heuristic") return;
     const completed = change.state === "Done";
     const failedUnseen = change.state === "Failed" && !follows(change.session);
+    if (change.state === "Failed" && !failedUnseen) {
+      inOrder(() => hiddenFailures.current.delete(change.session));
+    }
     if (!completed && !failedUnseen) return;
     inOrder(async () => {
       const agent = (await bridge.agentSessions()).find((record) => record.session === change.session)?.agent;
-      if (agent) (completed ? trust : doubt)(agent);
+      if (!agent) return;
+      if (completed) {
+        trust(agent);
+      } else {
+        hiddenFailures.current.add(change.session);
+        doubt(agent);
+      }
     });
   });
 
@@ -48,11 +60,13 @@ export function useLoginDoubt(bridge: Bridge, follows: (session: SessionId) => b
   }, [bridge]);
 
   /** A panel says turn `turn` of `session`, which runs `agent`, failed to log in. */
-  function loginFailed(session: SessionId, agent: Agent, turn: number) {
+  function loginFailed(session: SessionId, agent: Agent, turn: number, fromHistory: boolean) {
     const key = `${session} ${turn}`;
     if (counted.current.has(key)) return;
     counted.current.add(key);
-    inOrder(() => doubt(agent));
+    inOrder(() => {
+      if (!fromHistory || !hiddenFailures.current.has(session)) doubt(agent);
+    });
   }
 
   return { doubted, loginFailed };

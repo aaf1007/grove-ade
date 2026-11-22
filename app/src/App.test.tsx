@@ -74,6 +74,7 @@ function FakeChatPanel({
   onOpenDiff,
   onChangeAgent,
   onLoginFailed,
+  onHide,
 }: {
   session: string;
   agent: Agent;
@@ -83,7 +84,8 @@ function FakeChatPanel({
   onBlur?: () => void;
   onOpenDiff(path?: string): void;
   onChangeAgent?: (agent: Agent) => void;
-  onLoginFailed?: (turn: number) => void;
+  onLoginFailed?: (turn: number, fromHistory: boolean) => void;
+  onHide?: () => void;
 }) {
   const [draft, setDraft] = useState("");
   return (
@@ -102,6 +104,8 @@ function FakeChatPanel({
       onBlur={onBlur}
     >
       <b>{agent}</b>
+      <button onClick={() => onLoginFailed?.(1, true)}>Replay login failure</button>
+      {onHide && <button onClick={onHide}>Hide panel</button>}
       {/* The real panel's text column. */}
       <div className="thread" />
       <input aria-label="Draft" value={draft} onChange={(event) => setDraft(event.target.value)} />
@@ -109,7 +113,7 @@ function FakeChatPanel({
       <button onClick={() => onOpenDiff("b.rs")}>Open b.rs in the diff</button>
       <button onClick={() => onChangeAgent?.("Codex")}>Switch to Codex</button>
       {/* Stands in for the real panel reporting that its first turn failed to log in. */}
-      <button onClick={() => onLoginFailed?.(1)}>Fail to log in</button>
+      <button onClick={() => onLoginFailed?.(1, false)}>Fail to log in</button>
     </section>
   );
 }
@@ -1218,6 +1222,19 @@ test("the sidebar footer shows the selected agent session's agent's account, als
   expect(within(footer()).getByRole("listitem").title).toBe("Codex");
 });
 
+test("hiding the focused agent shows the remaining panel's account in the footer", async () => {
+  const { bridge, panel } = await claudeInFeature();
+  act(() => bridge.accountChanged({ agent: "Codex", account: null }));
+  await act(async () => { await bridge.spawnAgent(feature, "Codex", null); });
+  await screen.findByRole("region", { name: "Panel 1" });
+  await act(async () => panel.focus());
+  expect(within(footer()).getByRole("listitem").title).toBe("Claude Code");
+
+  fireEvent.click(within(panel).getByRole("button", { name: "Hide panel" }));
+
+  await waitFor(() => expect(within(footer()).getByRole("listitem").title).toBe("Codex"));
+});
+
 // What the agent reports for a login it has a token for, even an expired one.
 const TOKEN_LOGIN = { email: null, organization: null, plan: null, apiKeySource: null };
 
@@ -1302,6 +1319,21 @@ test("a failed turn whose panel is not shown blanks the footer, since the window
   await waitFor(() => expect(footer().textContent).not.toContain("Logged in"));
   act(() => bridge.agentStateChanged({ session: hidden, state: "Done", source: "Protocol" }));
   await waitFor(() => expect(within(footer()).getByRole("listitem").textContent).toBe("Logged in"));
+});
+
+test("replaying a hidden failure after another session recovers keeps the recovered account", async () => {
+  const { bridge } = await claudeInFeature();
+  let hidden = "";
+  await act(async () => { hidden = await bridge.spawnAgent(main, "Claude", null); });
+  act(() => bridge.agentStateChanged({ session: hidden, state: "Failed", source: "Protocol" }));
+  await waitFor(() => expect(within(footer()).queryByRole("listitem")).toBeNull());
+  act(() => bridge.agentStateChanged({ session: "0", state: "Done", source: "Protocol" }));
+  await waitFor(() => expect(footer().textContent).toContain("Logged in"));
+
+  await act(async () => fireEvent.click(await findSessionRow("main")));
+  const panel = await screen.findByRole("region", { name: `Panel ${hidden}` });
+  await act(async () => fireEvent.click(within(panel).getByRole("button", { name: "Replay login failure" })));
+  expect(footer().textContent).toContain("Logged in");
 });
 
 test("a failed turn in a shown chat panel leaves the footer, since the panel says whether it was the login", async () => {

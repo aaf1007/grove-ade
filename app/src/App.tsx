@@ -661,7 +661,10 @@ export function App({ bridge }: { bridge: Bridge }) {
   const agentError = selected && startErrors[startKey("agent", selected)];
   const workspaceError = selected && workspaceErrors[selected];
   const detailsSession = selected ? focusedSession(selected) : null;
-  const footerAccounts = selectedAgentAccount(detailsSession?.agent);
+  const footerSession = detailsSession && places[detailsSession.session]?.shown
+    ? detailsSession
+    : agents.find((started) => places[started.session]?.shown);
+  const footerAccounts = selectedAgentAccount(footerSession?.agent);
   const selectedRepo = byRepo(worktrees ?? []).find((repo) => repo.some((w) => w.path === selected));
   const selectedWorktree = selectedRepo?.find((w) => w.path === selected);
   const regions = ["regions"];
@@ -802,7 +805,7 @@ export function App({ bridge }: { bridge: Bridge }) {
                   }
                   onMode={(mode) => reportDetails(started.session, { mode })}
                   onModelChoice={(model) => reportDetails(started.session, { model })}
-                  onLoginFailed={(turn) => loginFailed(started.session, started.agent, turn)}
+                  onLoginFailed={(turn, fromHistory) => loginFailed(started.session, started.agent, turn, fromHistory)}
                   onFocus={() => focus(started.session, started.worktree)}
                   onBlur={() => {
                     if (focusedAgent.current === started.session) focusedAgent.current = null;

@@ -129,7 +129,7 @@ export function ChatPanel({
    * Called in chat mode when the latest turn failed because the agent is not logged in, with its
    * number among the conversation's turns, from 1. It comes again each time the history does.
    */
-  onLoginFailed?: (turn: number) => void;
+  onLoginFailed?: (turn: number, fromHistory: boolean) => void;
 }) {
   const [modeSwitch, setModeSwitch] = useState<ModeSwitch>({
     mode: null,
@@ -599,7 +599,7 @@ function ChatView({
   onOpenDiff(path?: string): void;
   onChangeAgent?: (agent: Agent) => Promise<void>;
   onModelChoice?: (choice: ModelChoice | null) => void;
-  onLoginFailed?: (turn: number) => void;
+  onLoginFailed?: (turn: number, fromHistory: boolean) => void;
   /** Why the mode switch is off. null while it is on. */
   switchBlocked: string | null;
   /** Resumes the conversation in the agent's own TUI, where its login runs. */
@@ -608,7 +608,8 @@ function ChatView({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [commands, setCommands] = useState<SlashCommand[]>([]);
   // Whether the history has come. Before it does, the panel cannot tell whether an approval waits.
-  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [historyTurnCount, setHistoryTurnCount] = useState<number | null>(null);
+  const historyLoaded = historyTurnCount !== null;
   // A switch ends this session once the new one starts, so nothing may be sent to it meanwhile.
   const [changingAgent, setChangingAgent] = useState(false);
   // What the user sent that the core has not echoed back yet, oldest first.
@@ -673,21 +674,21 @@ function ChatView({
           const all: ChatMessage[] = [...conversation, ...takeCommands(early!, setCommands)];
           if (resumedAt.current !== null) all.splice(resumedAt.current, 0, RESUMED);
           setMessages(all);
-          setHistoryLoaded(true);
+          setHistoryTurnCount(conversation.filter((message) => message.type === "TurnEnded").length);
           setUnechoed([]);
           early = null;
         },
         (e: unknown) => {
           if (!current) return;
           setError(String(e));
-          setHistoryLoaded(true);
+          setHistoryTurnCount(0);
         },
       );
     return () => {
       current = false;
       if (frame) cancelAnimationFrame(frame);
       // The next subscribe brings the history again, and a jump waits for it.
-      setHistoryLoaded(false);
+      setHistoryTurnCount(null);
     };
   }, [bridge, session, shown, resumed, resumes]);
 
@@ -695,11 +696,13 @@ function ChatView({
   const turnEnds = messages.filter((message) => message.type === "TurnEnded");
   const latestEnd = turnEnds.at(-1);
   const loginFailedTurn = latestEnd?.outcome === "Failed" && isLoginFailure(latestEnd.kind) ? turnEnds.length : null;
-  const reportLoginFailed = useEffectEvent((turn: number) => onLoginFailed?.(turn));
+  const reportLoginFailed = useEffectEvent((turn: number, fromHistory: boolean) => onLoginFailed?.(turn, fromHistory));
 
   useEffect(() => {
-    if (historyLoaded && loginFailedTurn !== null) reportLoginFailed(loginFailedTurn);
-  }, [historyLoaded, loginFailedTurn]);
+    if (historyTurnCount !== null && loginFailedTurn !== null) {
+      reportLoginFailed(loginFailedTurn, loginFailedTurn <= historyTurnCount);
+    }
+  }, [historyTurnCount, loginFailedTurn]);
   const changes = useHeadDiff(bridge, worktree);
 
   useLayoutEffect(() => {
