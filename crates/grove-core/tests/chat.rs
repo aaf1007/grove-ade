@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use grove_core::{
     AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, Core, CoreConfig, CoreError,
-    CoreEvent, InputKind, Mode, ModelInfo, Question, QuestionOption, RemoveOpts, Reply, RequestId,
-    SessionId, SlashCommand, SpawnSpec, StateSource, TurnOutcome,
+    CoreEvent, InputKind, Mode, ModelInfo, PlanLimits, Question, QuestionOption, RemoveOpts, Reply,
+    RequestId, SessionId, SlashCommand, SpawnSpec, StateSource, TurnOutcome, UsageReading,
+    UsageWindow,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -204,6 +205,16 @@ impl Setup {
             } = self.next_event()
             {
                 return (session, state, source);
+            }
+        }
+    }
+
+    /// The next usage reading the core sends for Claude, skipping other events.
+    fn next_usage_reading(&mut self) -> Option<UsageReading> {
+        loop {
+            if let CoreEvent::UsageReading { agent, reading } = self.next_event() {
+                assert_eq!(agent, Agent::Claude);
+                return reading;
             }
         }
     }
@@ -2028,4 +2039,48 @@ fn a_command_list_alone_sets_no_state_and_starts_no_turn_for_a_waiting_message()
     while !frames.messages().contains(&not_delivered("go")) {
         frames.next_frame(deadline, "the not delivered message");
     }
+}
+
+fn usage_line(windows: Value) -> Value {
+    json!({"send": {"type": "usage", "reading": "windows", "windows": windows}})
+}
+
+fn two_windows() -> Value {
+    json!([
+        {"name": "5-hour", "percent_used": 42, "resets_at_unix_ms": 1_763_560_921_500_u64},
+        {"name": "Weekly", "percent_used": 18, "resets_at_unix_ms": 1_763_992_800_000_u64},
+    ])
+}
+
+fn two_windows_read() -> PlanLimits {
+    PlanLimits::Windows(vec![
+        UsageWindow {
+            name: "5-hour".into(),
+            percent_used: 42,
+            resets_at_unix_ms: Some(1_763_560_921_500),
+        },
+        UsageWindow {
+            name: "Weekly".into(),
+            percent_used: 18,
+            resets_at_unix_ms: Some(1_763_992_800_000),
+        },
+    ])
+}
+
+#[test]
+fn a_usage_reading_with_two_windows_arrives_with_percent_and_reset_time() {
+    let mut s = setup(json!([
+        usage_line(two_windows()),
+        {"wait_message": "never"}
+    ]));
+    let before = now_unix_ms();
+    s.spawn(None);
+
+    let reading = s.next_usage_reading().expect("a reading");
+
+    assert_eq!(reading.limits, two_windows_read());
+    assert!(!reading.latest_read_failed);
+    assert!((before..=now_unix_ms()).contains(&reading.read_at_unix_ms));
+    assert_eq!(s.core.usage_reading(Agent::Claude), Some(reading));
+    assert_eq!(s.core.usage_reading(Agent::Codex), None);
 }

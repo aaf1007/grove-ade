@@ -22,8 +22,10 @@ use tokio::sync::{Notify, broadcast, watch};
 use crate::agent::{Agents, ChatSpec};
 use crate::comments::{BatchComment, CommentId};
 use crate::session::{Batch, Flushed, flush_batches, start_thread};
+use crate::usage::UsageRead;
 use crate::{
     AccountInfo, Agent, AgentState, Core, CoreError, CoreEvent, InputKind, Result, SessionId,
+    UsageReading,
 };
 
 /// One message of a chat-mode conversation.
@@ -476,6 +478,8 @@ enum FromAgent {
     Models {
         models: Vec<ModelInfo>,
     },
+    /// What a read of the agent's plan limits gave.
+    Usage(UsageRead),
     Commands {
         commands: Vec<ListedCommand>,
     },
@@ -702,6 +706,13 @@ impl Core {
         Ok(())
     }
 
+    /// The agent's plan limits as of its last good read: each limit window, or that the account
+    /// has none. None before the first read, and when the agent cannot give one. The same for
+    /// every session of the agent.
+    pub fn usage_reading(&self, agent: Agent) -> Option<UsageReading> {
+        self.agents.usage.of(agent)
+    }
+
     /// The model and effort the session runs with, as `set_model` last saved them. None for a
     /// session that has no choice yet, which runs on its agent's default.
     pub fn model_choice(&self, session: SessionId) -> Result<Option<ModelChoice>> {
@@ -841,6 +852,10 @@ fn apply(
                 agent: chat.agent,
                 account,
             });
+            return;
+        }
+        FromAgent::Usage(read) => {
+            agents.usage.apply(chat.agent, read, events);
             return;
         }
         FromAgent::Thread { id } => {

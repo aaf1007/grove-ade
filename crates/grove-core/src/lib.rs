@@ -21,6 +21,7 @@ mod shell_env;
 mod snapshot;
 mod state;
 mod terminal;
+mod usage;
 mod watch;
 mod workspace;
 mod worktree;
@@ -62,6 +63,7 @@ pub use run::{LaunchArgs, RepoSettings, RunSession, RunSpec};
 pub use session::{OutputFrame, OutputSink, SessionId, SpawnSpec};
 pub use setup::{Setup, SetupState};
 pub use snapshot::Snapshot;
+pub use usage::{PlanLimits, UsageReading, UsageWindow};
 pub use workspace::{AgentPanel, Workspace};
 pub use worktree::{AddedWorktree, NewWorktree, WorktreeInfo};
 
@@ -125,6 +127,12 @@ pub enum CoreEvent {
     Account {
         agent: Agent,
         account: Option<AccountInfo>,
+    },
+    /// An agent's usage reading changed: its plan limits were read, or a read failed and the
+    /// last good one is now marked. None when the agent cannot give one, so the UI shows none.
+    UsageReading {
+        agent: Agent,
+        reading: Option<UsageReading>,
     },
     /// An agent session asked for a panel through grove-mcp, and grove started what it shows.
     /// `parent` is the agent session that asked.
