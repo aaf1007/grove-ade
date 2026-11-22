@@ -16,6 +16,7 @@ import type {
   Worktree,
 } from "./bridge";
 import { ChatPanel } from "./ChatPanel";
+import { useLoginDoubt } from "./loginDoubt";
 import { useSetting } from "./settings";
 import { DetailsCard, type FocusedSession, type RunTab, useDetailsRoom } from "./DetailsCard";
 import { type DiffOpened, DiffView } from "./DiffView";
@@ -155,9 +156,14 @@ export function App({ bridge }: { bridge: Bridge }) {
   const focusedAgent = useRef<SessionId | null>(null);
   // The agent session whose panel last had focus, by worktree, for the Details card.
   const [lastFocused, setLastFocused] = useState<Record<string, SessionId>>({});
-  // Each agent session's mode and model, and whether its latest turn failed to log in, as its panel
-  // reports them, by session.
+  // Each agent session's mode and model, as its panel reports them, by session.
   const [sessionDetails, setSessionDetails] = useState<Record<SessionId, SessionDetails>>({});
+  // A shown panel in chat mode says why its turns fail. The mode is unknown for a moment after
+  // the panel mounts, and the panel is in chat mode unless it says otherwise.
+  const { doubted: loginsInDoubt, loginFailed } = useLoginDoubt(
+    bridge,
+    (session) => !!places[session]?.shown && sessionDetails[session]?.mode !== "Terminal",
+  );
   // Whether the user opened Details. It shows while the chat area has room for it.
   const [detailsOpen, setDetailsOpen] = useSetting("grove.detailsOpen", false, (open) => typeof open === "boolean");
   const [chatLane, setChatLane] = useState<HTMLElement | null>(null);
@@ -615,13 +621,10 @@ export function App({ bridge }: { bridge: Bridge }) {
     };
   }
 
-  // The footer shows only the selected agent's login. The agent reports a login it has a token for
-  // even when the token no longer works, so after a turn of any of its sessions failed to log in,
-  // the footer shows nothing for it until that session's latest turn is not one.
+  // The footer shows only the selected agent's login, and nothing while that login is in doubt.
   function selectedAgentAccount(agent: Agent | undefined): Partial<Record<Agent, Account | null>> {
-    if (!agent || accounts[agent] === undefined) return {};
-    const loginFailed = agents.some((a) => a.agent === agent && sessionDetails[a.session]?.loginFailed);
-    return loginFailed ? {} : { [agent]: accounts[agent] };
+    if (!agent || accounts[agent] === undefined || loginsInDoubt.includes(agent)) return {};
+    return { [agent]: accounts[agent] };
   }
 
   const workspace = selected ? workspaces[selected] : undefined;
@@ -799,7 +802,7 @@ export function App({ bridge }: { bridge: Bridge }) {
                   }
                   onMode={(mode) => reportDetails(started.session, { mode })}
                   onModelChoice={(model) => reportDetails(started.session, { model })}
-                  onLoginFailed={(loginFailed) => reportDetails(started.session, { loginFailed })}
+                  onLoginFailed={(turn) => loginFailed(started.session, started.agent, turn)}
                   onFocus={() => focus(started.session, started.worktree)}
                   onBlur={() => {
                     if (focusedAgent.current === started.session) focusedAgent.current = null;
@@ -1027,7 +1030,7 @@ const PLACEHOLDER_TABS: PanelKind[] = ["Browser", "Logs"];
 
 type StartKind = "shell" | "agent" | `run ${string}`;
 
-type SessionDetails = { mode?: Mode; model?: ModelChoice | null; loginFailed?: boolean };
+type SessionDetails = { mode?: Mode; model?: ModelChoice | null };
 
 // JSON keeps any two kinds and worktrees apart, whatever a run session's name or a path holds.
 function startKey(kind: StartKind, worktree: string): string {

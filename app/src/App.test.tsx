@@ -83,7 +83,7 @@ function FakeChatPanel({
   onBlur?: () => void;
   onOpenDiff(path?: string): void;
   onChangeAgent?: (agent: Agent) => void;
-  onLoginFailed?: (failed: boolean) => void;
+  onLoginFailed?: (turn: number) => void;
 }) {
   const [draft, setDraft] = useState("");
   return (
@@ -108,9 +108,8 @@ function FakeChatPanel({
       <button onClick={() => onOpenDiff()}>Review diff</button>
       <button onClick={() => onOpenDiff("b.rs")}>Open b.rs in the diff</button>
       <button onClick={() => onChangeAgent?.("Codex")}>Switch to Codex</button>
-      {/* Stands in for the real panel's latest turn failing to log in, and a later one working. */}
-      <button onClick={() => onLoginFailed?.(true)}>Fail to log in</button>
-      <button onClick={() => onLoginFailed?.(false)}>Finish a turn</button>
+      {/* Stands in for the real panel reporting that its first turn failed to log in. */}
+      <button onClick={() => onLoginFailed?.(1)}>Fail to log in</button>
     </section>
   );
 }
@@ -1219,31 +1218,98 @@ test("the sidebar footer shows the selected agent session's agent's account, als
   expect(within(footer()).getByRole("listitem").title).toBe("Codex");
 });
 
-test("the footer never says Logged in after a turn of that agent failed to log in, until one works", async () => {
+// What the agent reports for a login it has a token for, even an expired one.
+const TOKEN_LOGIN = { email: null, organization: null, plan: null, apiKeySource: null };
+
+// A Claude session started in feat-36, shown, with Claude's login reported as `TOKEN_LOGIN`.
+async function claudeInFeature() {
   const bridge = await trackedBridge();
-  // What the agent reports for a login it has a token for, even an expired one.
-  bridge.accountChanged({ agent: "Claude", account: { email: null, organization: null, plan: null, apiKeySource: null } });
+  bridge.accountChanged({ agent: "Claude", account: TOKEN_LOGIN });
   render(<App bridge={bridge} />);
   await select("feat-36");
   startAgent();
   const panel = await screen.findByRole("region", { name: "Panel 0" });
   expect(within(footer()).getByRole("listitem").textContent).toBe("Logged in");
+  return { bridge, panel };
+}
+
+test("after a turn fails to log in, the footer shows nothing for the agent until a turn of it completes", async () => {
+  const { bridge, panel } = await claudeInFeature();
 
   fireEvent.click(within(panel).getByRole("button", { name: "Fail to log in" }));
 
-  expect(footer().textContent).not.toContain("Logged in");
-  // The agent reports the same login again, as a new process does after a mode switch.
-  act(() =>
-    bridge.accountChanged({ agent: "Claude", account: { email: null, organization: null, plan: null, apiKeySource: null } }),
-  );
-  expect(footer().textContent).not.toContain("Logged in");
-  // Another session of the same agent says nothing of its login.
+  await waitFor(() => expect(footer().textContent).not.toContain("Logged in"));
+  // None of these says the login works: the same login reported again, as a new process does
+  // after a mode switch, an interrupted turn, a failed one, and another session of the agent.
+  act(() => bridge.accountChanged({ agent: "Claude", account: TOKEN_LOGIN }));
+  act(() => bridge.agentStateChanged({ session: "0", state: "Idle", source: "Protocol" }));
+  act(() => bridge.agentStateChanged({ session: "0", state: "Failed", source: "Protocol" }));
   await startAnother(bridge, feature);
   await screen.findByRole("region", { name: "Panel 1" });
   await act(async () => fireEvent.click(await findSessionRow("feat-36", 1)));
   expect(footer().textContent).not.toContain("Logged in");
 
-  fireEvent.click(within(panel).getByRole("button", { name: "Finish a turn" }));
+  // A turn that completes, here in terminal mode after the user ran /login there.
+  act(() => bridge.agentStateChanged({ session: "1", state: "Done", source: "Hook" }));
+
+  await waitFor(() => expect(within(footer()).getByRole("listitem").textContent).toBe("Logged in"));
+});
+
+test("a login failure outlives its session", async () => {
+  const { bridge, panel } = await claudeInFeature();
+  await startAnother(bridge, feature);
+  await screen.findByRole("region", { name: "Panel 1" });
+  fireEvent.click(within(panel).getByRole("button", { name: "Fail to log in" }));
+
+  await deleteSession(await findSessionRow("feat-36"));
+  await act(async () => fireEvent.click(await findSessionRow("feat-36")));
+
+  await screen.findByRole("region", { name: "Panel 1" });
+  expect(footer().textContent).not.toContain("Logged in");
+});
+
+test("a new login report clears a login failure", async () => {
+  const { bridge, panel } = await claudeInFeature();
+  fireEvent.click(within(panel).getByRole("button", { name: "Fail to log in" }));
+
+  const account = { email: "ann@example.com", organization: null, plan: "max", apiKeySource: null };
+  act(() => bridge.accountChanged({ agent: "Claude", account }));
+
+  await waitFor(() => expect(within(footer()).getByRole("listitem").textContent).toBe("ann@example.com · max plan"));
+});
+
+test("a login failure counts once, so showing its panel again after a completed turn leaves the footer", async () => {
+  const { bridge, panel } = await claudeInFeature();
+  fireEvent.click(within(panel).getByRole("button", { name: "Fail to log in" }));
+  act(() => bridge.agentStateChanged({ session: "0", state: "Done", source: "Protocol" }));
+  await waitFor(() => expect(within(footer()).getByRole("listitem").textContent).toBe("Logged in"));
+
+  // As the panel reports its history again each time it is shown.
+  fireEvent.click(within(panel).getByRole("button", { name: "Fail to log in" }));
+  await act(async () => {});
+
+  expect(within(footer()).getByRole("listitem").textContent).toBe("Logged in");
+});
+
+test("a failed turn whose panel is not shown blanks the footer, since the window cannot see why", async () => {
+  const { bridge } = await claudeInFeature();
+  // A session in a worktree that is not selected, with no panel in this window.
+  let hidden = "";
+  await act(async () => void (hidden = await bridge.spawnAgent(main, "Claude", null)));
+
+  act(() => bridge.agentStateChanged({ session: hidden, state: "Failed", source: "Protocol" }));
+
+  await waitFor(() => expect(footer().textContent).not.toContain("Logged in"));
+  act(() => bridge.agentStateChanged({ session: hidden, state: "Done", source: "Protocol" }));
+  await waitFor(() => expect(within(footer()).getByRole("listitem").textContent).toBe("Logged in"));
+});
+
+test("a failed turn in a shown chat panel leaves the footer, since the panel says whether it was the login", async () => {
+  const { bridge } = await claudeInFeature();
+
+  act(() => bridge.agentStateChanged({ session: "0", state: "Failed", source: "Protocol" }));
+  // Any lookup the failure starts has time to end.
+  await act(async () => {});
 
   expect(within(footer()).getByRole("listitem").textContent).toBe("Logged in");
 });

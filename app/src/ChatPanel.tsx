@@ -125,8 +125,11 @@ export function ChatPanel({
   onMode?: (mode: Mode) => void;
   /** Called with the session's model and effort in chat mode, once known and on each change. */
   onModelChoice?: (choice: ModelChoice | null) => void;
-  /** Called in chat mode with whether the latest turn failed because the agent is not logged in. */
-  onLoginFailed?: (failed: boolean) => void;
+  /**
+   * Called in chat mode when the latest turn failed because the agent is not logged in, with its
+   * number among the conversation's turns, from 1. It comes again each time the history does.
+   */
+  onLoginFailed?: (turn: number) => void;
 }) {
   const [modeSwitch, setModeSwitch] = useState<ModeSwitch>({
     mode: null,
@@ -276,6 +279,7 @@ export function ChatPanel({
           onChangeAgent={onChangeAgent}
           onModelChoice={onModelChoice}
           onLoginFailed={onLoginFailed}
+          switchBlocked={blocked}
           onSwitchToTerminal={() => switchTo("Terminal")}
         />
       )}
@@ -567,6 +571,7 @@ function ChatView({
   onChangeAgent,
   onModelChoice,
   onLoginFailed,
+  switchBlocked,
   onSwitchToTerminal,
 }: {
   /** Goes right above the composer. */
@@ -591,7 +596,9 @@ function ChatView({
   onOpenDiff(path?: string): void;
   onChangeAgent?: (agent: Agent) => Promise<void>;
   onModelChoice?: (choice: ModelChoice | null) => void;
-  onLoginFailed?: (failed: boolean) => void;
+  onLoginFailed?: (turn: number) => void;
+  /** Why the mode switch is off. null while it is on. */
+  switchBlocked: string | null;
   /** Resumes the conversation in the agent's own TUI, where its login runs. */
   onSwitchToTerminal(): void;
 }) {
@@ -680,13 +687,14 @@ function ChatView({
   }, [bridge, session, shown, resumed, resumes]);
 
   const items = useMemo(() => thread(messages), [messages]);
-  const latestEnd = messages.filter((message) => message.type === "TurnEnded").at(-1);
-  const loginFailed = latestEnd?.outcome === "Failed" && isLoginFailure(latestEnd.kind);
-  const reportLoginFailed = useEffectEvent((failed: boolean) => onLoginFailed?.(failed));
+  const turnEnds = messages.filter((message) => message.type === "TurnEnded");
+  const latestEnd = turnEnds.at(-1);
+  const loginFailedTurn = latestEnd?.outcome === "Failed" && isLoginFailure(latestEnd.kind) ? turnEnds.length : null;
+  const reportLoginFailed = useEffectEvent((turn: number) => onLoginFailed?.(turn));
 
   useEffect(() => {
-    if (historyLoaded) reportLoginFailed(loginFailed);
-  }, [historyLoaded, loginFailed]);
+    if (historyLoaded && loginFailedTurn !== null) reportLoginFailed(loginFailedTurn);
+  }, [historyLoaded, loginFailedTurn]);
   const changes = useHeadDiff(bridge, worktree);
 
   useLayoutEffect(() => {
@@ -863,6 +871,7 @@ function ChatView({
               changes={changes}
               onOpenDiff={onOpenDiff}
               onOpenLink={openLink}
+              switchBlocked={switchBlocked}
               onSwitchToTerminal={onSwitchToTerminal}
             />
           ))}
@@ -963,8 +972,7 @@ type ThreadItem =
   | { kind: "review"; comments: BatchComment[] }
   | { kind: "notice"; text: string }
   | { kind: "resumed" }
-  /** A failed turn. `loginFailed`: the agent is not logged in, which only its own TUI can fix. */
-  | { kind: "error"; text: string; loginFailed: boolean }
+  | ErrorItem
   | { kind: "undelivered"; text: string }
   | RequestItem;
 
@@ -984,6 +992,12 @@ type RequestItem = {
     }
   | { kind: "question"; questions: Question[] }
 );
+
+/**
+ * A failed turn. `loginFailed`: the agent is not logged in, which only its own TUI can fix.
+ * `latest`: no turn ended after it.
+ */
+type ErrorItem = { kind: "error"; text: string; loginFailed: boolean; latest: boolean };
 
 type ApprovalItem = Extract<RequestItem, { kind: "approval" }>;
 type QuestionItem = Extract<RequestItem, { kind: "question" }>;
@@ -1012,6 +1026,7 @@ function thread(messages: ChatMessage[]): ThreadItem[] {
   // The current turn's requests, by id.
   const requests = new Map<string, RequestItem>();
   let lastFiles: Extract<ThreadItem, { kind: "files" }> | null = null;
+  let lastFailure: ErrorItem | null = null;
   let turn: Turn = { start: 0, ended: false, head: null, startedAt: null, endedAt: null };
 
   // The header goes where the turn started, before anything the agent said first.
@@ -1101,10 +1116,17 @@ function thread(messages: ChatMessage[]): ThreadItem[] {
         requests.clear();
         lastFiles = keyed({ kind: "files", last: false });
         items.push(lastFiles);
+        lastFailure = null;
         if (message.outcome === "Interrupted") {
           items.push(keyed({ kind: "notice", text: "You interrupted the turn." }));
         } else if (message.outcome === "Failed") {
-          items.push(keyed({ kind: "error", text: message.message, loginFailed: isLoginFailure(message.kind) }));
+          lastFailure = keyed<ErrorItem>({
+            kind: "error",
+            text: message.message,
+            loginFailed: isLoginFailure(message.kind),
+            latest: false,
+          });
+          items.push(lastFailure);
         }
         break;
       case "NotDelivered":
@@ -1113,6 +1135,7 @@ function thread(messages: ChatMessage[]): ThreadItem[] {
     }
   }
   if (lastFiles) lastFiles.last = true;
+  if (lastFailure) lastFailure.latest = true;
   return items;
 }
 
@@ -1165,6 +1188,7 @@ function Item({
   changes,
   onOpenDiff,
   onOpenLink,
+  switchBlocked,
   onSwitchToTerminal,
 }: {
   item: ThreadItem;
@@ -1178,6 +1202,8 @@ function Item({
   changes: FileDiff[] | null;
   onOpenDiff(path?: string): void;
   onOpenLink(link: string): void;
+  /** Why the mode switch is off. null while it is on. */
+  switchBlocked: string | null;
   onSwitchToTerminal(): void;
 }) {
   switch (item.kind) {
@@ -1241,8 +1267,13 @@ function Item({
           <div className="card-head">
             <b>Turn failed</b>
             <span className="spacer" />
-            {item.loginFailed && (
-              <Button size="xs" onClick={onSwitchToTerminal}>
+            {item.loginFailed && item.latest && (
+              <Button
+                size="xs"
+                disabled={switchBlocked !== null}
+                title={switchBlocked ?? undefined}
+                onClick={onSwitchToTerminal}
+              >
                 Switch to terminal mode
               </Button>
             )}
