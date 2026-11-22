@@ -38,6 +38,9 @@ pub struct CoreConfig {
     pub login_shell: Option<PathBuf>,
     /// How long the login shell gets to print its environment.
     pub login_shell_timeout: Duration,
+    /// The most live subagents one agent session has at once. A subagent is live until its
+    /// session ends. Each is a real agent process, so an agent that keeps spawning stops here.
+    pub max_live_subagents_per_parent: usize,
 }
 
 impl CoreConfig {
@@ -71,6 +74,7 @@ impl CoreConfig {
             stuck_working_after: Duration::from_secs(10),
             login_shell: None,
             login_shell_timeout: Duration::from_secs(5),
+            max_live_subagents_per_parent: 8,
             home,
         }
     }
