@@ -111,6 +111,11 @@ struct Setup {
 }
 
 fn setup(scenarios: Scenarios) -> Setup {
+    setup_with(scenarios, |_| {})
+}
+
+// A setup whose core config `configure` changes first.
+fn setup_with(scenarios: Scenarios, configure: impl FnOnce(&mut CoreConfig)) -> Setup {
     // macOS caps a socket path at 104 bytes, and its default temp folder is long.
     let dir = tempfile::Builder::new()
         .prefix("grove")
@@ -178,6 +183,7 @@ fn setup(scenarios: Scenarios) -> Setup {
         ),
         fake("codex"),
     );
+    configure(&mut cfg);
 
     let (core, events) = Core::start(cfg.clone()).unwrap();
     block_on(core.add_repo(&repo)).unwrap();
@@ -831,6 +837,65 @@ fn a_subagent_three_levels_deep_is_still_refused_one_after_a_restart() {
         )
     );
     assert_eq!(s.sessions().len(), 4);
+}
+
+#[test]
+fn a_parent_at_the_subagent_limit_is_refused_one_more_until_one_of_its_subagents_ends() {
+    let _serial = serial();
+    let mut s = setup_with(Scenarios::default(), |cfg| {
+        cfg.max_live_subagents_per_parent = 2;
+    });
+    let parent = s.spawn(Agent::Claude, Mode::Chat);
+    let first = s.spawn_subagent(parent);
+    s.spawn_subagent(parent);
+    s.drain_events();
+
+    let reply = s.ask_for_subagent(parent);
+
+    assert_eq!(
+        reply["error"],
+        format!(
+            "session {parent} has 2 live subagents, the most grove allows, so it cannot start \
+             another until one ends"
+        )
+    );
+    assert_eq!(s.core().agent_sessions().len(), 3);
+    let panel_requested = std::iter::from_fn(|| s.events.try_recv().ok())
+        .any(|event| matches!(event, CoreEvent::PanelRequested { .. }));
+    assert!(!panel_requested);
+
+    s.end(first);
+    let another = s.spawn_subagent(parent);
+
+    assert_eq!(s.record(another).unwrap().parent, Some(parent));
+    assert_eq!(s.core().agent_sessions().len(), 4);
+}
+
+#[test]
+fn a_chain_whose_middle_session_had_ended_still_counts_its_full_depth_after_a_restart() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let top = s.spawn(Agent::Claude, Mode::Chat);
+    let first = s.spawn_subagent(top);
+    let second = s.spawn_subagent(first);
+    let third = s.spawn_subagent(second);
+    wait_launches(&s.claude_chat, 4);
+    s.end(second);
+
+    s.restart();
+    // The ended one in the middle gets no process.
+    wait_launches(&s.claude_chat, 7);
+    assert!(s.record(second).unwrap().ended);
+
+    let reply = s.ask_for_subagent(third);
+    assert_eq!(
+        reply["error"],
+        format!(
+            "session {third} is a subagent 3 levels deep, the most grove allows, so it cannot \
+             start another"
+        )
+    );
+    assert_eq!(s.core().agent_sessions().len(), 4);
 }
 
 #[test]
