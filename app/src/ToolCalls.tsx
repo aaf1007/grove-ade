@@ -174,8 +174,12 @@ function FoldedRow({ calls, worktree, live }: { calls: ToolCall[]; worktree: str
       </button>
       {open && (
         <ul className="tool-calls" aria-label={label}>
-          {[...listed].map(([key, of]) => (
-            <FoldedCall key={key} target={kind.unique ? key : targets(of[0])![0]} calls={of} />
+          {[...listed].map(([key, callsForTarget]) => (
+            <FoldedCall
+              key={key}
+              target={kind.unique ? key : targets(callsForTarget[0])![0]}
+              calls={callsForTarget}
+            />
           ))}
         </ul>
       )}
