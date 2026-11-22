@@ -7,6 +7,9 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import Mock, patch
+
+import fake_agent
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FAKE = os.path.join(HERE, "claude-sidecar")
@@ -198,6 +201,51 @@ class FakeSidecarTest(unittest.TestCase):
                     self.assertGreater(at, due - 0.02, arrivals)
                     self.assertLess(at, due + 0.2, arrivals)
 
+    def test_a_pause_after_restarting_the_clock_does_not_shorten_the_logged_interval(self):
+        lines = [{"t": 0, "from": "core", "message": {"type": "user_message"}},
+                 {"t": 0.1, "from": "sidecar", "message": {"type": "turn_start"}}]
+        with patch.object(fake_agent, "time") as clock, patch.object(fake_agent, "write_out"):
+            # The second monotonic read starts the turn, then the fake loses 20 ms.
+            elapsed = 0.0
+
+            def monotonic():
+                nonlocal elapsed
+                sampled = elapsed
+                if clock.monotonic.call_count == 2:
+                    elapsed += 0.02
+                return sampled
+
+            def sleep(delay):
+                nonlocal elapsed
+                elapsed += delay
+
+            clock.monotonic.side_effect = monotonic
+            clock.time.side_effect = lambda: elapsed
+            clock.sleep.side_effect = sleep
+            log = Mock()
+            fake_agent.replay(lines, 1, {}, Mock(), log)
+
+        heard, sent = log.write.call_args.kwargs["replay_times"]
+        self.assertAlmostEqual(sent - heard, 0.1)
+
+    def test_replay_timestamps_bracket_a_write_even_when_the_reader_runs_first(self):
+        line = {"t": 0, "from": "sidecar", "message": {"type": "turn_start"}}
+        with patch.object(fake_agent, "time") as clock, patch.object(fake_agent, "write_out") as write:
+            clock.monotonic.return_value = 0
+            clock.time.return_value = 100.0
+
+            def receiver_reads_line(data):
+                self.assertEqual(data, b'{"type":"turn_start"}\n')
+                clock.time.return_value = 100.3
+
+            write.side_effect = receiver_reads_line
+            log = Mock()
+            fake_agent.replay([line], 1, {}, Mock(), log)
+
+        record = log.write.call_args.kwargs
+        self.assertEqual(record["replay_send_starts"], [100.0])
+        self.assertEqual(record["replay_times"], [100.3])
+
     def test_replay_logs_when_it_heard_each_core_line_and_sent_each_sidecar_line(self):
         path = self.recording([
             {"t": 0.0, "from": "sidecar", "message": {"type": "account", "account": None}},
@@ -213,21 +261,21 @@ class FakeSidecarTest(unittest.TestCase):
         wrote = time.time()
         proc.stdin.write(b'{"type":"user_message","text":"go"}\n')
         proc.stdin.close()
-        arrivals = [time.time() for _ in proc.stdout]
+        got_start, got_end = [time.time() for _ in proc.stdout]
         self.assertEqual(proc.wait(timeout=10), 0)
         proc.stdout.close()
 
-        [times] = [r["replay_times"] for r in self.log_records() if "replay_times" in r]
-        self.assertEqual(len(times), 4)
-        account, heard, start, end = times
-        self.assertLessEqual(account, got_account)
+        [record] = [r for r in self.log_records() if "replay_times" in r]
+        account, heard, start, end = record["replay_times"]
+        before_account, before_start, before_end = record["replay_send_starts"]
+        for before, sent, arrival in zip((before_account, before_start, before_end),
+                                         (account, start, end), (got_account, got_start, got_end)):
+            self.assertLessEqual(before, arrival)
+            self.assertLessEqual(before, sent)
         self.assertGreaterEqual(heard, wrote)
         # Each line goes no sooner than its recorded time after the core's line came.
-        self.assertGreaterEqual(start - heard, 0.1 - 0.001)
-        self.assertGreaterEqual(end - heard, 0.5 - 0.001)
-        # It is logged once sent, so never much before the line is read here.
-        self.assertLessEqual(start, arrivals[0] + 0.001)
-        self.assertLessEqual(end, arrivals[1] + 0.001)
+        self.assertGreaterEqual(before_start - heard, 0.1 - 0.001)
+        self.assertGreaterEqual(before_end - heard, 0.5 - 0.001)
 
     def test_a_replay_that_stops_early_logs_the_times_it_has(self):
         path = self.recording([
@@ -238,8 +286,9 @@ class FakeSidecarTest(unittest.TestCase):
         result = self.run_fake([{"replay": path}])
 
         self.assertEqual(result.returncode, 1)
-        [times] = [r["replay_times"] for r in self.log_records() if "replay_times" in r]
-        self.assertEqual(len(times), 1)
+        [record] = [r for r in self.log_records() if "replay_times" in r]
+        self.assertEqual(len(record["replay_times"]), 1)
+        self.assertEqual(len(record["replay_send_starts"]), 1)
 
     def test_a_bad_replay_step_or_recording_exits_2_before_any_step_runs(self):
         good = {"t": 0, "from": "sidecar", "message": {"type": "turn_start"}}

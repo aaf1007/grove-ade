@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use grove_core::{
     AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, Core, CoreConfig, CoreError,
     CoreEvent, InputKind, Mode, ModelInfo, Question, QuestionOption, RemoveOpts, Reply, RequestId,
-    SessionId, SpawnSpec, StateSource, TurnOutcome,
+    SessionId, SlashCommand, SpawnSpec, StateSource, TurnOutcome,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -1636,11 +1636,33 @@ struct Played {
     message: AgentMessage,
 }
 
-/// The Unix time of `at` in seconds, the clock the fake logs its replay times on.
-fn unix_secs(at: Instant) -> f64 {
-    let since = Instant::now().duration_since(at);
-    let unix_at = SystemTime::now() - since;
-    unix_at.duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
+/// An Instant and its Unix time, for comparing sink arrivals to the fake's log.
+fn clock_anchor(
+    mut sample: impl FnMut() -> (Instant, SystemTime, Instant),
+) -> (Instant, SystemTime) {
+    // Keep the clock conversion error within the replay test's 1 ms clock tolerance.
+    const MAX_SAMPLE_SPAN: Duration = Duration::from_millis(1);
+    loop {
+        let (before, wall, after) = sample();
+        let span = after - before;
+        if span <= MAX_SAMPLE_SPAN {
+            return (before + span / 2, wall);
+        }
+    }
+}
+
+#[test]
+fn a_pause_while_sampling_the_clocks_does_not_move_a_sink_arrival() {
+    let arrival = Instant::now();
+    let unix_at_arrival = UNIX_EPOCH + Duration::from_secs(100);
+    let pause = Duration::from_millis(300);
+    let resumed = arrival + pause;
+    let wall = unix_at_arrival + pause;
+    let mut samples = [(arrival, wall, resumed), (resumed, wall, resumed)].into_iter();
+
+    let (anchor, unix) = clock_anchor(|| samples.next().unwrap());
+
+    assert_eq!(unix - anchor.duration_since(arrival), unix_at_arrival);
 }
 
 /// Plays `lines` through the fake sidecar at `speed` until the fake exits, sending each recorded
@@ -1653,6 +1675,7 @@ fn replay(lines: &[Value], speed: f64) -> Replayed {
     let mut s = setup(json!([{"replay": path, "speed": speed}]));
     let session = s.spawn(None);
     let (history, mut frames) = Frames::subscribe(&s.core, session);
+    let subscribed = Instant::now();
     let launch = s.wait_log("argv");
     let slots = [
         ("cwd", launch["cwd"].as_str().unwrap().to_owned()),
@@ -1701,7 +1724,6 @@ fn replay(lines: &[Value], speed: f64) -> Replayed {
             message,
         })
         .collect();
-    let subscribed = Instant::now();
     let mut got: Vec<(AgentMessage, Instant)> =
         history.into_iter().map(|m| (m, subscribed)).collect();
     for (frame, at) in frames.frames {
@@ -1802,9 +1824,12 @@ impl Replayed {
         // The fake paces itself on one clock and logs on another.
         const CLOCK_SKEW: f64 = 0.001;
         // The recorded time of the turn's user message, and when the fake heard it.
+        let (anchor, unix) = clock_anchor(|| (Instant::now(), SystemTime::now(), Instant::now()));
         let mut turn = None;
         for (i, (played, (_, at_sink))) in self.expected.iter().zip(&self.got).enumerate() {
-            let sink_after_fake = unix_secs(*at_sink) - played.at_fake;
+            let at_sink = unix - anchor.duration_since(*at_sink);
+            let sink_after_fake =
+                at_sink.duration_since(UNIX_EPOCH).unwrap().as_secs_f64() - played.at_fake;
             if matches!(played.message, AgentMessage::User { .. }) {
                 assert!(
                     sink_after_fake <= CORE_LATE,
@@ -1973,4 +1998,105 @@ fn set_model_without_an_effort_leaves_the_effort_out() {
         s.wait_sent("set_model", 1),
         [json!({"type": "set_model", "model": "haiku"})]
     );
+}
+
+fn commands_line(names: &[&str]) -> Value {
+    let commands: Vec<Value> = names
+        .iter()
+        .map(|name| json!({"name": name, "description": format!("Runs {name}"), "argument_hint": "<arg>"}))
+        .collect();
+    send(json!({"type": "commands", "commands": commands}))
+}
+
+fn commands(names: &[&str]) -> AgentMessage {
+    AgentMessage::Commands {
+        commands: names
+            .iter()
+            .map(|name| SlashCommand {
+                name: (*name).into(),
+                description: format!("Runs {name}"),
+                argument_hint: "<arg>".into(),
+                invocation: format!("/{name}"),
+            })
+            .collect(),
+    }
+}
+
+/// The messages of `messages` that are a command list.
+fn command_lists(messages: &[AgentMessage]) -> Vec<AgentMessage> {
+    messages
+        .iter()
+        .filter(|m| matches!(m, AgentMessage::Commands { .. }))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn the_command_list_reaches_the_panel_a_later_one_replaces_it_and_a_late_panel_gets_the_latest() {
+    let mut steps = turn(&["ok"]);
+    steps.insert(2, commands_line(&["review", "init"]));
+    steps.push(json!({"wait_message": "user_message"}));
+    steps.push(commands_line(&["review"]));
+    let s = setup(then_wait(steps));
+    let session = s.spawn(None);
+    let (history, mut frames) = Frames::subscribe(&s.core, session);
+    assert_eq!(history, []);
+
+    s.core.send_message(session, "one").unwrap();
+    frames.until_turn_end();
+
+    assert_eq!(
+        frames.messages(),
+        [
+            user("one"),
+            started(),
+            commands(&["review", "init"]),
+            delta("ok"),
+            ended()
+        ]
+    );
+    // A panel that attaches later gets the list after the conversation, which never holds it.
+    let (late, _) = Frames::subscribe(&s.core, session);
+    assert_eq!(
+        late,
+        [
+            user("one"),
+            started(),
+            delta("ok"),
+            ended(),
+            commands(&["review", "init"])
+        ]
+    );
+
+    let (_, mut frames) = Frames::subscribe(&s.core, session);
+    s.core.send_message(session, "two").unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while command_lists(&frames.messages()).is_empty() {
+        frames.next_frame(deadline, "the second list");
+    }
+    assert_eq!(command_lists(&frames.messages()), [commands(&["review"])]);
+    let (late, _) = Frames::subscribe(&s.core, session);
+    assert_eq!(command_lists(&late), [commands(&["review"])]);
+    assert_eq!(late.last(), Some(&commands(&["review"])));
+}
+
+#[test]
+fn a_command_list_alone_sets_no_state_and_starts_no_turn_for_a_waiting_message() {
+    let mut s = setup(then_wait(vec![
+        json!({"wait_message": "user_message"}),
+        commands_line(&["review"]),
+    ]));
+    let session = s.spawn(Some("go"));
+    let (history, mut frames) = Frames::subscribe(&s.core, session);
+    let deadline = Instant::now() + TIMEOUT;
+    while command_lists(&[history.clone(), frames.messages()].concat()).is_empty() {
+        frames.next_frame(deadline, "the list");
+    }
+
+    s.no_state_for(Duration::from_millis(100));
+    // The message still waits for its turn, so the sidecar's exit makes it not delivered.
+    s.core.kill(session).unwrap();
+    while !frames.messages().contains(&not_delivered("go")) {
+        frames.next_frame(deadline, "the not delivered message");
+    }
 }

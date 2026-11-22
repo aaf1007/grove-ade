@@ -20,7 +20,7 @@ use tokio::sync::broadcast::{self, error::TryRecvError};
 use tokio::sync::mpsc::unbounded_channel;
 
 mod common;
-use common::{grove_hook, untimed, write_script};
+use common::{conversation_only, grove_hook, untimed, write_script};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -281,7 +281,9 @@ impl Setup {
     /// The conversation, with no times: these tests check what it holds and in what order.
     fn history(&self, session: SessionId) -> Vec<AgentMessage> {
         let (sink, _frames) = unbounded_channel();
-        untimed(self.core.subscribe(session, sink).unwrap())
+        untimed(conversation_only(
+            self.core.subscribe(session, sink).unwrap(),
+        ))
     }
 }
 
