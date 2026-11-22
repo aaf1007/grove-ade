@@ -2084,3 +2084,79 @@ fn a_usage_reading_with_two_windows_arrives_with_percent_and_reset_time() {
     assert_eq!(s.core.usage_reading(Agent::Claude), Some(reading));
     assert_eq!(s.core.usage_reading(Agent::Codex), None);
 }
+
+#[test]
+fn an_account_without_plan_limits_reads_as_no_plan_limits() {
+    let mut s = setup(json!([
+        {"send": {"type": "usage", "reading": "no_plan_limits"}},
+        {"wait_message": "never"}
+    ]));
+    s.spawn(None);
+
+    let reading = s.next_usage_reading().expect("a reading");
+
+    assert_eq!(reading.limits, PlanLimits::NoPlanLimits);
+    assert!(!reading.latest_read_failed);
+}
+
+#[test]
+fn a_failed_read_keeps_the_last_good_reading_with_its_time_and_never_fails_a_turn() {
+    let mut steps = vec![usage_line(two_windows())];
+    steps.extend(turn(&["ok"]));
+    steps.push(json!({"send": {"type": "usage", "reading": "failed"}}));
+    steps.extend(turn(&["ok again"]));
+    let mut s = setup(then_wait(steps));
+    let session = s.spawn(Some("go"));
+    let good = s.next_usage_reading().expect("a reading");
+    assert_eq!(s.next_state().1, AgentState::Working);
+    assert_eq!(s.next_state().1, AgentState::Done);
+
+    let after_failure = s.next_usage_reading().expect("the last good reading");
+
+    assert_eq!(
+        after_failure,
+        UsageReading {
+            latest_read_failed: true,
+            ..good
+        }
+    );
+    assert_eq!(s.core.usage_reading(Agent::Claude), Some(after_failure));
+    // The session takes its next turn as before.
+    s.core.send_message(session, "more").unwrap();
+    assert_eq!(s.next_state().1, AgentState::Working);
+    assert_eq!(s.next_state().1, AgentState::Done);
+}
+
+#[test]
+fn a_failed_first_read_gives_no_reading() {
+    let mut s = setup(json!([
+        {"send": {"type": "usage", "reading": "failed"}},
+        {"send": {"type": "account", "account": null}},
+        {"wait_message": "never"}
+    ]));
+    s.spawn(None);
+
+    // The account comes after the failed read, so the read sent nothing before it.
+    loop {
+        match s.next_event() {
+            CoreEvent::UsageReading { reading, .. } => panic!("unexpected {reading:?}"),
+            CoreEvent::Account { .. } => break,
+            _ => {}
+        }
+    }
+    assert_eq!(s.core.usage_reading(Agent::Claude), None);
+}
+
+#[test]
+fn an_agent_that_cannot_read_usage_turns_its_reading_off() {
+    let mut s = setup(json!([
+        usage_line(two_windows()),
+        {"send": {"type": "usage", "reading": "unsupported"}},
+        {"wait_message": "never"}
+    ]));
+    s.spawn(None);
+    assert!(s.next_usage_reading().is_some());
+
+    assert_eq!(s.next_usage_reading(), None);
+    assert_eq!(s.core.usage_reading(Agent::Claude), None);
+}

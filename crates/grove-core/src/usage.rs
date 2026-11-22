@@ -45,7 +45,14 @@ pub struct UsageReading {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "reading", rename_all = "snake_case")]
 pub(crate) enum UsageRead {
-    Windows { windows: Vec<UsageWindow> },
+    Windows {
+        windows: Vec<UsageWindow>,
+    },
+    NoPlanLimits,
+    /// The read failed, or it held no window.
+    Failed,
+    /// The agent has no way to read its plan limits, or not the one grove knows.
+    Unsupported,
 }
 
 /// Each agent's latest usage reading.
@@ -57,7 +64,8 @@ impl UsageReadings {
         self.lock().get(&agent).cloned()
     }
 
-    /// Keeps what `read` gave as the agent's reading and sends it to the UI.
+    /// Keeps what `read` gave as the agent's reading, or drops the reading when the agent
+    /// cannot give one, and tells the UI.
     pub(crate) fn apply(
         &self,
         agent: Agent,
@@ -65,25 +73,39 @@ impl UsageReadings {
         events: &broadcast::Sender<CoreEvent>,
     ) {
         let mut readings = self.lock();
-        let limits = match read {
-            UsageRead::Windows { windows } => PlanLimits::Windows(windows),
+        let reading = match read {
+            UsageRead::Windows { windows } => Some(fresh(PlanLimits::Windows(windows))),
+            UsageRead::NoPlanLimits => Some(fresh(PlanLimits::NoPlanLimits)),
+            // With no good reading before it, a failed read leaves nothing to show.
+            UsageRead::Failed => match readings.get(&agent) {
+                Some(last_good) => Some(UsageReading {
+                    latest_read_failed: true,
+                    ..last_good.clone()
+                }),
+                None => return,
+            },
+            UsageRead::Unsupported => None,
         };
-        let reading = UsageReading {
-            limits,
-            read_at_unix_ms: now_unix_ms(),
-            latest_read_failed: false,
+        match &reading {
+            Some(reading) => readings.insert(agent, reading.clone()),
+            None => readings.remove(&agent),
         };
-        readings.insert(agent, reading.clone());
         // Sent under the lock, so readings reach the UI in the order they were kept. Having no
         // receivers is fine.
-        let _ = events.send(CoreEvent::UsageReading {
-            agent,
-            reading: Some(reading),
-        });
+        let _ = events.send(CoreEvent::UsageReading { agent, reading });
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Agent, UsageReading>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A reading the agent just gave.
+fn fresh(limits: PlanLimits) -> UsageReading {
+    UsageReading {
+        limits,
+        read_at_unix_ms: now_unix_ms(),
+        latest_read_failed: false,
     }
 }
 
