@@ -29,6 +29,7 @@ fn defaults_follow_the_architecture_doc() {
     assert_eq!(cfg.hook_relay, Path::new("/g/bin/grove-hook"));
     assert_eq!(cfg.claude_command, Path::new("claude"));
     assert_eq!(cfg.codex_command, Path::new("codex"));
+    assert_eq!(cfg.mcp_server, None);
     assert_eq!(cfg.output_flush_window, Duration::from_millis(8));
     assert_eq!(cfg.output_high_watermark, 128 * 1024);
     assert_eq!(cfg.output_low_watermark, 32 * 1024);
@@ -36,4 +37,5 @@ fn defaults_follow_the_architecture_doc() {
     assert_eq!(cfg.stuck_working_after, Duration::from_secs(10));
     assert_eq!(cfg.login_shell, None);
     assert_eq!(cfg.login_shell_timeout, Duration::from_secs(5));
+    assert_eq!(cfg.max_live_subagents_per_parent, 8);
 }

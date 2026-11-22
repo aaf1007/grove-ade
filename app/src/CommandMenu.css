@@ -1,0 +1,33 @@
+/* The composer's / menu: the shared menu list, opening above the composer. */
+.composer-commands {
+  position: relative;
+}
+
+.command-menu {
+  top: auto;
+  right: 0;
+  bottom: calc(100% + var(--space-4));
+  left: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+/* Selected as a sidebar row is. */
+.command-menu [aria-selected="true"] {
+  background: var(--row-selected);
+}
+
+:root[data-theme="light"] .command-menu [aria-selected="true"] {
+  box-shadow: inset var(--ring);
+}
+
+.command-name {
+  font: var(--text-code-meta);
+  color: var(--fg);
+}
+
+.command-args {
+  margin-left: var(--space-6);
+  color: var(--faint);
+  font: var(--text-code-meta);
+}

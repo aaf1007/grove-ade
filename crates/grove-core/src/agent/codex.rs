@@ -42,7 +42,7 @@ const QUESTION_TOOL: &str = "request_user_input";
 pub(crate) struct Codex {
     pub command: PathBuf,
     pub hook_relay: PathBuf,
-    pub mcp_server: PathBuf,
+    pub mcp_server: Option<PathBuf>,
 }
 
 impl AgentAdapter for Codex {
@@ -232,10 +232,12 @@ impl Codex {
             .collect();
         // grove-mcp reads the session's id, token and socket from Codex's environment, so no
         // token goes in argv.
-        flags.push(format!(
-            r#"mcp_servers.grove={{command={},args=[],env_vars=["{GROVE_SESSION_ID}","{GROVE_SESSION_TOKEN}","{GROVE_SOCKET}"]}}"#,
-            toml_string(&self.mcp_server.to_string_lossy())
-        ));
+        if let Some(mcp_server) = &self.mcp_server {
+            flags.push(format!(
+                r#"mcp_servers.grove={{command={},args=[],env_vars=["{GROVE_SESSION_ID}","{GROVE_SESSION_TOKEN}","{GROVE_SOCKET}"]}}"#,
+                toml_string(&mcp_server.to_string_lossy())
+            ));
+        }
         // Shell commands such as grovecode get the id even under a user policy that drops
         // most of the environment.
         flags.push(format!(
@@ -342,7 +344,7 @@ mod tests {
         Codex {
             command: "codex".into(),
             hook_relay: "/home/it's/bin/grove-hook".into(),
-            mcp_server: "/home/it's/bin/grove-mcp".into(),
+            mcp_server: Some("/home/it's/bin/grove-mcp".into()),
         }
     }
 

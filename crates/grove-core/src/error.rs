@@ -117,6 +117,10 @@ pub enum CoreError {
         "session {parent} is a subagent {limit} levels deep, the most grove allows, so it cannot start another"
     )]
     SubagentTooDeep { parent: SessionId, limit: usize },
+    #[error(
+        "session {parent} has {limit} live subagents, the most grove allows, so it cannot start another until one ends"
+    )]
+    TooManyLiveSubagents { parent: SessionId, limit: usize },
     /// The panel is not one that session opened, or there is no such panel. Both read the same,
     /// so a session learns nothing about the panels of others.
     #[error("session {session} has no panel {panel}")]
