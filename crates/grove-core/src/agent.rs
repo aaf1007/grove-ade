@@ -250,6 +250,7 @@ struct HookMessage {
 
 /// The agent sessions the core started, and the state their hooks reported.
 pub(crate) struct Agents {
+    warnings: Arc<crate::warnings::Warnings>,
     home: PathBuf,
     socket: PathBuf,
     claude: claude::ClaudeCode,
@@ -433,8 +434,13 @@ impl Agents {
             .collect()
     }
 
-    pub(crate) fn new(cfg: &CoreConfig, saves: SaveRequests) -> Self {
+    pub(crate) fn new(
+        cfg: &CoreConfig,
+        saves: SaveRequests,
+        warnings: Arc<crate::warnings::Warnings>,
+    ) -> Self {
         Self {
+            warnings,
             home: cfg.home.clone(),
             socket: cfg.socket.clone(),
             claude: claude::ClaudeCode {
@@ -498,15 +504,17 @@ impl Agents {
                 tracked.resume_id = Some(resume_id);
                 self.saves.request();
             }
+        } else if tracked.resume_id.as_ref() != Some(&resume_id) || tracked.mode == Mode::Chat {
+            // Only the current conversation counts. Chat state comes from the protocol.
+            return;
+        }
+        if !tracked.hooks_seen {
             tracked.hooks_seen = true;
+            self.warnings.clear_hooks(session);
+        }
+        if msg.event.hook_event_name == "SessionStart" {
             return;
         }
-        // Any other event counts only when it comes from that conversation. In chat mode the
-        // protocol sets the state (ADR 0014).
-        if tracked.resume_id.as_ref() != Some(&resume_id) || tracked.mode == Mode::Chat {
-            return;
-        }
-        tracked.hooks_seen = true;
         if let Some(state) = self.adapter(tracked.agent).parse_event(&msg.event) {
             tracked.since = Instant::now();
             tracked.set(session, state, StateSource::Hook, events);
@@ -544,6 +552,7 @@ impl Agents {
         };
         // The token goes with the process that had it.
         tracked.token = None;
+        self.warnings.clear_hooks(exit.session);
         // `set_mode` ended it, and the session goes on in the other mode.
         if let Some(exited) = tracked.exited.take() {
             let _ = exited.send(());
@@ -939,10 +948,11 @@ impl Core {
         let chat = match start.mode {
             Mode::Terminal => {
                 let spec = adapter.launch(&ctx)?;
+                let check_token = (start.agent == Agent::Codex).then(|| token.as_str().to_owned());
                 agents.begin(session, Mode::Terminal, None, Some(token));
                 self.start_session(session, worktree, spec, &env, Kind::Agent)?;
-                if start.agent == Agent::Codex {
-                    self.check_codex_hooks(session, worktree, launch_args);
+                if let Some(token) = check_token {
+                    self.check_codex_hooks(session, worktree, launch_args, token);
                 }
                 None
             }
@@ -970,10 +980,15 @@ impl Core {
     // Runs the check on a thread of its own, so the launch does not wait for it. A check that
     // fails or times out leaves the hooks unknown and sends no warning. Either way, states come
     // from heuristics until a hook arrives.
-    fn check_codex_hooks(&self, session: SessionId, worktree: &Path, launch_args: Vec<String>) {
+    fn check_codex_hooks(
+        &self,
+        session: SessionId,
+        worktree: &Path,
+        launch_args: Vec<String>,
+        token: String,
+    ) {
         let agents = self.agents.clone();
         let env = self.session_env.clone();
-        let events = self.events.clone();
         let worktree = worktree.to_path_buf();
         // A thread that cannot start leaves the hooks unknown too.
         let _ = thread::Builder::new()
@@ -983,9 +998,19 @@ impl Core {
                     .codex
                     .hooks_need_approval(session, &worktree, &env, &launch_args)
                 {
-                    let warning = Warning::CodexHooksNotTrusted { session, worktree };
-                    // Having no receivers is fine.
-                    let _ = events.send(CoreEvent::Warning(warning));
+                    // A hook, exit or relaunch can win the race with hooks/list.
+                    let live = lock(&agents.live);
+                    if live.get(&session).is_some_and(|tracked| {
+                        !tracked.hooks_seen
+                            && tracked
+                                .token
+                                .as_ref()
+                                .is_some_and(|current| current.matches(&token))
+                    }) {
+                        agents
+                            .warnings
+                            .raise(Warning::CodexHooksNotTrusted { session, worktree });
+                    }
                 }
             });
     }
@@ -1527,6 +1552,7 @@ mod tests {
         let agents = Agents::new(
             &CoreConfig::new(home.path().to_path_buf()),
             SaveRequests::default(),
+            Arc::new(crate::warnings::Warnings::new(broadcast::channel(1).0)),
         );
         let session = SessionId(3);
         let token = SessionToken::create(home.path()).unwrap();
