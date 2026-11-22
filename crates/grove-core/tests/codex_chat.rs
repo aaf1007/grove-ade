@@ -13,9 +13,9 @@ use std::time::{Duration, Instant};
 
 use common::{conversation_only, now_unix_ms, times, untimed};
 use grove_core::{
-    AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, Core, CoreConfig, CoreEvent,
-    InputKind, Mode, ModelInfo, Question, QuestionOption, Reply, RequestId, SessionId,
-    SlashCommand, StateSource, TurnOutcome,
+    AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, ContextReading, ContextWindow, Core,
+    CoreConfig, CoreEvent, InputKind, Mode, ModelInfo, PlanLimits, Question, QuestionOption, Reply, RequestId, SessionId,
+    SlashCommand, StateSource, TurnOutcome, UsageReading, UsageWindow,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -42,6 +42,8 @@ struct Setup {
     log: PathBuf,
     /// What the fake's `skills/list` returns. Missing: its own list.
     skills: PathBuf,
+    /// The fake's replies to `account/rateLimits/read`, in order. Missing: an error reply.
+    rate_limits: PathBuf,
 }
 
 fn ann() -> Value {
@@ -74,16 +76,18 @@ fn setup_with_account(steps: Value, account: Value) -> Setup {
     let log = dir.path().join("fake.log");
     let account_file = dir.path().join("account.json");
     let skills = dir.path().join("skills.json");
+    let rate_limits = dir.path().join("rate-limits.json");
     fs::write(&account_file, account.to_string()).unwrap();
     let wrapper = dir.path().join("codex");
     let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/fake-agents/codex");
     let script = format!(
-        "#!/bin/sh\nexport FAKE_CODEX_SCENARIO='{0}' FAKE_CODEX_APP_SERVER_SCENARIO='{0}' FAKE_CODEX_LOG='{1}' FAKE_CODEX_ACCOUNT=\"$(cat '{2}')\" FAKE_CODEX_SKILLS='{4}'\nexec '{3}' \"$@\"\n",
+        "#!/bin/sh\nexport FAKE_CODEX_SCENARIO='{0}' FAKE_CODEX_APP_SERVER_SCENARIO='{0}' FAKE_CODEX_LOG='{1}' FAKE_CODEX_ACCOUNT=\"$(cat '{2}')\" FAKE_CODEX_SKILLS='{4}' FAKE_CODEX_RATE_LIMITS='{5}'\nexec '{3}' \"$@\"\n",
         scenario.display(),
         log.display(),
         account_file.display(),
         fake.display(),
         skills.display(),
+        rate_limits.display(),
     );
     fs::write(&wrapper, script).unwrap();
     {
@@ -102,6 +106,7 @@ fn setup_with_account(steps: Value, account: Value) -> Setup {
         worktree,
         log,
         skills,
+        rate_limits,
     }
 }
 
@@ -220,6 +225,16 @@ impl Setup {
     fn wait_exit(&mut self, session: SessionId) {
         while !matches!(self.next_event(), CoreEvent::SessionExited { session: s, .. } if s == session)
         {
+        }
+    }
+
+    /// The next usage reading the core sends for Codex, skipping other events.
+    fn next_usage_reading(&mut self) -> Option<UsageReading> {
+        loop {
+            if let CoreEvent::UsageReading { agent, reading } = self.next_event() {
+                assert_eq!(agent, Agent::Codex);
+                return reading;
+            }
         }
     }
 
@@ -403,7 +418,9 @@ fn the_handshake_comes_first_and_a_first_prompt_waits_for_the_thread() {
     s.state(session, AgentState::Working);
     s.state(session, AgentState::Done);
 
-    let methods: Vec<Value> = s.sent().iter().map(|m| m["method"].clone()).collect();
+    // Up to the turn's start: the read of the plan's limits after the turn may not be in yet.
+    let mut methods: Vec<Value> = s.sent().iter().map(|m| m["method"].clone()).collect();
+    methods.truncate(8);
     assert_eq!(
         methods,
         [
@@ -413,6 +430,7 @@ fn the_handshake_comes_first_and_a_first_prompt_waits_for_the_thread() {
             "thread/start",
             "model/list",
             "skills/list",
+            "account/rateLimits/read",
             "turn/start"
         ]
     );
@@ -1117,4 +1135,160 @@ fn codexs_enabled_skills_reach_the_panel_as_commands_and_the_list_after_a_skills
     // A panel that attaches now gets the new list, after the conversation.
     let late = s.core.subscribe(session, unbounded_channel().0).unwrap();
     assert_eq!(late.last(), Some(&second));
+}
+
+/// What the app server replies to `account/rateLimits/read` for a plan with two windows.
+fn two_windows() -> Value {
+    json!({"rateLimits": {
+        "limitId": "codex", "limitName": null, "planType": "plus", "credits": null,
+        "primary": {"usedPercent": 42, "windowDurationMins": 300, "resetsAt": 1_763_560_921},
+        "secondary": {"usedPercent": 18, "windowDurationMins": 10_080, "resetsAt": 1_763_992_800},
+    }})
+}
+
+fn two_windows_read() -> PlanLimits {
+    PlanLimits::Windows(vec![
+        UsageWindow {
+            name: "5-hour".into(),
+            percent_used: 42,
+            resets_at_unix_ms: Some(1_763_560_921_000),
+        },
+        UsageWindow {
+            name: "Weekly".into(),
+            percent_used: 18,
+            resets_at_unix_ms: Some(1_763_992_800_000),
+        },
+    ])
+}
+
+#[test]
+fn the_rate_limits_of_a_plan_arrive_as_a_usage_reading_with_percent_and_reset_time() {
+    let mut s = setup(json!([]));
+    fs::write(&s.rate_limits, json!([two_windows()]).to_string()).unwrap();
+    s.spawn(None);
+
+    let reading = s.next_usage_reading().expect("a reading");
+
+    assert_eq!(reading.limits, two_windows_read());
+    assert!(!reading.latest_read_failed);
+    assert_eq!(s.core.usage_reading(Agent::Codex), Some(reading));
+}
+
+#[test]
+fn a_failed_rate_limit_read_keeps_the_last_good_reading_and_never_fails_a_turn() {
+    let mut s = setup(json!([turn(&["ok"]), turn(&["ok again"])].concat()));
+    let down = json!({"error": "the usage service is down"});
+    fs::write(&s.rate_limits, json!([two_windows(), down]).to_string()).unwrap();
+    let session = s.spawn(Some("go"));
+    let good = s.next_usage_reading().expect("a reading");
+    s.state(session, AgentState::Working);
+    s.state(session, AgentState::Done);
+
+    // The read after the turn fails.
+    let after_failure = s.next_usage_reading().expect("the last good reading");
+
+    assert_eq!(
+        after_failure,
+        UsageReading {
+            latest_read_failed: true,
+            ..good
+        }
+    );
+    assert_eq!(
+        untimed(conversation(&s.core, session)),
+        [user("go"), started(), delta("ok"), completed()]
+    );
+    s.core.send_message(session, "more").unwrap();
+    s.state(session, AgentState::Working);
+    s.state(session, AgentState::Done);
+}
+
+#[test]
+fn an_api_key_account_has_no_plan_limits_and_the_core_never_reads_them() {
+    let mut s = setup_with_account(
+        json!([turn(&["ok"]), turn(&["ok again"])].concat()),
+        json!({"type": "apiKey"}),
+    );
+    // Never read: a read would give these windows.
+    fs::write(&s.rate_limits, json!([two_windows()]).to_string()).unwrap();
+    let session = s.spawn(Some("go"));
+
+    let reading = s.next_usage_reading().expect("a reading");
+
+    assert_eq!(reading.limits, PlanLimits::NoPlanLimits);
+    s.state(session, AgentState::Working);
+    s.state(session, AgentState::Done);
+    s.core.send_message(session, "more").unwrap();
+    s.state(session, AgentState::Working);
+    s.state(session, AgentState::Done);
+    // The fake answers in order, so by this reply it has read every request before it.
+    s.core.send_message(session, "and more").unwrap();
+    s.wait_sent("the third turn/start", |m| {
+        m["method"] == "turn/start" && m["params"]["input"] == text_input("and more")
+    });
+    let read_limits = |m: &Value| m["method"] == "account/rateLimits/read";
+    assert!(!s.sent().iter().any(read_limits));
+    assert_eq!(
+        s.core.usage_reading(Agent::Codex).map(|r| r.limits),
+        Some(PlanLimits::NoPlanLimits)
+    );
+}
+
+#[test]
+fn a_codex_session_reports_its_tokens_and_context_use_once_after_each_turn() {
+    let token_usage = |total: u64, last: u64| {
+        let breakdown = |tokens: u64| {
+            json!({"totalTokens": tokens, "inputTokens": tokens - 10, "cachedInputTokens": 0,
+                   "outputTokens": 10, "reasoningOutputTokens": 0})
+        };
+        notify(
+            "thread/tokenUsage/updated",
+            json!({"threadId": "{{thread_id}}", "turnId": "{{turn_id}}",
+                   "tokenUsage": {"total": breakdown(total), "last": breakdown(last),
+                                  "modelContextWindow": 272_000}}),
+        )
+    };
+    let mut s = setup(json!([
+        wait("turn/start"),
+        turn_started(),
+        // One per model call. Only the latest counts, at the turn's end.
+        token_usage(30_000, 30_000),
+        text_delta("ok"),
+        token_usage(95_000, 65_000),
+        turn_completed("completed", Value::Null),
+        wait("turn/start"),
+        turn_started(),
+        turn_completed("completed", Value::Null),
+    ]));
+    let session = s.spawn(Some("go"));
+    assert_eq!(s.core.context_reading(session), None);
+
+    let mut readings = Vec::new();
+    let mut done = 0;
+    while done < 2 {
+        match s.next_event() {
+            CoreEvent::ContextReading { session, reading } => readings.push((session, reading)),
+            CoreEvent::AgentState {
+                state: AgentState::Done,
+                ..
+            } => {
+                done += 1;
+                if done == 1 {
+                    s.core.send_message(session, "more").unwrap();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // The second turn reported no tokens, so it sends no reading and the first one stays.
+    let reading = ContextReading {
+        session_total_tokens: 95_000,
+        context_window: Some(ContextWindow {
+            used_tokens: 65_000,
+            size_tokens: 272_000,
+        }),
+    };
+    assert_eq!(readings, [(session, reading.clone())]);
+    assert_eq!(s.core.context_reading(session), Some(reading));
 }

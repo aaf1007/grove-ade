@@ -102,6 +102,7 @@ Without `resume` the session id is a random UUID.
 | `FAKE_CODEX_APP_SERVER_SCENARIO` | Path of the scenario `app-server` plays. Optional. See [App server](#app-server). |
 | `FAKE_CODEX_ACCOUNT` | The account `account/read` returns, as JSON. `null` (no login) when unset. |
 | `FAKE_CODEX_SKILLS` | Path of a JSON file with the skills `skills/list` returns, read at each request. The fake's own two when unset or missing. |
+| `FAKE_CODEX_RATE_LIMITS` | Path of a JSON file with a list of replies to `account/rateLimits/read`, one per request, the last one repeating. An error reply when unset or missing. |
 | `FAKE_CODEX_LOG` | Path of the log file. Each run appends to it. No log when unset. |
 | `FAKE_CODEX_RECORD` | The [record](#record) folder, shared by the TUI and `app-server`. |
 | `FAKE_CODEX_HOOK_TRUST` | `trusted` (the default), `untrusted` or `modified`. See [Hooks not trusted](#hooks-not-trusted). |
@@ -150,6 +151,11 @@ reads:
   fake's own. The same entry always gets the same hash, but not the hash the
   real CLI gives.
 - `account/read` gets `FAKE_CODEX_ACCOUNT`.
+- `account/rateLimits/read` gets the next entry of the list in the file
+  `FAKE_CODEX_RATE_LIMITS` names, read at each request, and the last entry
+  once the list runs out. An entry is the reply's result, or `{"error":
+  "<message>"}` for an error reply. Unset or missing, every read gets an
+  error reply.
 - `thread/start` gets a thread with a new UUID and no turns, and
   `thread/resume` the thread its `threadId` names, which must be a UUID, with
   its [record](#record) as its `turns`. Either is followed by a
