@@ -22,7 +22,7 @@ use tokio::sync::{Notify, broadcast, watch};
 use crate::agent::{Agents, ChatSpec};
 use crate::comments::{BatchComment, CommentId};
 use crate::session::{Batch, Flushed, flush_batches, start_thread};
-use crate::usage::UsageRead;
+use crate::usage::{ContextReading, UsageRead};
 use crate::{
     AccountInfo, Agent, AgentState, Core, CoreError, CoreEvent, InputKind, Result, SessionId,
     UsageReading,
@@ -243,6 +243,8 @@ struct ChatState {
     first_model: Option<ModelChoice>,
     // The agent's latest command list, kept apart from the history.
     commands: Option<Vec<SlashCommand>>,
+    // What the agent reported after its last turn. None before the first report.
+    context_reading: Option<ContextReading>,
 }
 
 /// A message sent that no turn has started on yet.
@@ -480,6 +482,8 @@ enum FromAgent {
     },
     /// What a read of the agent's plan limits gave.
     Usage(UsageRead),
+    /// The session's tokens and context use, after a turn.
+    Context(ContextReading),
     Commands {
         commands: Vec<ListedCommand>,
     },
@@ -713,6 +717,13 @@ impl Core {
         self.agents.usage.of(agent)
     }
 
+    /// A chat-mode session's tokens and context use, as its agent reported them after its last
+    /// turn. None before the first report, and for a session that is not in chat mode.
+    pub fn context_reading(&self, session: SessionId) -> Option<ContextReading> {
+        let chat = self.agents.chat(session).ok()?;
+        chat.state().context_reading.clone()
+    }
+
     /// The model and effort the session runs with, as `set_model` last saved them. None for a
     /// session that has no choice yet, which runs on its agent's default.
     pub fn model_choice(&self, session: SessionId) -> Result<Option<ModelChoice>> {
@@ -856,6 +867,11 @@ fn apply(
         }
         FromAgent::Usage(read) => {
             agents.usage.apply(chat.agent, read, events);
+            return;
+        }
+        FromAgent::Context(reading) => {
+            s.context_reading = Some(reading.clone());
+            let _ = events.send(CoreEvent::ContextReading { session, reading });
             return;
         }
         FromAgent::Thread { id } => {

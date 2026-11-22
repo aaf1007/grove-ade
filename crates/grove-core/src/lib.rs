@@ -63,7 +63,7 @@ pub use run::{LaunchArgs, RepoSettings, RunSession, RunSpec};
 pub use session::{OutputFrame, OutputSink, SessionId, SpawnSpec};
 pub use setup::{Setup, SetupState};
 pub use snapshot::Snapshot;
-pub use usage::{PlanLimits, UsageReading, UsageWindow};
+pub use usage::{ContextReading, ContextWindow, PlanLimits, UsageReading, UsageWindow};
 pub use workspace::{AgentPanel, Workspace};
 pub use worktree::{AddedWorktree, NewWorktree, WorktreeInfo};
 
@@ -133,6 +133,11 @@ pub enum CoreEvent {
     UsageReading {
         agent: Agent,
         reading: Option<UsageReading>,
+    },
+    /// A chat-mode session reported its tokens and context use, after a turn.
+    ContextReading {
+        session: SessionId,
+        reading: ContextReading,
     },
     /// An agent session asked for a panel through grove-mcp, and grove started what it shows.
     /// `parent` is the agent session that asked.

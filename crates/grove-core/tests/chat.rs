@@ -9,8 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use grove_core::{
-    AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, Core, CoreConfig, CoreError,
-    CoreEvent, InputKind, Mode, ModelInfo, PlanLimits, Question, QuestionOption, RemoveOpts, Reply,
+    AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, ContextReading, ContextWindow, Core,
+    CoreConfig, CoreError, CoreEvent, InputKind, Mode, ModelInfo, PlanLimits, Question, QuestionOption, RemoveOpts, Reply,
     RequestId, SessionId, SlashCommand, SpawnSpec, StateSource, TurnOutcome, UsageReading,
     UsageWindow,
 };
@@ -215,6 +215,15 @@ impl Setup {
             if let CoreEvent::UsageReading { agent, reading } = self.next_event() {
                 assert_eq!(agent, Agent::Claude);
                 return reading;
+            }
+        }
+    }
+
+    /// The next context reading the core sends, skipping other events.
+    fn next_context_reading(&mut self) -> (SessionId, ContextReading) {
+        loop {
+            if let CoreEvent::ContextReading { session, reading } = self.next_event() {
+                return (session, reading);
             }
         }
     }
@@ -2159,4 +2168,37 @@ fn an_agent_that_cannot_read_usage_turns_its_reading_off() {
 
     assert_eq!(s.next_usage_reading(), None);
     assert_eq!(s.core.usage_reading(Agent::Claude), None);
+}
+
+#[test]
+fn a_session_reports_its_tokens_and_context_use_after_each_turn() {
+    let mut steps = turn(&["ok"]);
+    steps.push(send(json!({"type": "context", "session_total_tokens": 120_000,
+        "context_window": {"used_tokens": 84_000, "size_tokens": 200_000}})));
+    steps.extend(turn(&["ok again"]));
+    // The agent could not say how full the window is.
+    steps.push(send(
+        json!({"type": "context", "session_total_tokens": 150_000, "context_window": null}),
+    ));
+    let mut s = setup(then_wait(steps));
+    let session = s.spawn(Some("go"));
+    assert_eq!(s.core.context_reading(session), None);
+
+    let first = ContextReading {
+        session_total_tokens: 120_000,
+        context_window: Some(ContextWindow {
+            used_tokens: 84_000,
+            size_tokens: 200_000,
+        }),
+    };
+    assert_eq!(s.next_context_reading(), (session, first.clone()));
+    assert_eq!(s.core.context_reading(session), Some(first));
+
+    s.core.send_message(session, "more").unwrap();
+    let second = ContextReading {
+        session_total_tokens: 150_000,
+        context_window: None,
+    };
+    assert_eq!(s.next_context_reading(), (session, second.clone()));
+    assert_eq!(s.core.context_reading(session), Some(second));
 }

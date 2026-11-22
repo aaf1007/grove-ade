@@ -1,5 +1,7 @@
-//! Usage readings: each agent's plan limits, as its chat-mode transport reads them through the
-//! agent's own interface. grove never calls a provider itself and never sees a credential.
+//! Usage readings and context readings. A usage reading is an agent's plan limits, as its
+//! chat-mode transport reads them through the agent's own interface. A context reading is one
+//! chat-mode session's tokens and how full its context window is. grove never calls a provider
+//! itself and never sees a credential.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
@@ -38,6 +40,24 @@ pub struct UsageReading {
     pub read_at_unix_ms: u64,
     /// A later read failed, so `limits` may be out of date.
     pub latest_read_failed: bool,
+}
+
+/// A chat-mode session's tokens and context use, as the agent reported them after its last turn.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ContextReading {
+    /// Every token the conversation has used so far, input and output.
+    pub session_total_tokens: u64,
+    /// None when the agent does not say how full its context window is.
+    pub context_window: Option<ContextWindow>,
+}
+
+/// How full a session's context window is.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ContextWindow {
+    /// The tokens in the window now.
+    pub used_tokens: u64,
+    /// The tokens the window holds.
+    pub size_tokens: u64,
 }
 
 /// What one read of an agent's plan limits gave: a `usage` line of the sidecar, as PROTOCOL.md
