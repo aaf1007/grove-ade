@@ -611,6 +611,43 @@ test("a new state never shows the old state's age: the sessions are listed again
   await vi.waitFor(() => expect(age(sessionRows()[0])).toBe("now"));
 });
 
+test.each([true, false])("reconciles a late session list with bounded requests (backend catches up: %s)", async (catchesUp) => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"], now: Date.parse("2026-11-20T10:00:00Z") });
+  onTestFinished(() => void vi.useRealTimers());
+  const { bridge, session } = await oneSession();
+  const working = { session, state: "Working", source: "Protocol" } as const;
+  const done = { ...working, state: "Done" } as const;
+  bridge.agentStateChanged(working);
+  const list = vi.spyOn(bridge, "agentSessions");
+  const sidebar = (event: typeof working | typeof done) => (
+    <Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} agentStates={{ [session]: event }} />
+  );
+  const { rerender } = render(sidebar(working));
+  const row = await screen.findByRole("button", { name: "New session, Working" });
+  act(() => vi.advanceTimersByTime(6 * 60_000));
+  expect(age(row)).toBe("6m");
+
+  bridge.agentStateChanged(done);
+  const stale = await bridge.agentSessions();
+  list.mockClear();
+  let deliverStaleList!: (records: typeof stale) => void;
+  list.mockReturnValueOnce(new Promise((resolve) => {
+    deliverStaleList = resolve;
+  }));
+  rerender(sidebar(done));
+  expect(list).toHaveBeenCalledTimes(1);
+
+  if (catchesUp) bridge.agentStateChanged(working);
+  rerender(sidebar(working));
+  expect(list).toHaveBeenCalledTimes(1);
+  await act(async () => deliverStaleList(stale));
+
+  expect(screen.getByRole("button", { name: "New session, Working" })).toBe(row);
+  expect(age(row)).toBe(catchesUp ? "now" : "");
+  act(() => vi.advanceTimersByTime(10 * 60_000));
+  expect(list).toHaveBeenCalledTimes(2);
+});
+
 test("the menu button takes the age's place while the row has focus, and the badge stays before it", async () => {
   withStyles();
   const { bridge } = await oneSession();
@@ -631,8 +668,24 @@ test("the menu button takes the age's place while the row has focus, and the bad
   expect(shown()).toEqual(["hidden", "1"]);
   act(() => menu.focus());
   expect(shown()).toEqual(["hidden", "1"]);
-  // Hover does the same.
-  expect(sidebarStyles).toMatch(/\.session-item:hover \.session-age,\s*\.session-item:focus-within \.session-age\s*\{[^}]*visibility: hidden/);
+});
+
+test("session row hover styles require a fine pointer with hover capability", () => {
+  withStyles();
+  const rules = Array.from(document.styleSheets).flatMap((sheet) => Array.from(sheet.cssRules));
+  const hoverRules = (rules: CSSRule[]) => rules.filter(
+    (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText.includes(".session-item:hover"),
+  );
+  expect(hoverRules(rules)).toHaveLength(0);
+  const finePointerRules = rules.flatMap((rule) =>
+    rule instanceof CSSMediaRule && rule.conditionText === "(hover: hover) and (pointer: fine)"
+      ? hoverRules(Array.from(rule.cssRules))
+      : [],
+  );
+  const hoverStyle = (selector: string) => finePointerRules.find((rule) => rule.selectorText === selector)?.style;
+  expect(hoverStyle(".session-item:hover")?.background).toBe("var(--hover)");
+  expect(hoverStyle(".session-item:hover .ui-menu")?.opacity).toBe("1");
+  expect(hoverStyle(".session-item:hover .session-age")?.visibility).toBe("hidden");
 });
 
 test("a session row is one 32px line: the title takes the free width and is cut with an ellipsis, never a fade", async () => {

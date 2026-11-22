@@ -482,9 +482,22 @@ svg {
   border-radius: var(--radius-md);
 }
 
-.wt-row:hover,
-.session-item:hover {
+.wt-row:hover {
   background: var(--hover);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .session-item:hover {
+    background: var(--hover);
+  }
+
+  .session-item:hover .ui-menu {
+    opacity: 1;
+  }
+
+  .session-item:hover .session-age {
+    visibility: hidden;
+  }
 }
 
 .wt-row.selected,
@@ -609,12 +622,10 @@ svg {
   opacity: 0;
 }
 
-.session-item:hover .ui-menu,
 .session-item:focus-within .ui-menu {
   opacity: 1;
 }
 
-.session-item:hover .session-age,
 .session-item:focus-within .session-age {
   visibility: hidden;
 }

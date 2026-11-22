@@ -212,14 +212,20 @@ export function Sidebar({
 
   // A new state comes without a list, and only the list has the time it was entered. So a state the
   // list does not have yet lists the sessions again.
-  const relistIfBehind = useEffectEvent(() => {
+  const relistSessions = useEffectEvent(refresh);
+  // Allow one reconciliation per event snapshot, even if the next list still disagrees.
+  const relistedFor = useRef<typeof agentStates | null>(null);
+  useEffect(() => {
+    if (relistedFor.current === agentStates) return;
     const behind = sessions.some((record) => {
       const heard = agentStates[record.session];
       return heard !== undefined && (record.state === undefined || !sameState(heard, record));
     });
-    if (behind) refresh();
-  });
-  useEffect(() => relistIfBehind(), [agentStates]);
+    if (behind) {
+      relistedFor.current = agentStates;
+      relistSessions();
+    }
+  }, [agentStates, sessions]);
 
   const now = useNow();
 
