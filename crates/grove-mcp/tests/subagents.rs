@@ -220,6 +220,36 @@ fn subagents_nest_three_levels_deep_and_the_third_level_cannot_start_another() {
 }
 
 #[test]
+fn a_parent_at_the_subagent_limit_gets_a_tool_error_that_names_the_limit() {
+    let spawn = || spawn_step(json!({"agent": "claude", "prompt": "write the tests"}));
+    let mut s = setup_with(
+        json!([spawn(), spawn(), spawn(), {"wait_input": "\r"}]),
+        |cfg| cfg.max_live_subagents_per_parent = 2,
+    );
+
+    let parent = s.spawn_parent(Agent::Claude);
+
+    let replies = s.tool_replies("claude", 3);
+    let replies: Vec<_> = replies.iter().map(tool_text).collect();
+    assert!(!replies[0].1 && !replies[1].1, "{replies:?}");
+    assert_eq!(
+        replies[2],
+        (
+            format!(
+                "grove refused: session {parent} has 2 live subagents, the most grove allows, \
+                 so it cannot start another until one ends"
+            ),
+            true
+        )
+    );
+    // The two that started asked for a panel each. The refused one asked for none.
+    s.next_panel_request();
+    s.next_panel_request();
+    assert!(!s.panel_requested());
+    assert_eq!(s.core.sessions(&s.worktree).unwrap().len(), 3);
+}
+
+#[test]
 fn a_worktree_grove_does_not_track_is_refused() {
     let mut s = setup(json!([
         spawn_step(json!({"agent": "claude", "prompt": "hi", "worktree": "/tmp/not-a-worktree"})),
