@@ -11,39 +11,43 @@ import { Segmented } from "./ui/Segmented";
 /**
  * One worktree's changed files, each in a section with a Monaco diff and its review comments under
  * their lines. Clicking line numbers adds a comment, and Send review batch sends the open ones to an
- * agent session.
+ * agent session. A folder that is not a git repo has no diff, and the view says so.
  */
 export function DiffView({
   bridge,
   worktree,
+  base,
+  onBase,
   agentStates,
   onSent,
-  opened,
   reveal = null,
   onRevealed,
 }: {
   bridge: Bridge;
   worktree: string;
+  /** The base the diff shows: the one the shown agent session's workspace keeps. */
+  base: DiffBase;
+  /** Called with the base to show next: the one the user picked, or HEAD for a revealed file. */
+  onBase(base: DiffBase): void;
   /** Each agent session's latest state, by session, for the review batch picker. */
   agentStates: Record<SessionId, AgentStateChanged>;
   /** Called with the agent session a review batch went to. */
   onSent(session: SessionId): void;
-  /** The base the Diff was last asked to open on. Each new request switches to its base. */
-  opened?: DiffOpened;
   /** A file to show on the HEAD base, by its path in the worktree. */
   reveal?: string | null;
   /** Called once the view took `reveal`, so the next request for the same file shows it again. */
   onRevealed?: () => void;
 }) {
-  const [base, setBase] = useState<DiffBase>(opened?.base ?? "Head");
-  const [appliedRequest, setAppliedRequest] = useState(opened?.request);
-  if (opened && opened.request !== appliedRequest) {
-    setAppliedRequest(opened.request);
-    setBase(opened.base);
-  }
   // The files keep the base they came from, so their versions come from that same base. Each load
   // counts up `generation`, which tells a file's versions read from this load from older ones.
-  const [diff, setDiff] = useState<{ base: DiffBase; files: FileDiff[]; generation: number; error?: string }>({
+  const [diff, setDiff] = useState<{
+    base: DiffBase;
+    files: FileDiff[];
+    generation: number;
+    error?: string;
+    /** The folder is not a git repo, so it has no diff. */
+    notARepo?: boolean;
+  }>({
     base,
     files: [],
     generation: 0,
@@ -58,17 +62,17 @@ export function DiffView({
   const [taken, setTaken] = useState<string | null>(null);
   if (reveal !== taken) {
     setTaken(reveal);
-    if (reveal !== null) {
-      setBase("Head");
-      if (collapsed.has(reveal)) setCollapsed(toggled(collapsed, reveal));
-    }
+    if (reveal !== null && collapsed.has(reveal)) setCollapsed(toggled(collapsed, reveal));
   }
   // Each file's section by path. A revealed file waits for a HEAD diff to look for it in, then stays
   // pinned in view while the sections around it take their height, until the user scrolls.
   const sections = useRef(new Map<string, HTMLElement>());
   const revealWaiting = useRef<string | null>(null);
   const pinned = useRef<string | null>(null);
-  const revealed = useEffectEvent(() => onRevealed?.());
+  const revealed = useEffectEvent(() => {
+    onBase("Head");
+    onRevealed?.();
+  });
   useEffect(() => {
     if (reveal === null) return;
     revealWaiting.current = reveal;
@@ -127,7 +131,8 @@ export function DiffView({
     // A later request replaces this one, so this one drops its answer.
     let current = true;
     bridge.diff(worktree, base).then(
-      (files) => current && setDiff({ base, files, generation: ++loads.current }),
+      (files) =>
+        current && setDiff({ base, files: files ?? [], generation: ++loads.current, notARepo: files === null }),
       (e: unknown) => current && setDiff({ base, files: [], generation: ++loads.current, error: String(e) }),
     );
     return () => {
@@ -248,14 +253,14 @@ export function DiffView({
 
   return (
     <section className="diff-view">
-      <div className="toolbar">
+      <div className="toolbar" hidden={diff.notARepo}>
         <Segmented<DiffBase>
           label="Diff base"
           options={bases}
           value={base}
           onChange={(next) => {
             unpin();
-            setBase(next);
+            onBase(next);
           }}
         />
         {openCount > 0 && (
@@ -284,6 +289,7 @@ export function DiffView({
         onKeyDown={unpin}
         onTouchStart={unpin}
       >
+        {diff.notARepo && <p className="panel-empty">This folder is not a git repo, so it has no diff.</p>}
         {diff.error && <p role="alert">{diff.error}</p>}
         {(commentsError ?? resolveError) && <p role="alert">{commentsError ?? resolveError}</p>}
         {unshown.length > 0 && (
@@ -359,12 +365,6 @@ type Shown = { generation: number } & ({ versions: FileVersions } | { error: str
 const NEAR_VIEW_MARGIN = "100% 0px";
 
 /** A comment being typed. `draft` tells it from the one before, so a new pick starts afresh. */
-/** An ask to show the Diff on `base`. A new `request` number asks again. */
-export interface DiffOpened {
-  base: DiffBase;
-  request: number;
-}
-
 interface Draft {
   draft: number;
   path: string;

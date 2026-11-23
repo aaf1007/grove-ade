@@ -1,8 +1,14 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { fakeBridge } from "../fakeBridge";
-import { addGallerySessions, Gallery, GALLERY_REPO } from "./Gallery";
+import type { MonacoDiffProps } from "../MonacoDiff";
+import { addGallerySessions, Gallery, GALLERY_DIFFS, GALLERY_REPO } from "./Gallery";
+
+// Monaco needs a real browser. The stub only shows the new text.
+vi.mock("../MonacoDiff", () => ({
+  MonacoDiff: ({ modified }: MonacoDiffProps) => <pre aria-label="Modified">{modified}</pre>,
+}));
 
 afterEach(() => {
   cleanup();
@@ -10,17 +16,20 @@ afterEach(() => {
 });
 
 test("the gallery shows every component, every agent state, and switches between light and dark", async () => {
-  // jsdom has no ResizeObserver, which the pane's composer uses.
-  vi.stubGlobal("ResizeObserver", class {
+  // jsdom has no ResizeObserver, which the pane's composer uses, nor the IntersectionObserver of
+  // the Diff panel.
+  const observer = class {
     observe() {}
     disconnect() {}
-  });
-  const bridge = fakeBridge(GALLERY_REPO);
+  };
+  vi.stubGlobal("ResizeObserver", observer);
+  vi.stubGlobal("IntersectionObserver", observer);
+  const bridge = fakeBridge(GALLERY_REPO, GALLERY_DIFFS);
   await bridge.addRepo(Object.keys(GALLERY_REPO)[0]);
   await addGallerySessions(bridge);
   await act(async () => render(<Gallery bridge={bridge} />));
 
-  for (const name of ["Button", "IconButton", "AgentState", "Segmented", "PanelTabs", "Menu", "Card", "AgentMarkdown", "DetailsCard"]) {
+  for (const name of ["Button", "IconButton", "AgentState", "Segmented", "PanelTabs", "Menu", "Card", "AgentMarkdown", "DetailsCard", "DiffView"]) {
     expect(screen.getByRole("region", { name })).toBeTruthy();
   }
   const states = screen.getByRole("region", { name: "AgentState" });
@@ -34,6 +43,19 @@ test("the gallery shows every component, every agent state, and switches between
   expect(within(cards[0]).getByRole("listitem", { name: "Usage limits" }).textContent).toContain("5-hour");
   expect(within(cards[0]).getByRole("listitem", { name: "Context window" }).textContent).toContain("42%");
   expect(within(cards[1]).getByRole("listitem", { name: "Usage limits" }).textContent).toContain("last read 12 min ago");
+  // One Diff panel per base, each opened on its own, and one for a plain folder.
+  const diffs = screen.getByRole("region", { name: "DiffView" });
+  const pressed = () =>
+    within(diffs)
+      .getAllByRole("group", { name: "Diff base" })
+      .map((bases) => within(bases).getByRole("button", { pressed: true }).textContent);
+  expect(pressed()).toEqual(["HEAD", "Merge base"]);
+  const changed = () =>
+    within(diffs)
+      .getAllByRole("list", { name: "Changed files" })
+      .map((files) => within(files).queryAllByRole("listitem").map((file) => file.getAttribute("aria-label")));
+  await waitFor(() => expect(changed()).toEqual([["src/lexer.rs"], ["src/lexer.rs", "tests/lexer.rs"], []]));
+  expect(await within(diffs).findByText("This folder is not a git repo, so it has no diff.")).toBeTruthy();
   // The sidebar lists the gallery's sessions, the ended one dimmed.
   const ended = await screen.findByText("Spike the port router", { selector: ".session-title" });
   expect(ended.closest(".session-item")!.classList.contains("dimmed")).toBe(true);

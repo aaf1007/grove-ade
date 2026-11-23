@@ -12,12 +12,13 @@ import appStyles from "./styles.css?raw";
 
 // The diff view and xterm.js need a real browser. These tests cover only which panels exist and
 // which ones are shown. ChatPanel.test.tsx covers the agent panel itself.
-// DiffView.test.tsx covers the Diff panel. The stub only says which base it was last opened on,
-// and which file the app asked it to show.
+// DiffView.test.tsx covers the Diff panel, and DiffBase.test.tsx the base each session keeps. The
+// stub only says which base it shows and which file the app asked it to show, and switches to HEAD.
 vi.mock("./DiffView", () => ({
-  DiffView: ({ opened, reveal }: { opened?: { base: string; request: number }; reveal?: string | null }) => (
+  DiffView: ({ base, onBase, reveal }: { base: string; onBase(base: string): void; reveal?: string | null }) => (
     <>
-      <p>Diff opened on {opened ? `${opened.base} ${opened.request}` : "nothing"}</p>
+      <p>Diff opened on {base}</p>
+      <button onClick={() => onBase("Head")}>Switch the Diff to HEAD</button>
       {reveal && <p>Diff on {reveal}</p>}
     </>
   ),
@@ -1399,6 +1400,7 @@ test("a switch leaves one panel, with the Codex session, in a workspace with the
       panels: ["Diff", "Logs"],
       selected: "Logs",
       terminal: false,
+      diffBase: "Head",
     }),
   );
   const panels = screen.getAllByLabelText(/^Panel \d+$/);
@@ -2338,11 +2340,13 @@ test("the Details card's Changes row opens the Diff panel, and the panel area if
 
   expect(screen.getByRole("region", { name: "Panel area" })).toBeTruthy();
   expect(screen.getByRole("tab", { name: "Diff", selected: true })).toBeTruthy();
-  expect(screen.getByText("Diff opened on MergeBase 1")).toBeTruthy();
+  expect(screen.getByText("Diff opened on MergeBase")).toBeTruthy();
 
   // Each click asks again, so a Diff the user switched to HEAD goes back to the merge base.
+  await clickButton("Switch the Diff to HEAD");
+  expect(screen.getByText("Diff opened on Head")).toBeTruthy();
   await act(async () => fireEvent.click(within(detailsCard()).getByRole("button", { name: /Changes/ })));
-  expect(screen.getByText("Diff opened on MergeBase 2")).toBeTruthy();
+  expect(screen.getByText("Diff opened on MergeBase")).toBeTruthy();
 });
 
 test("the Details card's Changes row opens the Diff on HEAD for a worktree with no base branch", async () => {
@@ -2357,7 +2361,7 @@ test("the Details card's Changes row opens the Diff on HEAD for a worktree with 
 
   await act(async () => fireEvent.click(within(detailsCard()).getByRole("button", { name: /Changes/ })));
 
-  expect(screen.getByText("Diff opened on Head 1")).toBeTruthy();
+  expect(screen.getByText("Diff opened on Head")).toBeTruthy();
 });
 
 test("the Details card's Add run session row opens the Profile panel", async () => {

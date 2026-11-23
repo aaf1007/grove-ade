@@ -27,7 +27,8 @@ worktrees, create_worktree repo branch, spawn_agent worktree mode=chat|terminal
 [agent=claude|codex] [prompt], spawn_shell worktree, follow session, send session text, answer session request
 reply=allow_once|allow_session|deny|[[answers]], interrupt session, set_model session model
 [effort], set_mode session mode, write session text, kill session, diff worktree
-base=head|merge_base, workspace session, starting_workspace worktree, undo_workspace session,
+base=head|merge_base, workspace session, set_diff_base session base=head|merge_base,
+starting_workspace worktree, undo_workspace session,
 add_comment worktree path
 start_line end_line body, comments worktree, send_review_batch worktree [session], profiles,
 suggest_profile repo, use_profile repo name, attention, sessions worktree, quit.

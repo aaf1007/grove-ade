@@ -1,11 +1,12 @@
 import { Copy, Ellipsis, Plus } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 
-import type { SlashCommand, AgentState as State, Workspace } from "../bridge";
+import type { DiffBase, SlashCommand, AgentState as State, Workspace } from "../bridge";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { ChatPanel } from "../ChatPanel";
 import { DetailsCard } from "../DetailsCard";
-import type { FakeBridge, FakeWorktree } from "../fakeBridge";
+import { DiffView } from "../DiffView";
+import { type FakeBridge, fakeBridge, type FakeChange, type FakeDiffs, type FakeWorktree } from "../fakeBridge";
 import { PanelTabs } from "../PanelTabs";
 import { Sidebar } from "../Sidebar";
 import { AgentState } from "../ui/AgentState";
@@ -18,6 +19,7 @@ import "./Gallery.css";
 
 const MAIN = "/code/grove";
 const FEATURE = "/code/grove-wt/feat-235";
+const NOTES = "/notes";
 
 /** The repo the gallery's fake bridge tracks. */
 export const GALLERY_REPO: Record<string, FakeWorktree[]> = {
@@ -25,6 +27,36 @@ export const GALLERY_REPO: Record<string, FakeWorktree[]> = {
     { path: MAIN, branch: "main", isMain: true },
     { path: FEATURE, branch: "feat-235-ui-primitives", isMain: false },
   ],
+};
+
+const LEXER_AT_HEAD = [
+  "fn next_token(&mut self) -> Option<Token> {",
+  "    let token = self.tokens.pop()?;",
+  "    Some(token)",
+  "}",
+  "",
+].join("\n");
+const LEXER_NOW = LEXER_AT_HEAD.replace("    let token = self.tokens.pop()?;", "    let token = self.tokens.pop_front()?;");
+const LEXER_AT_MERGE_BASE = LEXER_AT_HEAD.replace("fn next_token(&mut self) -> Option<Token> {", "fn next(&mut self) -> Option<Token> {");
+const LEXER_TEST = ["#[test]", "fn the_last_token_is_kept() {", "    assert_eq!(lex(\"a b\").len(), 2);", "}", ""].join("\n");
+
+function galleryChange(newPath: string, old: string | null, now: string, added: number, removed: number): FakeChange {
+  const status = old === null ? "Added" : "Modified";
+  return {
+    file: { status, oldPath: newPath, newPath, added, removed, binary: false },
+    versions: { old, new: now, binary: false },
+  };
+}
+
+/** The feature worktree's diff: one uncommitted change, and one more file committed on its branch. */
+export const GALLERY_DIFFS: FakeDiffs = {
+  [FEATURE]: {
+    Head: [galleryChange("src/lexer.rs", LEXER_AT_HEAD, LEXER_NOW, 1, 1)],
+    MergeBase: [
+      galleryChange("src/lexer.rs", LEXER_AT_MERGE_BASE, LEXER_NOW, 2, 2),
+      galleryChange("tests/lexer.rs", null, LEXER_TEST, 4, 0),
+    ],
+  },
 };
 
 /** An agent reply with every markdown element chat mode renders. */
@@ -78,6 +110,7 @@ const WORKSPACE: Workspace = {
   panels: ["Files", "Diff", "Profile"],
   selected: "Files",
   terminal: false,
+  diffBase: "Head",
 };
 
 // What each gallery session's first message asks, one per state.
@@ -402,6 +435,17 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
         </Row>
       </Section>
 
+      <Section title="DiffView">
+        {(["Head", "MergeBase"] as const).map((opensOn) => (
+          <div key={opensOn} className="gallery-diff">
+            <GalleryDiff bridge={bridge} opensOn={opensOn} />
+          </div>
+        ))}
+        <div className="gallery-diff plain-folder">
+          <PlainFolderDiff />
+        </div>
+      </Section>
+
       <Section title="On the fake bridge">
         <div className="gallery-in-app">
           <Sidebar
@@ -443,6 +487,25 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
         </div>
       </Section>
     </main>
+  );
+}
+
+/** The feature worktree's Diff panel, which opens on `opensOn` and switches base as in the window. */
+function GalleryDiff({ bridge, opensOn }: { bridge: FakeBridge; opensOn: DiffBase }) {
+  const [base, setBase] = useState(opensOn);
+  return <DiffView bridge={bridge} worktree={FEATURE} base={base} onBase={setBase} agentStates={{}} onSent={() => {}} />;
+}
+
+/** The Diff panel of a plain folder, on a fake core of its own, so the gallery's repo stays a repo. */
+function PlainFolderDiff() {
+  const [bridge, setBridge] = useState<FakeBridge | null>(null);
+  useEffect(() => {
+    const plain = fakeBridge({ [NOTES]: [{ path: NOTES, branch: null, isMain: true }] });
+    plain.makePlainFolder(NOTES);
+    void plain.addRepo(NOTES).then(() => setBridge(plain));
+  }, []);
+  return (
+    bridge && <DiffView bridge={bridge} worktree={NOTES} base="Head" onBase={() => {}} agentStates={{}} onSent={() => {}} />
   );
 }
 
