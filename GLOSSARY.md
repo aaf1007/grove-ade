@@ -40,6 +40,8 @@ Use these terms exactly. If a new concept appears, add it here in the same PR.
 | Command panel | A panel in the panel area that runs a command an agent session started through grove-mcp, as a terminal the user can type into. Only that agent session can read, wait on or close it. |
 | Snapshot | A PTY session's terminal when a panel attaches: size, screen, scrollback, cursor and modes, as bytes the panel replays before live output. |
 | Agent state | One of `Working`, `NeedsInput`, `Failed`, `Done`, `Idle`, `Exited`. `NeedsInput` has a kind: `Approval` or `Question`. `Failed`: the turn or the process ended on an error. `Done`: the turn ended and the user has not looked at the panel since. `Idle`: nothing is waiting on the user. `Exited`: the process ended cleanly or grove stopped it. |
+| Usage reading | An agent's plan limits as its chat-mode transport last read them: limit windows, each with a name, a percent used and a reset time, or no plan limits for an API key account. One per agent. grove never calls a provider itself. |
+| Context reading | A chat-mode agent session's total tokens and how full its context window is, reported after each turn. |
 | State source | Where an agent state came from: `Protocol` in chat mode; `Hook` or `Heuristic` in terminal mode, where Hook beats Heuristic. |
 | Attention queue | Agent sessions waiting on the user, ranked Approval, Question, `Failed`, `Done`, oldest first within each. One key jumps to the head. |
 | Diff base | What a diff compares against: `Head` (all uncommitted changes, staged or not, plus untracked files) or `MergeBase` (everything since the branch left its base branch, committed or not). The Diff panel opens on `Head`. |

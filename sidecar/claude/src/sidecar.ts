@@ -223,6 +223,50 @@ export async function run(launch: Launch, deps: Deps): Promise<void> {
     },
   );
 
+  // The plan's limits, read at the start and after each turn. Never awaited, so no turn waits for
+  // a read. Once the account has no plan limits or the SDK cannot read them, nothing more is read.
+  // Only the newest read started counts: an older one that answers late is dropped, so it
+  // cannot mark a newer good reading as failed.
+  let readsUsage = true;
+  let usageReadsStarted = 0;
+  const readUsage = () => {
+    if (!readsUsage) return;
+    const read = (q as unknown as Record<string, unknown>)[USAGE_CALL];
+    const thisRead = ++usageReadsStarted;
+    const line = (reading: UsageLine) => {
+      if (thisRead !== usageReadsStarted) return;
+      readsUsage = reading.reading === "windows" || reading.reading === "failed";
+      write({ type: "usage", ...reading });
+    };
+    if (typeof read !== "function") return line({ reading: "unsupported" });
+    // The call is experimental, so its answer is not trusted to be a promise: a plain value
+    // goes the same way as a promise's, and a call that throws counts as a failed read.
+    void new Promise((resolve) => resolve(read.call(q, { skipBehaviors: true }))).then(
+      (response) => line(usageLine(response)),
+      (error: unknown) => {
+        logError(error);
+        line({ reading: "failed" });
+      },
+    );
+  };
+  readUsage();
+
+  // The session's tokens and context use, after a turn. Never awaited, so the turn's end goes out
+  // first and the next turn starts without it.
+  const reportContext = (modelUsage: unknown) => {
+    const total = sessionTotalTokens(modelUsage);
+    if (total === undefined) return;
+    const read = (q as unknown as Record<string, unknown>).getContextUsage;
+    const window =
+      typeof read === "function"
+        ? (read.call(q, { detail: "summary" }) as Promise<unknown>).then(contextWindow, (error: unknown) => {
+            logError(error);
+            return null;
+          })
+        : Promise.resolve(null);
+    void window.then((context_window) => write({ type: "context", session_total_tokens: total, context_window }));
+  };
+
   const applyModel = ({ model, effort }: ModelChoice) => {
     if (model !== undefined) void q.setModel(model).catch(logError);
     if (effort !== undefined) void q.applyFlagSettings({ effortLevel: effort }).catch(logError);
@@ -342,6 +386,8 @@ export async function run(launch: Launch, deps: Deps): Promise<void> {
           unanswered.clear();
         }
         endTurn(unanswered.size > 0 || (!answered && (message.queued_turn_count ?? 0) > 0));
+        readUsage();
+        reportContext(message.modelUsage);
         return;
       }
       case "system":
@@ -495,6 +541,89 @@ function account(info: AccountInfo) {
     plan: info.subscriptionType ?? null,
     api_key_source: info.apiKeySource ?? null,
   };
+}
+
+/**
+ * The SDK's usage call. The SDK marks it experimental and says its name will change, so the
+ * sidecar looks it up by name and checks the shape of what it returns.
+ */
+const USAGE_CALL = "usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET";
+
+/** PROTOCOL.md's `usage` line, without its type. */
+type UsageLine =
+  | { reading: "windows"; windows: { name: string; percent_used: number; resets_at_unix_ms: number | null }[] }
+  | { reading: "no_plan_limits" | "failed" | "unsupported" };
+
+/** The plan's fixed windows in the usage call's `rate_limits`, and the names grove shows. */
+const PLAN_WINDOWS = [
+  ["five_hour", "5-hour"],
+  ["seven_day", "Weekly"],
+  ["seven_day_opus", "Weekly Opus"],
+  ["seven_day_sonnet", "Weekly Sonnet"],
+] as const;
+
+/**
+ * PROTOCOL.md's `usage` line for what the SDK's usage call returned. A shape the sidecar does not
+ * know is `unsupported`. Limits that apply but did not come, or hold no window, are `failed`.
+ */
+function usageLine(response: unknown): UsageLine {
+  if (!isRecord(response) || typeof response.rate_limits_available !== "boolean") return { reading: "unsupported" };
+  if (!response.rate_limits_available) return { reading: "no_plan_limits" };
+  const limits = response.rate_limits;
+  if (!isRecord(limits)) return { reading: "failed" };
+  const perModel = Array.isArray(limits.model_scoped) ? limits.model_scoped : [];
+  const windows = [
+    ...PLAN_WINDOWS.flatMap(([key, name]) => usageWindow(name, limits[key])),
+    ...perModel.flatMap((w: unknown) =>
+      isRecord(w) && typeof w.display_name === "string" ? usageWindow(`Weekly ${w.display_name}`, w) : [],
+    ),
+  ];
+  return windows.length > 0 ? { reading: "windows", windows } : { reading: "failed" };
+}
+
+/** One window of the `usage` line, or none when the SDK gives no percent for it. */
+function usageWindow(name: string, window: unknown) {
+  if (!isRecord(window) || typeof window.utilization !== "number") return [];
+  const resets = typeof window.resets_at === "string" ? Date.parse(window.resets_at) : NaN;
+  return [
+    {
+      name,
+      percent_used: Math.min(100, Math.max(0, Math.round(window.utilization))),
+      resets_at_unix_ms: Number.isNaN(resets) ? null : resets,
+    },
+  ];
+}
+
+/**
+ * Every token the conversation has used, from a result's `modelUsage`: each model's input, output
+ * and cache tokens. undefined for a result that has none, such as a zeroed one.
+ */
+function sessionTotalTokens(modelUsage: unknown): number | undefined {
+  if (!isRecord(modelUsage)) return undefined;
+  const counts = ["inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"];
+  let total = 0;
+  for (const model of Object.values(modelUsage)) {
+    if (!isRecord(model)) continue;
+    for (const count of counts) total += tokenCount(model[count]) ?? 0;
+  }
+  return total;
+}
+
+/** PROTOCOL.md's `context_window`, from the SDK's `getContextUsage`. null for a shape it does not know. */
+function contextWindow(usage: unknown) {
+  if (!isRecord(usage)) return null;
+  const used_tokens = tokenCount(usage.totalTokens);
+  const size_tokens = tokenCount(usage.rawMaxTokens);
+  return used_tokens === undefined || size_tokens === undefined ? null : { used_tokens, size_tokens };
+}
+
+/** A count of tokens as the core reads it, a whole number from 0 up. undefined for anything else. */
+function tokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 /** A tool result's text blocks, as one string. */

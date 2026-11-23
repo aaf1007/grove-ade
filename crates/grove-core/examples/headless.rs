@@ -22,7 +22,7 @@ use std::{env, thread};
 
 use grove_core::{
     Agent, AgentSpec, Core, CoreConfig, CoreEvent, DiffBase, FileDiff, LineKind, Mode,
-    NewReviewComment, NewWorktree, PanelSpec, Reply, RequestId, SessionId,
+    NewReviewComment, NewWorktree, PanelSpec, RemoveOpts, Reply, RequestId, SessionId,
 };
 use serde_json::{Value, json};
 use tokio::sync::broadcast::error::RecvError;
@@ -165,6 +165,10 @@ fn handle(
         "add_repo" => {
             runtime.block_on(core.add_repo(&path("path")?))?;
             json!("added")
+        }
+        "forget_repo" => {
+            runtime.block_on(core.remove_worktree(&path("path")?, RemoveOpts::ForgetRepo))?;
+            json!("forgotten")
         }
         "worktrees" => {
             let worktrees = runtime.block_on(core.list_worktrees());

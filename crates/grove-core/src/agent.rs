@@ -35,6 +35,7 @@ use crate::panel_request::{self, Request, SessionToken};
 use crate::restore::AgentRecord;
 use crate::session::{GROVE_SESSION_ID, GROVE_SESSION_TOKEN, GROVE_SOCKET, Kind, ProcessExit};
 use crate::state::SaveRequests;
+use crate::usage::UsageReadings;
 use crate::workspace::Saved;
 use crate::{
     Core, CoreConfig, CoreError, CoreEvent, CoreInner, LaunchArgs, Layout, PanelSpec, Result,
@@ -42,7 +43,7 @@ use crate::{
 };
 
 /// An agent CLI grove runs. Only Claude Code and Codex until after M7 (ADR 0007).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Agent {
     Claude,
@@ -263,6 +264,7 @@ pub(crate) struct Agents {
     // Each change to what a restart brings back asks for a save.
     saves: SaveRequests,
     max_live_subagents_per_parent: usize,
+    pub(crate) usage: UsageReadings,
 }
 
 struct Tracked {
@@ -277,6 +279,9 @@ struct Tracked {
     switching: bool,
     // Told when the process `set_mode` ended has exited and its hooks are applied.
     exited: Option<oneshot::Sender<()>>,
+    // Told when the session ends, for the removal of its worktree, which drops its record
+    // only after that.
+    ended_for_removal: Option<oneshot::Sender<()>>,
     // None until a Codex session's first SessionStart.
     resume_id: Option<String>,
     // None until `set_model`. The agent's default runs until then.
@@ -330,6 +335,7 @@ impl Tracked {
             chat: None,
             switching: false,
             exited: None,
+            ended_for_removal: None,
             resume_id,
             model: None,
             token: None,
@@ -441,6 +447,21 @@ impl Agents {
             .collect()
     }
 
+    /// A receiver for each agent session in `worktrees` that has not ended, told once it
+    /// ends. One whose record is dropped first closes its receiver. A worktree has one removal
+    /// at a time, so a new call only replaces what a removal that gave up left behind.
+    pub(crate) fn session_ends_in(&self, worktrees: &[PathBuf]) -> Vec<oneshot::Receiver<()>> {
+        lock(&self.live)
+            .values_mut()
+            .filter(|tracked| !tracked.ended && worktrees.contains(&tracked.worktree))
+            .map(|tracked| {
+                let (ended, told) = oneshot::channel();
+                tracked.ended_for_removal = Some(ended);
+                told
+            })
+            .collect()
+    }
+
     pub(crate) fn new(
         cfg: &CoreConfig,
         saves: SaveRequests,
@@ -466,6 +487,7 @@ impl Agents {
             last_focused: Mutex::default(),
             saves,
             max_live_subagents_per_parent: cfg.max_live_subagents_per_parent,
+            usage: UsageReadings::default(),
         }
     }
 
@@ -566,15 +588,12 @@ impl Agents {
             let _ = exited.send(());
             return;
         }
-        tracked.ended = true;
         let state = if exit.killed || exit.code == Some(0) {
             AgentState::Exited
         } else {
             AgentState::Failed
         };
-        tracked.set(exit.session, state, tracked.source(), events);
-        // After its state, so a list read on this event has both.
-        let _ = events.send(CoreEvent::AgentSessionsChanged);
+        tracked.end(exit.session, state, events);
     }
 
     /// A state a chat-mode session's protocol reported, for as long as its process runs.
@@ -635,6 +654,23 @@ impl Tracked {
         match self.mode {
             Mode::Chat => StateSource::Protocol,
             Mode::Terminal => StateSource::Hook,
+        }
+    }
+
+    // Its process is gone for good, and `state` is how it ended.
+    fn end(
+        &mut self,
+        session: SessionId,
+        state: AgentState,
+        events: &broadcast::Sender<CoreEvent>,
+    ) {
+        self.ended = true;
+        self.set(session, state, self.source(), events);
+        // After its state, so a list read on this event has both.
+        let _ = events.send(CoreEvent::AgentSessionsChanged);
+        if let Some(ended) = self.ended_for_removal.take() {
+            // The removal may have given up.
+            let _ = ended.send(());
         }
     }
 
@@ -1166,16 +1202,9 @@ impl Drop for Switch<'_> {
         // Its process is gone and none took its place. An exit still to come ends it as any
         // exit does.
         if !self.started && tracked.exited.take().is_none() {
-            tracked.ended = true;
-            tracked.set(
-                self.session,
-                AgentState::Exited,
-                tracked.source(),
-                self.events,
-            );
+            tracked.end(self.session, AgentState::Exited, self.events);
             // `begin` may have had it saved as running.
             self.agents.saves.request();
-            let _ = self.events.send(CoreEvent::AgentSessionsChanged);
         }
     }
 }
