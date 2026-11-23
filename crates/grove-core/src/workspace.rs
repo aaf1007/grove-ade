@@ -156,9 +156,10 @@ impl Workspace {
 
 impl Core {
     /// The workspace a new agent session in `worktree` starts from: its project's profile
-    /// layout with the project's overrides, and no agent panel yet.
+    /// layout with the project's overrides, and no agent panel yet. Fails with `BadProfile`
+    /// while the project's profile file is not valid.
     pub fn starting_workspace(&self, worktree: &Path) -> Result<Workspace> {
-        Ok(Workspace::from_layout(self.layout_of(worktree)?))
+        Ok(Workspace::from_layout(self.starting_layout(worktree)?))
     }
 
     /// The workspace agent session `session` shows in: its own, or its top parent's when it is
@@ -289,7 +290,16 @@ impl Core {
     }
 
     // The layout a new agent session in `worktree` starts from: its repo's profile layout with
-    // the repo's overrides.
+    // the repo's overrides. Fails with `BadProfile` while the repo's profile file is not valid,
+    // so no session starts from a layout its profile did not give.
+    pub(crate) fn starting_layout(&self, worktree: &Path) -> Result<Layout> {
+        let repo = repo_of(&self.tracked(), worktree)
+            .ok_or_else(|| CoreError::UnknownWorktree(worktree.to_path_buf()))?;
+        Ok(self.valid_settings_of(&repo)?.layout)
+    }
+
+    // `starting_layout` for a session that already exists, which a profile that is not valid
+    // must not keep from coming back: such a profile counts as empty.
     pub(crate) fn layout_of(&self, worktree: &Path) -> Result<Layout> {
         let repo = repo_of(&self.tracked(), worktree)
             .ok_or_else(|| CoreError::UnknownWorktree(worktree.to_path_buf()))?;

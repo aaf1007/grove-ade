@@ -625,8 +625,24 @@ export function fakeBridge(
 
   // As the core's `spawn_agent`: with no agent, the first one the profile's layout names, or else
   // Claude Code.
-  function spawnAgent(worktree: string, agent: Agent | null): SessionId {
+  // Why the profile named `name` is not valid, as the core says it. null when it is valid.
+  function profileNotValid(name: string): string | null {
+    const problem = profileProblem(profileTexts.get(name) ?? "");
+    if (!problem) return null;
+    return `the profile /home/.grovecode/profiles/${profileFileName(name)} is not valid at line ${problem.line}: ${problem.message}`;
+  }
+
+  // As the core: a new session's layout comes from its project's profile, so the starting
+  // workspace and a start are refused while that profile's file is not valid.
+  function checkStartingLayout(worktree: string) {
     checkTracked(worktree);
+    const profile = repoProfiles.get(mainOf(tracked.find((w) => w.path === worktree)!).path);
+    const notValid = profile && profileTexts.has(profile) ? profileNotValid(profile) : null;
+    if (notValid) throw notValid;
+  }
+
+  function spawnAgent(worktree: string, agent: Agent | null): SessionId {
+    checkStartingLayout(worktree);
     return startAgentSession(worktree, agent ?? startingAgents.get(worktree) ?? "Claude");
   }
 
@@ -1048,7 +1064,7 @@ export function fakeBridge(
       return workspaceOf(session);
     },
     async startingWorkspace(worktree) {
-      checkTracked(worktree);
+      checkStartingLayout(worktree);
       return startingWorkspaceOf(worktree);
     },
     setStartingWorkspace(worktree, workspace, agent = "Claude") {
@@ -1184,11 +1200,9 @@ export function fakeBridge(
       return { outcome: "Deleted", name: branch };
     },
     async profileNames() {
-      for (const [name, text] of profileTexts) {
-        const problem = profileProblem(text);
-        if (problem) {
-          throw `the profile /home/.grovecode/profiles/${profileFileName(name)} is not valid at line ${problem.line}: ${problem.message}`;
-        }
+      for (const name of profileTexts.keys()) {
+        const notValid = profileNotValid(name);
+        if (notValid) throw notValid;
       }
       return profiles.map((p) => p.name).sort();
     },

@@ -254,6 +254,19 @@ impl Core {
         let saved = self.settings().get(repo).cloned();
         resolved(saved, &self.profiles)
     }
+
+    // `settings_of`, refused with `BadProfile`, which names the file, while the repo's profile
+    // is not valid. A profile whose file is gone has nothing to repair, and counts as empty.
+    pub(crate) fn valid_settings_of(&self, repo: &Path) -> Result<ProfileSettings> {
+        let saved = self.settings().get(repo).cloned();
+        let profile = saved.as_ref().and_then(|saved| saved.profile.as_deref());
+        if let Some(Err(not_valid @ CoreError::BadProfile { .. })) =
+            profile.map(|name| self.profiles.profile(name))
+        {
+            return Err(not_valid);
+        }
+        Ok(resolved(saved, &self.profiles))
+    }
 }
 
 // What a repo with `saved` settings runs with: its profile with its overrides applied. A

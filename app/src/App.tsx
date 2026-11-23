@@ -50,6 +50,7 @@ import {
   openPanel,
   showSession,
   useWorkspaces,
+  workspaceOwnerOf,
   workspaceKey,
   type WorkspaceOwner,
 } from "./workspace";
@@ -161,12 +162,7 @@ export function App({ bridge }: { bridge: Bridge }) {
   const listing = useRef(new Map<string, object>());
   // The agent session whose workspace `session` shows in: the last one up its parents that the
   // core lists, as in the core.
-  function ownerOf(session: SessionId): SessionId {
-    const parents = new Map(records.map((record) => [record.session, record.parent]));
-    let top = session;
-    for (let above = parents.get(top); above != null && parents.has(above); above = parents.get(top)) top = above;
-    return top;
-  }
+  const ownerOf = (session: SessionId) => workspaceOwnerOf(records, session);
   // The workspace shown: the selected session's, or else the one a session in the selected place
   // would start from.
   const shownOwner: WorkspaceOwner | null = selectedSession

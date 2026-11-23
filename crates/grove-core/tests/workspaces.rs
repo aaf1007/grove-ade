@@ -394,6 +394,61 @@ fn a_repo_without_a_profile_gets_the_built_in_layout() {
     );
 }
 
+// The decision on issue #63: the core does not fall back to grove's own layout. A start is
+// refused, with the error that names the profile file, and leaves no session behind.
+#[test]
+fn a_start_is_refused_while_the_projects_profile_is_not_valid_and_leaves_no_session() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let (core, _events, repo) = core_with_repo(dir.path());
+    use_profile(&core, &repo, Some("Rust crate"), Layout::default());
+    let before = session(&core, &repo, Agent::Claude);
+    let of_before = core.workspace(before).unwrap();
+    let file = core.profile_text("Rust crate").unwrap().path;
+    let valid = fs::read(&file).unwrap();
+    drop(core);
+    fs::write(&file, "name = \"Rust crate\"\n\n[layout]\npanels = 5\n").unwrap();
+    let (core, _events) = start(dir.path());
+    let names_the_file = |refused: CoreError| {
+        assert!(
+            matches!(&refused, CoreError::BadProfile { path, .. } if *path == file),
+            "{refused:?}"
+        );
+        let message = refused.to_string();
+        assert!(message.contains("rust-crate.toml"), "{message}");
+    };
+
+    names_the_file(core.spawn_agent(&repo, spec(None)).unwrap_err());
+    names_the_file(
+        core.spawn_agent(&repo, spec(Some(Agent::Codex)))
+            .unwrap_err(),
+    );
+    names_the_file(core.starting_workspace(&repo).unwrap_err());
+
+    // Only the session from before, which keeps the workspace it was saved with.
+    let listed: Vec<SessionId> = core
+        .agent_sessions()
+        .into_iter()
+        .map(|info| info.session)
+        .collect();
+    assert_eq!(listed, [before]);
+    assert_eq!(core.workspace(before).unwrap(), of_before);
+    let folders = fs::read_dir(dir.path().join("home/sessions"))
+        .unwrap()
+        .count();
+    assert_eq!(folders, 1);
+
+    // Repaired, the project starts sessions again.
+    drop(core);
+    fs::write(&file, valid).unwrap();
+    let (core, _events) = start(dir.path());
+    let after = core.spawn_agent(&repo, spec(None)).unwrap();
+    assert_eq!(
+        core.workspace(after).unwrap().panels,
+        core.starting_workspace(&repo).unwrap().panels
+    );
+}
+
 #[test]
 fn two_sessions_in_one_place_keep_different_layouts_across_a_restart() {
     let _serial = serial();

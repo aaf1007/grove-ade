@@ -679,8 +679,9 @@ impl Core {
         spec: AgentSpec,
         parent: Option<SessionId>,
     ) -> Result<SessionId> {
-        // Fails for a worktree grove does not track.
-        let layout = self.layout_of(worktree)?;
+        // Fails for a worktree grove does not track, and while its project's profile is not
+        // valid. Nothing is started or tracked yet.
+        let layout = self.starting_layout(worktree)?;
         let first_in_layout = layout.chat.as_ref().and_then(|chat| chat.first().copied());
         let agent = spec.agent.or(first_in_layout).unwrap_or(Agent::Claude);
         let session = self.sessions.new_id();
@@ -735,9 +736,9 @@ impl Core {
         let (session, mode, ended) = (record.id, record.mode, record.ended);
         let workspace = match record.workspace.take() {
             Some(saved) => saved.into(),
-            None => self
-                .starting_workspace(worktree)?
-                .with_panel(session, record.agent),
+            None => {
+                Workspace::from_layout(self.layout_of(worktree)?).with_panel(session, record.agent)
+            }
         };
         let mut tracked = Tracked::of_record(worktree, record, workspace);
         if ended {

@@ -184,6 +184,25 @@ export function useWorkspaces(bridge: Bridge) {
   return { workspaces, errors, load, change, forget, dropSessions, current };
 }
 
+/**
+ * The agent session whose workspace `session` shows in: the last one up its parents that
+ * `records` lists, as `top_parent` in the core. Each session is visited once, so records whose
+ * parents loop still give an answer.
+ */
+export function workspaceOwnerOf(
+  records: { session: SessionId; parent: SessionId | null }[],
+  session: SessionId,
+): SessionId {
+  const parents = new Map(records.map((record) => [record.session, record.parent]));
+  const seen = new Set([session]);
+  let top = session;
+  for (let above = parents.get(top); above != null && parents.has(above) && !seen.has(above); above = parents.get(top)) {
+    seen.add(above);
+    top = above;
+  }
+  return top;
+}
+
 /** Shows the session's panel. A session with no panel gets one after the last. */
 export function showSession(workspace: Workspace, session: SessionId, agent: Agent): Workspace {
   const chat = [...workspace.chat];

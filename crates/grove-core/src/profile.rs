@@ -465,7 +465,7 @@ impl Profiles {
     }
 
     /// The profile named `name`, or why its file is not valid, from the file `file_for` finds.
-    fn profile(&self, name: &str) -> Result<Profile> {
+    pub(crate) fn profile(&self, name: &str) -> Result<Profile> {
         found(&self.dir, &self.files(), name)
     }
 

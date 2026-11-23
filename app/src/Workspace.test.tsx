@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { App } from "./App";
 import { fakeBridge, type FakeBridge, STARTING_WORKSPACE } from "./fakeBridge";
+import { workspaceOwnerOf } from "./workspace";
 
 // Each agent session's workspace: its agent panel and those of its subagent sessions side by side,
 // its panel-area tabs and its bottom terminal. The agent panels are the real ones, so two of them
@@ -714,14 +715,27 @@ test("a slow layout that loads late leaves another worktree's load error in plac
   expect(screen.getByRole("alert").textContent).toBe("Could not load this layout: the state file is unreadable");
 });
 
-// A session has a workspace of its own, so its start does not need its worktree's starting layout.
-test("an agent session starts in a worktree whose starting layout does not load", async () => {
+// The decision on issue #63: a new session's layout comes from its project's profile, so the core
+// refuses a start while that profile's file is not valid, and names the file.
+test("no agent session starts in a worktree whose profile is not valid, and the chat area names the file to repair", async () => {
   const bridge = await trackedBridge();
-  vi.spyOn(bridge, "startingWorkspace").mockRejectedValue("the state file is unreadable");
+  await bridge.setRepoProfile(main, "Rust crate");
+  bridge.changeProfileOnDisk("Rust crate", 'name = "Rust crate');
   render(<App bridge={bridge} />);
   await select("feat-36");
-  expect(screen.getByRole("alert").textContent).toBe("Could not load this layout: the state file is unreadable");
+  const notValid = /^the profile \/home\/\.grovecode\/profiles\/rust-crate\.toml is not valid at line 1: /;
+  expect(screen.getByRole("alert").textContent).toMatch(
+    new RegExp(`^Could not load this layout: ${notValid.source.slice(1)}`),
+  );
 
+  await startClaudeCode();
+
+  expect(bridge.spawnedAgents).toEqual([]);
+  expect(shownPanels()).toEqual([]);
+  expect(screen.getByRole("alert").textContent).toMatch(notValid);
+
+  // Repaired, the same button starts the session.
+  act(() => bridge.changeProfileOnDisk("Rust crate", 'name = "Rust crate"\n'));
   await startClaudeCode();
 
   await waitFor(() => expect(shownPanels()).toEqual(["Panel 0"]));
@@ -1084,4 +1098,21 @@ test("a shown terminal-mode panel attaches again after the sidebar resumes its s
   await click(sessionRow("feat-36")!);
 
   await waitFor(() => expect(terminalsMade).toEqual(["0", "0"]));
+});
+
+// The core's `top_parent` visits each session once. The window does the same, so records whose
+// parents loop cannot hang it.
+test("the session a workspace belongs to is the top parent the core lists, even when parents loop", () => {
+  const record = (session: string, parent: string | null) => ({ session, parent });
+
+  const chain = [record("1", null), record("2", "1"), record("3", "2")];
+  expect(["1", "2", "3"].map((session) => workspaceOwnerOf(chain, session))).toEqual(["1", "1", "1"]);
+  // A parent the core no longer lists ends the chain.
+  expect(workspaceOwnerOf([record("2", "1"), record("3", "2")], "3")).toBe("2");
+  expect(workspaceOwnerOf(chain, "9")).toBe("9");
+
+  // As the core: up the loop once, to the last session not seen yet.
+  const loop = [record("1", "3"), record("2", "1"), record("3", "2")];
+  expect(["1", "2", "3"].map((session) => workspaceOwnerOf(loop, session))).toEqual(["2", "3", "1"]);
+  expect(workspaceOwnerOf([record("1", "1")], "1")).toBe("1");
 });

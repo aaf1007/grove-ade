@@ -74,7 +74,7 @@ impl Core {
     pub fn port(&self, s: SessionId) -> Option<u16>; // a running run session's declared port
 
     // agent sessions in chat mode
-    pub fn spawn_agent(&self, wt: WorktreeId, spec: AgentSpec) -> Result<SessionId>; // agent, model, effort, mode; with no agent, the first one the profile's layout names; the new session gets a workspace of its own that starts from the profile's layout
+    pub fn spawn_agent(&self, wt: WorktreeId, spec: AgentSpec) -> Result<SessionId>; // agent, model, effort, mode; with no agent, the first one the profile's layout names; the new session gets a workspace of its own that starts from the profile's layout; refused with BadProfile, starting nothing, while the project's profile file is not valid
     pub async fn spawn_agent_after_setup(&self, wt: &Path, spec: AgentSpec) -> Result<SessionId>; // waits for setup; SetupFailed if it failed
     pub fn subscribe(&self, s: SessionId, sink: MessageSink) -> Result<Vec<AgentMessage>>; // history, then live
     pub fn send_message(&self, s: SessionId, text: &str) -> Result<()>;
@@ -107,7 +107,7 @@ impl Core {
     pub fn repo_overrides_text(&self, repo: &Path) -> Result<String>;
     pub async fn set_repo_overrides_text(&self, repo: &Path, text: &str) -> Result<()>; // keeps the profile; comments are not kept
     pub fn suggest_profile(&self, repo: &Path) -> Option<Suggestion>; // the profile and the marker file found
-    pub fn starting_workspace(&self, wt: WorktreeId) -> Result<Workspace>; // the profile's layout, with no agent panel: what a new agent session in the worktree starts from
+    pub fn starting_workspace(&self, wt: WorktreeId) -> Result<Workspace>; // the profile's layout, with no agent panel: what a new agent session in the worktree starts from; BadProfile while the profile file is not valid
     pub fn workspace(&self, s: SessionId) -> Result<Workspace>; // the agent session's own, or its top parent's for a subagent session
     pub async fn set_workspace(&self, s: SessionId, w: Workspace, by: Option<SessionId>) -> Result<()>; // by: the agent session that changed it
     pub async fn undo_workspace(&self, s: SessionId) -> Result<()>; // back to before the last change an agent session made
