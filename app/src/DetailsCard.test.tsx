@@ -550,8 +550,8 @@ test("the card has no usage limits row before a reading, for another agent's rea
 
 test("the context window row shows how full the focused session's context is and its tokens so far, after each turn", async () => {
   const bridge = await setup();
-  const session = await bridge.spawnAgent(feature, "Claude", null);
-  const other = await bridge.spawnAgent(feature, "Claude", null);
+  const session = await bridge.spawnAgent(feature, "Claude");
+  const other = await bridge.spawnAgent(feature, "Claude");
   await renderCard(bridge, { session: { ...claude, session } });
   expect(rowNames()).not.toContain("Context window");
 
@@ -586,8 +586,8 @@ test("the context window row shows how full the focused session's context is and
 
 test("the context window row shows the reading a session reported before the card opened, and the focused session's own", async () => {
   const bridge = await setup();
-  const first = await bridge.spawnAgent(feature, "Claude", null);
-  const second = await bridge.spawnAgent(feature, "Claude", null);
+  const first = await bridge.spawnAgent(feature, "Claude");
+  const second = await bridge.spawnAgent(feature, "Claude");
   bridge.contextReadingChanged({
     session: first,
     reading: { sessionTotalTokens: 101_000, contextWindow: { usedTokens: 84_000, sizeTokens: 200_000 } },
@@ -602,7 +602,7 @@ test("the context window row shows the reading a session reported before the car
 
 test("when the agent does not say how full the context is, the context window row shows the session's tokens alone", async () => {
   const bridge = await setup();
-  const session = await bridge.spawnAgent(feature, "Codex", null);
+  const session = await bridge.spawnAgent(feature, "Codex");
   bridge.contextReadingChanged({ session, reading: { sessionTotalTokens: 30_500, contextWindow: null } });
   await renderCard(bridge, { session: { ...claude, agent: "Codex", session } });
 

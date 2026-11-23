@@ -165,7 +165,7 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
       session: pane,
       reading: { sessionTotalTokens: 1_240_000, contextWindow: { usedTokens: 84_000, sizeTokens: 200_000 } },
     });
-    bridge.spawnAgent(FEATURE, "Codex", null).then((session) => {
+    bridge.spawnAgent(FEATURE, "Codex").then((session) => {
       if (!current) return;
       bridge.agentStateChanged({ session, state: "Done", source: "Protocol" });
       bridge.contextReadingChanged({ session, reading: { sessionTotalTokens: 30_500, contextWindow: null } });

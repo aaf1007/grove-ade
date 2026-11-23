@@ -2645,7 +2645,7 @@ test.each(["the composer", "a text field outside the panel"])(
 
 test("a picker a shortcut opened in one panel takes no key from another panel", async () => {
   const bridge = await started("Codex");
-  const other = await bridge.spawnAgent(worktree, "Codex", null);
+  const other = await bridge.spawnAgent(worktree, "Codex");
   render(
     <>
       <Panel bridge={bridge} agent="Codex" />
