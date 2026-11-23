@@ -177,7 +177,7 @@ function FoldedRow({ calls, worktree, live }: { calls: ToolCall[]; worktree: str
           {[...listed].map(([key, callsForTarget]) => (
             <FoldedCall
               key={key}
-              target={kind.unique ? key : targets(callsForTarget[0])![0]}
+              target={kind.unique ? key : relative(targets(callsForTarget[0])![0], worktree)}
               calls={callsForTarget}
             />
           ))}
