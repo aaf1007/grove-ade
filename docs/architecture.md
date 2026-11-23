@@ -123,6 +123,8 @@ impl Core {
     // status
     pub fn agent_state(&self, s: SessionId) -> AgentState;
     pub fn attention_queue(&self) -> Vec<SessionId>;
+    pub fn usage_reading(&self, agent: Agent) -> Option<UsageReading>; // the agent's plan limits as of its last good read; None before the first read or when the agent cannot read them
+    pub fn context_reading(&self, s: SessionId) -> Option<ContextReading>; // a chat-mode session's tokens and context use after its last turn; None before the first turn end or outside chat mode
 }
 
 // Small state events only. PTY output and agent messages never ride this bus.
@@ -141,6 +143,8 @@ pub enum CoreEvent {
     Warning(Warning),
     WarningCleared { id: usize },
     Account { agent: AgentKind, account: Option<AccountInfo> }, // plan or API key as each agent reports it
+    UsageReading { agent: Agent, reading: Option<UsageReading> }, // an agent's plan limits were read; None: the agent cannot read them, so the UI hides the row
+    ContextReading { session: SessionId, reading: ContextReading }, // a chat-mode session's tokens and context use, once per turn end
 }
 ```
 - `AgentMessage` covers user and agent text (streamed as deltas), turn starts and ends (an end carries its error, if any), tool calls and results, file changes, approval and question requests, review batches, messages that never reached the agent, notices and errors. It also carries the agent's command list (`Commands`), which is never part of the conversation: the core keeps only the latest list, `subscribe` returns it after the history, and a new list goes out as a frame. Each subscribed agent panel gets its own `MessageSink`, batched like PTY output: at most one frame per 8 ms per session.
@@ -184,6 +188,9 @@ ADR 0013 and 0015 decided this section. Details marked "M4" are settled by the M
 - Messages not delivered: the core keeps each message sent until the agent starts a turn on it. If the process ends first, the conversation gets a `NotDelivered` entry for it, and a review batch's comments go back to `Open`.
 - Switching mode: `set_mode` is refused while the session is `Working` or `NeedsInput`, or with `MessagePending` while a sent message has no turn started yet. A send that comes during the switch fails with `SwitchingMode`. It ends the current process and resumes the same conversation in the other mode with the resume id. Chat mode shows the history from the agent's own record: the turns in Codex's `thread/resume` reply, the same ones `thread/read` returns, and for Claude the sidecar's `history`, which it reads with the Agent SDK's `getSessionMessages`. `set_mode` returns once the history is in.
 - Account: each transport reports who is logged in and on which plan, or that an API key is in use. grove shows it and never stores credentials.
+- Usage reading: an agent's plan limits, one reading per agent. Each limit window has a name, a percent used and a reset time. An account with no plan limits, as with an API key, reads as `NoPlanLimits` and is not read again. The reading comes only through the agent's own interface: the Claude sidecar's `usage` line, read at the start and after each turn, and Codex's `account/rateLimits/read`, asked after `account/read` for a `chatgpt` account and after each `turn/completed`. grove never calls a provider itself. A failed read keeps the last good reading with its time and marks it `latest_read_failed`. It never blocks or fails a turn. The error of a failed Claude read goes to the session's `sidecar.log`, and that of a failed Codex read to its `app-server.log`. With no good reading before it, a failed read shows nothing. When the agent has no such call, or answers in a shape grove does not know, the reading is dropped and the row is off.
+- Context reading: a chat-mode session's total tokens and how full its context window is, sent once after each turn. Claude: the sidecar's `context` line. Codex: the latest `thread/tokenUsage/updated` of the turn, sent at `turn/completed`. It is not saved: after a restart or a mode switch the row is off until the next turn ends. Terminal mode has no reading (issue #20).
+- Each reading is one small event per turn end, so the core sends both on the `CoreEvent` bus. The details card shows them in two rows, Usage limits and Context window.
 
 Protocol events map to agent states (source `Protocol`) the same way for both agents:
 

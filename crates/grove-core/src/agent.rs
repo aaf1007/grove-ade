@@ -33,13 +33,14 @@ use crate::panel_request::{self, Request, SessionToken};
 use crate::restore::AgentRecord;
 use crate::session::{GROVE_SESSION_ID, GROVE_SESSION_TOKEN, GROVE_SOCKET, Kind, ProcessExit};
 use crate::state::SaveRequests;
+use crate::usage::UsageReadings;
 use crate::{
     Core, CoreConfig, CoreError, CoreEvent, CoreInner, LaunchArgs, PanelSpec, Result, SessionId,
     SessionKind, SpawnSpec, Warning,
 };
 
 /// An agent CLI grove runs. Only Claude Code and Codex until after M7 (ADR 0007).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Agent {
     Claude,
@@ -262,6 +263,7 @@ pub(crate) struct Agents {
     // Each change to what a restart brings back asks for a save.
     saves: SaveRequests,
     max_live_subagents_per_parent: usize,
+    pub(crate) usage: UsageReadings,
 }
 
 struct Tracked {
@@ -478,6 +480,7 @@ impl Agents {
             last_focused: Mutex::default(),
             saves,
             max_live_subagents_per_parent: cfg.max_live_subagents_per_parent,
+            usage: UsageReadings::default(),
         }
     }
 

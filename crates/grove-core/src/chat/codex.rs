@@ -11,6 +11,7 @@ use super::{
     FromAgent, ModelInfo, Question, QuestionOption, Reply, RequestId, SlashCommand, TurnError,
 };
 use crate::AccountInfo;
+use crate::usage::{ContextReading, ContextWindow, UsageRead, UsageWindow};
 
 /// What the core knows of its connection to one app server. The chat's lock guards it.
 pub(super) struct AppServer {
@@ -32,6 +33,11 @@ pub(super) struct AppServer {
     // What `set_model` chose, for every `turn/start` from then on. None leaves Codex's own.
     model: Option<String>,
     effort: Option<String>,
+    // The account is a ChatGPT login, the only kind whose plan has limits to read.
+    has_plan_limits: bool,
+    // The running turn's latest token count, which goes out when the turn ends. Codex sends
+    // one per model call.
+    token_usage: Option<ContextReading>,
 }
 
 enum Thread {
@@ -74,6 +80,8 @@ impl AppServer {
             turn: None,
             model: None,
             effort: None,
+            has_plan_limits: false,
+            token_usage: None,
         }
     }
 
@@ -234,9 +242,25 @@ impl AppServer {
             "model/list" => vec![FromAgent::Models {
                 models: models(&result["data"]),
             }],
-            "account/read" => vec![FromAgent::Account {
-                account: account(&result["account"]),
-            }],
+            "account/read" => {
+                let logged_in = &result["account"];
+                let mut incoming = vec![FromAgent::Account {
+                    account: account(logged_in),
+                }];
+                match logged_in["type"].as_str() {
+                    Some("chatgpt") => {
+                        self.has_plan_limits = true;
+                        writes.push(self.request("account/rateLimits/read", json!({})));
+                    }
+                    // An API key or a cloud provider's login has no plan, so nothing is read.
+                    Some(_) => incoming.push(FromAgent::Usage(UsageRead::NoPlanLimits)),
+                    None => {}
+                }
+                incoming
+            }
+            "account/rateLimits/read" => {
+                vec![FromAgent::Usage(usage(&result["rateLimits"]))]
+            }
             "thread/start" | "thread/resume" => {
                 let Some(thread) = result["thread"]["id"].as_str() else {
                     return self.failed(method, "the reply has no thread id".into());
@@ -274,6 +298,12 @@ impl AppServer {
             "account/read" | "skills/list" | "turn/interrupt" => return Vec::new(),
             // The picker offers no models, and Codex uses its own.
             "model/list" => return vec![FromAgent::Models { models: Vec::new() }],
+            // The last good reading stays, marked. A read never ends a turn.
+            "account/rateLimits/read" => {
+                return vec![FromAgent::Usage(UsageRead::Failed {
+                    reason: Some(message),
+                })];
+            }
             "initialize" | "thread/start" | "thread/resume" => {
                 self.thread = Thread::Failed;
                 self.queued.clear();
@@ -324,11 +354,21 @@ impl AppServer {
                 Vec::new()
             }
             "item/completed" => tool_result(&params["item"]).into_iter().collect(),
+            "thread/tokenUsage/updated" => {
+                if let Some(reading) = context_reading(&params["tokenUsage"]) {
+                    self.token_usage = Some(reading);
+                }
+                Vec::new()
+            }
             "turn/completed" => {
                 self.turn = None;
                 self.turn_start = None;
                 self.turn_starting = false;
                 writes.extend(self.next_turn());
+                // A turn uses up some of the plan, so the limits are read again after each.
+                if self.has_plan_limits {
+                    writes.push(self.request("account/rateLimits/read", json!({})));
+                }
                 let turn = &params["turn"];
                 let error = (turn["status"] == "failed").then(|| TurnError {
                     kind: error_kind(&turn["error"]["codexErrorInfo"]),
@@ -337,11 +377,13 @@ impl AppServer {
                         .unwrap_or_default()
                         .to_owned(),
                 });
-                vec![FromAgent::TurnEnd {
+                let ended = FromAgent::TurnEnd {
                     interrupted: turn["status"] == "interrupted",
                     error,
                     time_unix_ms: None,
-                }]
+                };
+                let reading = self.token_usage.take().map(FromAgent::Context);
+                [ended].into_iter().chain(reading).collect()
             }
             _ => Vec::new(),
         }
@@ -631,6 +673,61 @@ fn account(account: &Value) -> Option<AccountInfo> {
             api_key_source: Some(kind.to_owned()),
         },
     })
+}
+
+/// A session's tokens and context use, from a `thread/tokenUsage/updated` notification's
+/// `tokenUsage`: the thread's total, and the last model call's tokens against the model's
+/// context window. None when it has no total.
+fn context_reading(token_usage: &Value) -> Option<ContextReading> {
+    let context_window = || {
+        Some(ContextWindow {
+            used_tokens: token_usage["last"]["totalTokens"].as_u64()?,
+            size_tokens: token_usage["modelContextWindow"].as_u64()?,
+        })
+    };
+    Some(ContextReading {
+        session_total_tokens: token_usage["total"]["totalTokens"].as_u64()?,
+        context_window: context_window(),
+    })
+}
+
+/// The plan's limit windows, from an `account/rateLimits/read` reply's `rateLimits`: the
+/// primary window, then the secondary. A reply with neither counts as a failed read.
+fn usage(rate_limits: &Value) -> UsageRead {
+    let windows: Vec<UsageWindow> = [("primary", "Primary"), ("secondary", "Secondary")]
+        .into_iter()
+        .filter_map(|(key, unnamed)| {
+            let window = &rate_limits[key];
+            let percent_used = window["usedPercent"].as_u64()?.min(100);
+            Some(UsageWindow {
+                name: window_name(window["windowDurationMins"].as_u64(), unnamed),
+                percent_used: u8::try_from(percent_used).ok()?,
+                resets_at_unix_ms: unix_ms(&window["resetsAt"]),
+            })
+        })
+        .collect();
+    if windows.is_empty() {
+        UsageRead::Failed {
+            reason: Some("the reply has no limit window".into()),
+        }
+    } else {
+        UsageRead::Windows { windows }
+    }
+}
+
+/// A limit window's name from how long it lasts, such as "5-hour". `unnamed` when Codex does
+/// not say.
+fn window_name(minutes: Option<u64>, unnamed: &str) -> String {
+    const HOUR: u64 = 60;
+    const DAY: u64 = 24 * HOUR;
+    const WEEK: u64 = 7 * DAY;
+    match minutes {
+        None | Some(0) => unnamed.to_owned(),
+        Some(WEEK) => "Weekly".to_owned(),
+        Some(minutes) if minutes % DAY == 0 => format!("{}-day", minutes / DAY),
+        Some(minutes) if minutes % HOUR == 0 => format!("{}-hour", minutes / HOUR),
+        Some(minutes) => format!("{minutes}-minute"),
+    }
 }
 
 /// The models of a `model/list` reply's data. One without a model or a name is left out.

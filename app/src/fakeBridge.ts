@@ -6,6 +6,8 @@ import type {
   AgentStateChanged,
   BatchComment,
   Bridge,
+  ContextReading,
+  ContextReadingChanged,
   DeleteCheck,
   DiffBase,
   DockIcon,
@@ -25,6 +27,7 @@ import type {
   SetupChanged,
   SetupState,
   TextProblem,
+  UsageReadingChanged,
   Warning,
   WarningSent,
   Workspace,
@@ -88,6 +91,10 @@ export interface FakeBridge extends Bridge {
   watcherRetries: string[];
   /** Reports an agent's login, as its chat-mode transport does. A listener that comes later still gets the latest. */
   accountChanged(change: AccountChanged): void;
+  /** Reports an agent's usage reading, as the core does. A listener that comes later still gets the latest. */
+  usageReadingChanged(change: UsageReadingChanged): void;
+  /** Reports a session's context reading, as the core does after a turn. `contextReading` returns the latest. */
+  contextReadingChanged(change: ContextReadingChanged): void;
   /**
    * Adds the messages to a chat-mode session's conversation, as its agent sends them. If a panel
    * subscribed, they go to it as one frame, as the core's batcher sends them. A `Commands` message
@@ -314,6 +321,10 @@ export function fakeBridge(
   const watcherRetries: string[] = [];
   const accounts = new Map<Agent, AccountChanged>();
   const accountListeners = new Set<(change: AccountChanged) => void>();
+  const usageReadings = new Map<Agent, UsageReadingChanged>();
+  const usageReadingListeners = new Set<(change: UsageReadingChanged) => void>();
+  const contextReadings = new Map<SessionId, ContextReading>();
+  const contextReadingListeners = new Set<(change: ContextReadingChanged) => void>();
   const opened: FakeBridge["opened"] = [];
   const revealed: string[] = [];
   const openedLinks: string[] = [];
@@ -883,6 +894,18 @@ export function fakeBridge(
       accounts.forEach(listener);
       return () => accountListeners.delete(listener);
     },
+    onUsageReading(listener) {
+      usageReadingListeners.add(listener);
+      usageReadings.forEach(listener);
+      return () => usageReadingListeners.delete(listener);
+    },
+    async contextReading(session) {
+      return contextReadings.get(session) ?? null;
+    },
+    onContextReading(listener) {
+      contextReadingListeners.add(listener);
+      return () => contextReadingListeners.delete(listener);
+    },
     async write(session, bytes) {
       check(session);
       writes.push({ session, bytes });
@@ -933,6 +956,14 @@ export function fakeBridge(
     accountChanged(change) {
       accounts.set(change.agent, change);
       accountListeners.forEach((listener) => listener(change));
+    },
+    usageReadingChanged(change) {
+      usageReadings.set(change.agent, change);
+      usageReadingListeners.forEach((listener) => listener(change));
+    },
+    contextReadingChanged(change) {
+      contextReadings.set(change.session, change.reading);
+      contextReadingListeners.forEach((listener) => listener(change));
     },
     messages: (session, ...messages) => addMessages(session, messages.map(withTime)),
     opened,
