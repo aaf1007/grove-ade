@@ -17,7 +17,6 @@ import { type ReactNode, useEffect, useLayoutEffect, useState } from "react";
 import type {
   Agent,
   AgentSessionRecord,
-  AgentState as State,
   AgentStateChanged,
   Bridge,
   DiffBase,
@@ -31,7 +30,7 @@ import type {
 import type { ModelChoice } from "./Picker";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { CHAT_MIN_WIDTH } from "./layout";
-import { AgentState } from "./ui/AgentState";
+import { AgentState, sameState } from "./ui/AgentState";
 import { ChangeBaseDialog } from "./WorktreeDialogs";
 import { IconButton } from "./ui/IconButton";
 import { Menu } from "./ui/Menu";
@@ -444,12 +443,6 @@ function RowContent({ icon: Icon, label, end }: { icon: LucideIcon; label: React
 
 function Chevron() {
   return <ChevronDown aria-hidden="true" className="details-chevron" />;
-}
-
-/** Whether two states are the same, NeedsInput of the same kind. */
-function sameState(a: State, b: State): boolean {
-  const kind = (state: State) => (state.state === "NeedsInput" ? state.kind : null);
-  return a.state === b.state && kind(a) === kind(b);
 }
 
 /** A time as "14:05" today, and as "Nov 19, 14:05" on another day. */
