@@ -1174,9 +1174,19 @@ svg {
   justify-self: start;
 }
 
+/* It gives way once the conversation has no height left, and then only its approval card shrinks. */
 .composer-wrap {
-  flex: none;
+  display: flex;
+  min-height: 0;
+  flex: 0 1 auto;
+  flex-direction: column;
   padding: var(--space-8) var(--space-48) var(--space-10);
+}
+
+/* As in block layout: each part keeps its height and fills the lane up to its max-width. */
+.composer-wrap > * {
+  width: 100%;
+  flex: none;
 }
 
 .composer-error {
