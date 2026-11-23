@@ -53,7 +53,7 @@ afterEach(() => {
 async function started(): Promise<FakeBridge> {
   const bridge = fakeBridge({ [worktree]: [{ path: worktree, branch: "feat-13", isMain: true }] });
   await bridge.addRepo(worktree);
-  await bridge.spawnAgent(worktree, "Claude", null);
+  await bridge.spawnAgent(worktree, "Claude");
   return bridge;
 }
 

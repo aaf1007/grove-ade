@@ -112,12 +112,13 @@ pub enum CoreEvent {
         repo: PathBuf,
         by: Option<SessionId>,
     },
-    /// A worktree's workspace changed through `set_workspace`, `undo_workspace`, `spawn_agent`
-    /// placing a new agent session in its panel, `resume_agent_session` showing a panel again,
-    /// or `delete_agent_session` dropping one. `by` is the agent session that changed it, None
-    /// for the user and for the rest.
+    /// The workspace of agent session `session` changed through `set_workspace` or
+    /// `undo_workspace`, or one of its agent panels came or went: a subagent started below it,
+    /// `resume_agent_session` showed a panel again, or a subagent was deleted or its worktree
+    /// removed. `by` is the agent session that changed it, None for the user and for the rest.
+    /// A new session's own workspace sends none: it starts with the session.
     WorkspaceChanged {
-        worktree: PathBuf,
+        session: SessionId,
         by: Option<SessionId>,
     },
     /// A worktree's setup script started or ended.
@@ -206,8 +207,6 @@ mod core_inner {
         pub(crate) worktrees: Arc<Mutex<Vec<WorktreeInfo>>>,
         pub(crate) state_file: Arc<state::StateFile>,
         pub(crate) repo_settings: Arc<Mutex<run::Settings>>,
-        // Each call that changes it saves the state file.
-        pub(crate) workspaces: Arc<Mutex<workspace::Workspaces>>,
         pub(crate) profiles: Arc<profile::Profiles>,
         // Rereads the profiles when their folder changes.
         pub(crate) _profiles_watch: watch::Watch,
@@ -373,7 +372,6 @@ impl Core {
             worktrees,
             state_file: Arc::new(state_file),
             repo_settings,
-            workspaces: Arc::new(Mutex::new(restored.workspaces)),
             profiles,
             _profiles_watch: profiles_watch,
             watches: Arc::new(Mutex::new(watches)),
@@ -399,19 +397,14 @@ impl Core {
             _panel_worker: Some(panel_worker),
             inner,
         };
-        let back = core.restore(restored.sessions);
-        // A panel whose session did not come back goes, so a new session that gets its id never
-        // shows in it.
-        for saved in core.workspaces().values_mut() {
-            let chat = &mut saved.workspace.chat;
-            chat.retain(|panel| panel.session.is_none_or(|s| back.contains(&s)));
-        }
+        core.restore(restored.sessions);
+        core.agents.adopt_panels(restored.subagent_panels);
+        core.agents.drop_panels_of_sessions_not_listed();
         core.runtime.spawn(state::save_when_asked(
             core.saves.clone(),
             core.state_file.clone(),
             core.worktrees.clone(),
             core.repo_settings.clone(),
-            core.workspaces.clone(),
         ));
         // So the state file has what came back.
         core.saves.request();
@@ -505,9 +498,7 @@ impl Drop for CoreInner {
     // gone before the lock is released.
     fn drop(&mut self) {
         // Nothing is left to report a failure to. The last save that worked stays.
-        let _ = self
-            .state_file
-            .close(&self.worktrees, &self.repo_settings, &self.workspaces);
+        let _ = self.state_file.close(&self.worktrees, &self.repo_settings);
         let _ = fs::remove_file(&self.socket);
         panel::kill_left_on_quit(&self.panels, &self.sessions);
     }

@@ -1,29 +1,30 @@
-//! Workspaces: each worktree's agent panels, panel-area tabs and bottom terminal. A worktree
-//! starts from its repo's profile layout, and each change is saved in the state file.
+//! Workspaces: each agent session's agent panels, panel-area tabs and whether its terminal is
+//! open. A session's workspace starts from its project's profile layout and is kept with the
+//! session, so it is saved with it and goes when the session is deleted. A subagent session
+//! shows in the workspace of its top parent, the one the user sees.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{MutexGuard, PoisonError};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::agent::Member;
 use crate::panel_request::Refused;
 use crate::remove::repo_of;
-use crate::{
-    Agent, Core, CoreError, CoreEvent, Layout, PanelKind, Result, SessionId, WorktreeInfo,
-};
+use crate::{Agent, Core, CoreError, CoreEvent, Layout, PanelKind, Result, SessionId};
 
-/// One worktree's layout.
+/// One agent session's layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
-    /// The agent panels in the chat area, in order.
+    /// The agent panels in the chat area, in order: the session's own and those of the subagent
+    /// sessions below it.
     pub chat: Vec<AgentPanel>,
     /// The panel area's tabs, in order.
     pub panels: Vec<PanelKind>,
     /// One of `panels`. None shows no tab.
     pub selected: Option<PanelKind>,
-    /// Whether the terminal panel is open at the bottom of the panel area.
+    /// Whether the terminal panel is open at the bottom of the panel area. The shell in it
+    /// belongs to the session's place, so sessions in one place share it.
     pub terminal: bool,
 }
 
@@ -31,8 +32,7 @@ pub struct Workspace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentPanel {
     pub agent: Agent,
-    /// None until the UI starts its agent session.
-    pub session: Option<SessionId>,
+    pub session: SessionId,
     /// A hidden panel's session keeps running.
     pub shown: bool,
 }
@@ -52,7 +52,7 @@ struct WorkspaceJson {
 #[serde(deny_unknown_fields)]
 struct AgentPanelJson {
     agent: Agent,
-    session: Option<SessionId>,
+    session: SessionId,
     shown: bool,
 }
 
@@ -94,9 +94,7 @@ impl From<WorkspaceJson> for Workspace {
     }
 }
 
-/// The saved workspaces, by worktree. A worktree with none uses its profile layout.
-pub(crate) type Workspaces = HashMap<PathBuf, Saved>;
-
+/// An agent session's workspace, as its record keeps it.
 pub(crate) struct Saved {
     pub(crate) workspace: Workspace,
     // The workspace from before the last change an agent made, until it is undone. Kept in
@@ -114,339 +112,288 @@ impl Saved {
 }
 
 impl Workspace {
-    // `layout` with what it leaves unset from grove's own: one Claude panel, the Files and Diff
-    // tabs and the terminal open. The first tab is selected.
-    fn from_layout(layout: Layout) -> Workspace {
-        let chat = layout.chat.unwrap_or_else(|| vec![Agent::Claude]);
+    /// `layout` with what it leaves unset from grove's own: the Files and Diff tabs and the
+    /// terminal open. The first tab is selected. It has no agent panel: a layout's `chat` only
+    /// names the agent a new session starts with.
+    pub(crate) fn from_layout(layout: Layout) -> Workspace {
         let panels = layout
             .panels
             .unwrap_or_else(|| vec![PanelKind::Files, PanelKind::Diff]);
         Workspace {
-            chat: chat
-                .into_iter()
-                .map(|agent| AgentPanel {
-                    agent,
-                    session: None,
-                    shown: true,
-                })
-                .collect(),
+            chat: Vec::new(),
             selected: panels.first().copied(),
             panels,
             terminal: layout.terminal.unwrap_or(true),
         }
     }
+
+    /// With a shown agent panel for `session` after the last one.
+    pub(crate) fn with_panel(mut self, session: SessionId, agent: Agent) -> Workspace {
+        self.chat.push(AgentPanel {
+            agent,
+            session,
+            shown: true,
+        });
+        self
+    }
+
+    // With a shown panel, after the last one, for each running session of `members` that `now`
+    // has a panel for and this has none.
+    fn with_running_panels_of(mut self, now: &Workspace, members: &[Member]) -> Workspace {
+        for panel in &now.chat {
+            let running = |m: &Member| m.session == panel.session && !m.ended;
+            let kept = self.chat.iter().any(|p| p.session == panel.session);
+            if members.iter().any(running) && !kept {
+                self.chat.push(AgentPanel {
+                    shown: true,
+                    ..panel.clone()
+                });
+            }
+        }
+        self
+    }
+
+    // As `Core::workspace` returns it: only the panels of `members`, each with the agent its
+    // session runs.
+    fn listed(&self, members: &[Member]) -> Workspace {
+        let chat = self.chat.iter().filter_map(|panel| {
+            let member = members.iter().find(|m| m.session == panel.session)?;
+            Some(AgentPanel {
+                agent: member.agent,
+                ..panel.clone()
+            })
+        });
+        Workspace {
+            chat: chat.collect(),
+            ..self.clone()
+        }
+    }
 }
 
 impl Core {
-    /// The workspace of `worktree`: the saved one, or its repo's profile layout with the repo's
-    /// overrides. A panel whose session no longer runs in `worktree` is left out.
-    pub fn workspace(&self, worktree: &Path) -> Result<Workspace> {
-        Ok(self.listed_workspace(worktree)?.0)
+    /// The workspace a new agent session in `worktree` starts from: its project's profile
+    /// layout with the project's overrides, and no agent panel yet. Fails with `BadProfile`
+    /// while the project's profile file is not valid.
+    pub fn starting_workspace(&self, worktree: &Path) -> Result<Workspace> {
+        Ok(Workspace::from_layout(self.starting_layout(worktree)?))
     }
 
-    // `workspace`, and the sessions whose panels it left out.
-    fn listed_workspace(&self, worktree: &Path) -> Result<(Workspace, Vec<SessionId>)> {
-        let layout = self.layout_of(worktree)?;
-        let mut workspace = match self.workspaces().get(worktree) {
-            Some(saved) => saved.workspace.clone(),
-            None => layout,
-        };
-        // Read after the workspace, so a session placed in between is not taken for ended.
-        let running = self.running_in(worktree);
-        let ended: Vec<SessionId> = workspace
-            .chat
-            .iter()
-            .filter_map(|panel| panel.session)
-            .filter(|session| !running.contains(session))
-            .collect();
-        workspace.chat.retain(|panel| is_listed(panel, &ended));
-        Ok((workspace, ended))
+    /// The workspace agent session `session` shows in: its own, or its top parent's when it is
+    /// a subagent. An ended session keeps its workspace. A panel whose session was deleted is
+    /// left out.
+    pub fn workspace(&self, session: SessionId) -> Result<Workspace> {
+        self.agents
+            .with_workspace(session, |_, members, saved| saved.workspace.listed(members))
     }
 
-    /// Refuses an agent panel past the last one of `worktree`, as `workspace` returns them.
-    /// Returns the sessions whose panels it left out, for `place_agent` to count by the same.
-    pub(crate) fn check_agent_panel(
-        &self,
-        worktree: &Path,
-        panel: Option<usize>,
-    ) -> Result<Vec<SessionId>> {
-        let (workspace, ended) = self.listed_workspace(worktree)?;
-        if panel.is_some_and(|at| at >= workspace.chat.len()) {
-            return Err(CoreError::InvalidWorkspace {
-                reason: "its agent panel is past the last one",
-            });
-        }
-        Ok(ended)
-    }
-
-    /// Puts the new agent session `session` in agent panel `panel` of `worktree`, counted as
-    /// `workspace` returned them when `check_agent_panel` left out the panels of `ended`. So the
-    /// index means what it meant then: a session that ended since still counts, and so does a
-    /// panel another start filled since. With no `panel`, or one that is gone or has a session,
-    /// it goes in a new shown panel after the last one. The other panels stay as they are, those
-    /// of ended sessions too. Asks for a save and sends one `WorkspaceChanged` with no `by`.
-    pub(crate) fn place_agent(
-        &self,
-        worktree: &Path,
-        session: SessionId,
-        agent: Agent,
-        panel: Option<usize>,
-        ended: &[SessionId],
-    ) {
-        // Fails only when the worktree was forgotten meanwhile, which ends its sessions.
-        let Ok(layout) = self.layout_of(worktree) else {
-            return;
-        };
-        {
-            // Held across the change, as in `set_workspace`.
-            let tracked = self.tracked();
-            if check_tracked(&tracked, worktree).is_err() {
-                return;
-            }
-            let mut workspaces = self.workspaces();
-            let saved = workspaces
-                .entry(worktree.to_path_buf())
-                .or_insert_with(|| Saved::restored(layout));
-            let chat = &mut saved.workspace.chat;
-            let placed = AgentPanel {
-                agent,
-                session: Some(session),
-                shown: true,
-            };
-            let mut listed = chat.iter_mut().filter(|p| is_listed(p, ended));
-            match panel.and_then(|at| listed.nth(at)) {
-                Some(empty) if empty.session.is_none() => *empty = placed,
-                _ => chat.push(placed),
-            }
-        }
-        self.saves.request();
-        // Having no receivers is fine.
-        let _ = self.events.send(CoreEvent::WorkspaceChanged {
-            worktree: worktree.to_path_buf(),
-            by: None,
-        });
-    }
-
-    /// Shows resumed agent session `session` in an agent panel of `worktree`: the one saved for
-    /// it, which `workspace` left out while it was ended, shown even if it was hidden, or else
-    /// a new shown one after the last. Sends one `WorkspaceChanged` with no `by` either way.
-    pub(crate) fn show_agent_panel(&self, worktree: &Path, session: SessionId, agent: Agent) {
-        let saved = self.workspaces().get_mut(worktree).is_some_and(|saved| {
-            let mut panels = saved.workspace.chat.iter_mut();
-            let panel = panels.find(|panel| panel.session == Some(session));
-            panel.map(|panel| panel.shown = true).is_some()
-        });
-        if !saved {
-            return self.place_agent(worktree, session, agent, None, &[]);
-        }
-        self.saves.request();
-        // Having no receivers is fine.
-        let _ = self.events.send(CoreEvent::WorkspaceChanged {
-            worktree: worktree.to_path_buf(),
-            by: None,
-        });
-    }
-
-    /// Drops the agent panels of `sessions`, which were deleted, from every saved workspace.
-    /// Returns the worktrees that lost one.
-    pub(crate) fn drop_agent_panels(&self, sessions: &[SessionId]) -> Vec<PathBuf> {
-        let mut lost_a_panel = Vec::new();
-        for (worktree, saved) in self.workspaces().iter_mut() {
-            let chat = &mut saved.workspace.chat;
-            let before = chat.len();
-            chat.retain(|panel| panel.session.is_none_or(|s| !sessions.contains(&s)));
-            if chat.len() != before {
-                lost_a_panel.push(worktree.clone());
-            }
-        }
-        lost_a_panel
-    }
-
-    /// Saves `workspace` for `worktree` and sends one `WorkspaceChanged` with `by`. `by` is the
-    /// agent session that changed it, None for the user. Undo restores the workspace from before
-    /// the last change an agent made.
+    /// Saves `workspace` as the one `session` shows in and sends one `WorkspaceChanged` with
+    /// `by`. `by` is the agent session that changed it, None for the user. Undo restores the
+    /// workspace from before the last change an agent made. Refused when the selected tab is
+    /// not one of the tabs, or when an agent panel names a session twice or one that is neither
+    /// the workspace's own session nor a subagent below it. A running session `workspace` has
+    /// no panel for, such as a subagent started since the caller read it, keeps its panel,
+    /// shown after the last one.
     pub async fn set_workspace(
         &self,
-        worktree: &Path,
+        session: SessionId,
         workspace: Workspace,
         by: Option<SessionId>,
     ) -> Result<()> {
-        if workspace
-            .selected
-            .is_some_and(|tab| !workspace.panels.contains(&tab))
-        {
-            return Err(CoreError::InvalidWorkspace {
-                reason: "its selected tab is not one of its tabs",
-            });
-        }
-        let layout = self.layout_of(worktree)?;
-        {
-            // Held across the insert, so a worktree forgotten meanwhile leaves no workspace.
-            let tracked = self.tracked();
-            check_tracked(&tracked, worktree)?;
-            let mut workspaces = self.workspaces();
-            let (before, kept) = match workspaces.remove(worktree) {
-                Some(saved) => (saved.workspace, saved.before_agent_change),
-                None => (layout, None),
-            };
-            let saved = Saved {
-                workspace,
-                // Only the last agent change can be undone.
-                before_agent_change: if by.is_some() { Some(before) } else { kept },
-            };
-            workspaces.insert(worktree.to_path_buf(), saved);
-        }
-        self.changed(worktree, by).await
+        let owner = self
+            .agents
+            .with_workspace(session, |owner, members, saved| {
+                check_workspace(&workspace, members)?;
+                let workspace = workspace.with_running_panels_of(&saved.workspace, members);
+                saved.replace(workspace, by);
+                Ok::<_, CoreError>(owner)
+            })??;
+        self.changed(owner, by).await
     }
 
-    /// Restores the workspace of `worktree` from before the last change an agent made, even if
-    /// the user changed it since, and sends `WorkspaceChanged` with no `by`. It can be undone
-    /// once. A running session the restored workspace has no panel for, such as one placed since,
-    /// keeps one: the panel at its place if that one is empty, or else a new one after the last.
-    pub async fn undo_workspace(&self, worktree: &Path) -> Result<()> {
-        {
-            let tracked = self.tracked();
-            check_tracked(&tracked, worktree)?;
-            let mut workspaces = self.workspaces();
-            let nothing = || CoreError::NothingToUndo(worktree.to_path_buf());
-            let saved = workspaces.get_mut(worktree).ok_or_else(nothing)?;
-            let mut restored = saved.before_agent_change.take().ok_or_else(nothing)?;
-            // Only leaf locks, so taking them here cannot deadlock.
-            let running = self.running_in(worktree);
-            for (at, panel) in saved.workspace.chat.iter().enumerate() {
-                let Some(session) = panel.session.filter(|s| running.contains(s)) else {
-                    continue;
-                };
-                if restored.chat.iter().any(|p| p.session == Some(session)) {
-                    continue;
-                }
-                let kept = AgentPanel {
-                    agent: panel.agent,
-                    session: Some(session),
-                    shown: true,
-                };
-                match restored.chat.get_mut(at) {
-                    Some(empty) if empty.session.is_none() => *empty = kept,
-                    _ => restored.chat.push(kept),
-                }
-            }
-            saved.workspace = restored;
-        }
-        self.changed(worktree, None).await
+    /// Restores the workspace `session` shows in from before the last change an agent made to
+    /// it, even if the user changed it since, and sends `WorkspaceChanged` with no `by`. It can
+    /// be undone once. A running session the restored workspace has no panel for, such as a
+    /// subagent started since, keeps its panel, shown after the last one. A panel whose session
+    /// was deleted since is left out.
+    pub async fn undo_workspace(&self, session: SessionId) -> Result<()> {
+        let owner = self
+            .agents
+            .with_workspace(session, |owner, members, saved| {
+                let nothing = CoreError::NothingToUndo(owner);
+                let mut restored = saved.before_agent_change.take().ok_or(nothing)?;
+                let member =
+                    |panel: &AgentPanel| members.iter().any(|m| m.session == panel.session);
+                restored.chat.retain(member);
+                saved.workspace = restored.with_running_panels_of(&saved.workspace, members);
+                Ok::<_, CoreError>(owner)
+            })??;
+        self.changed(owner, None).await
     }
 
-    async fn changed(&self, worktree: &Path, by: Option<SessionId>) -> Result<()> {
+    async fn changed(&self, owner: SessionId, by: Option<SessionId>) -> Result<()> {
         self.save_state().await?;
-        let _ = self.events.send(CoreEvent::WorkspaceChanged {
-            worktree: worktree.to_path_buf(),
-            by,
-        });
+        // Having no receivers is fine.
+        let _ = self
+            .events
+            .send(CoreEvent::WorkspaceChanged { session: owner, by });
         Ok(())
     }
 
-    /// The workspace of agent session `caller`'s worktree, as grove-mcp gives it.
-    pub(crate) fn agent_workspace(&self, caller: SessionId) -> Result<Value> {
-        let worktree = self.caller_worktree(caller)?;
-        Ok(json!(WorkspaceJson::from(self.workspace(&worktree)?)))
+    /// Shows agent session `session` in an agent panel of the workspace it shows in: the one it
+    /// has there, shown even if it was hidden, or else a new shown one after the last. A new
+    /// subagent gets its panel beside its top parent's this way, and a resumed session its own
+    /// back. Asks for a save and sends one `WorkspaceChanged` with no `by`.
+    pub(crate) fn show_agent_panel(&self, session: SessionId, agent: Agent) {
+        let shown = self.agents.with_workspace(session, |owner, _, saved| {
+            let chat = &mut saved.workspace.chat;
+            match chat.iter_mut().find(|panel| panel.session == session) {
+                Some(panel) => panel.shown = true,
+                None => chat.push(AgentPanel {
+                    agent,
+                    session,
+                    shown: true,
+                }),
+            }
+            owner
+        });
+        // It fails only when the session was deleted meanwhile, and its panel went with it.
+        if let Ok(owner) = shown {
+            self.saves.request();
+            self.workspace_changed(owner);
+        }
     }
 
-    /// Replaces the workspace of agent session `caller`'s worktree with `workspace`, as grove-mcp
+    /// Sends `WorkspaceChanged` with no `by` for the workspace of `owner`.
+    pub(crate) fn workspace_changed(&self, owner: SessionId) {
+        // Having no receivers is fine.
+        let _ = self.events.send(CoreEvent::WorkspaceChanged {
+            session: owner,
+            by: None,
+        });
+    }
+
+    /// The workspace agent session `caller` shows in, as grove-mcp gives it.
+    pub(crate) fn agent_workspace(&self, caller: SessionId) -> Result<Value> {
+        Ok(json!(WorkspaceJson::from(self.workspace(caller)?)))
+    }
+
+    /// Replaces the workspace agent session `caller` shows in with `workspace`, as grove-mcp
     /// sends it, with `caller` as `by`. Refuses one that drops the panel of an agent session
-    /// running there, or names a session that does not run there.
+    /// running in it, or names a session that is not part of it.
     pub(crate) fn set_agent_workspace(
         &self,
         caller: SessionId,
         workspace: Value,
     ) -> std::result::Result<(), Refused> {
-        let worktree = self.caller_worktree(caller)?;
         let workspace: WorkspaceJson =
             serde_json::from_value(workspace).map_err(|e| Refused::BadWorkspace(e.to_string()))?;
         let workspace = Workspace::from(workspace);
-        check_sessions(&self.workspace(&worktree)?, &workspace).map_err(Refused::BadWorkspace)?;
+        let owner = self
+            .agents
+            .with_workspace(caller, |owner, members, saved| {
+                let now = saved.workspace.listed(members);
+                check_sessions(&now, &workspace, members).map_err(Refused::BadWorkspace)?;
+                check_workspace(&workspace, members)?;
+                saved.replace(workspace, Some(caller));
+                Ok::<_, Refused>(owner)
+            })??;
         // The panel request thread is no runtime worker, so it may block on one.
-        self.runtime
-            .block_on(self.set_workspace(&worktree, workspace, Some(caller)))?;
+        self.runtime.block_on(self.changed(owner, Some(caller)))?;
         Ok(())
     }
 
-    // The workspace `worktree` starts with: its repo's profile layout with the repo's overrides.
-    fn layout_of(&self, worktree: &Path) -> Result<Workspace> {
+    // The layout a new agent session in `worktree` starts from: its repo's profile layout with
+    // the repo's overrides. Fails with `BadProfile` while the repo's profile file is not valid,
+    // so no session starts from a layout its profile did not give.
+    pub(crate) fn starting_layout(&self, worktree: &Path) -> Result<Layout> {
         let repo = repo_of(&self.tracked(), worktree)
             .ok_or_else(|| CoreError::UnknownWorktree(worktree.to_path_buf()))?;
-        Ok(Workspace::from_layout(self.settings_of(&repo).layout))
+        Ok(self.valid_settings_of(&repo)?.layout)
     }
 
-    // The sessions whose panels `workspace` lists: those with a process in `worktree`, and its
-    // agent sessions not ended, as `sessions` lists them. An agent session switching mode has
-    // no process for a moment and still counts.
-    fn running_in(&self, worktree: &Path) -> Vec<SessionId> {
-        let mut running = self.sessions.in_worktrees(&[worktree.to_path_buf()]);
-        running.extend(
-            self.agents
-                .running_in(worktree)
-                .into_iter()
-                .map(|(id, _)| id),
-        );
-        running
-    }
-
-    pub(crate) fn workspaces(&self) -> MutexGuard<'_, Workspaces> {
-        self.workspaces
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+    // `starting_layout` for a session that already exists, which a profile that is not valid
+    // must not keep from coming back: such a profile counts as empty.
+    pub(crate) fn layout_of(&self, worktree: &Path) -> Result<Layout> {
+        let repo = repo_of(&self.tracked(), worktree)
+            .ok_or_else(|| CoreError::UnknownWorktree(worktree.to_path_buf()))?;
+        Ok(self.settings_of(&repo).layout)
     }
 }
 
-// Whether `workspace` returns the panel: its session, if any, is not in `ended`.
-fn is_listed(panel: &AgentPanel, ended: &[SessionId]) -> bool {
-    panel.session.is_none_or(|s| !ended.contains(&s))
+impl Saved {
+    // Only the last agent change can be undone.
+    fn replace(&mut self, workspace: Workspace, by: Option<SessionId>) {
+        let before = std::mem::replace(&mut self.workspace, workspace);
+        if by.is_some() {
+            self.before_agent_change = Some(before);
+        }
+    }
 }
 
-// Each agent session `now` lists keeps its panel in `new`, once and with its own agent, and `new`
-// names no other session. Panels with no session come and go freely.
-fn check_sessions(now: &Workspace, new: &Workspace) -> std::result::Result<(), String> {
+// What every saved workspace keeps to: its selected tab is one of its tabs, and each agent panel
+// names one of `members`, once.
+fn check_workspace(workspace: &Workspace, members: &[Member]) -> Result<()> {
+    let invalid = |reason| Err(CoreError::InvalidWorkspace { reason });
+    if workspace
+        .selected
+        .is_some_and(|tab| !workspace.panels.contains(&tab))
+    {
+        return invalid("its selected tab is not one of its tabs");
+    }
+    for (at, panel) in workspace.chat.iter().enumerate() {
+        if !members.iter().any(|m| m.session == panel.session) {
+            return invalid("an agent panel names a session that is not part of it");
+        }
+        if workspace.chat[..at]
+            .iter()
+            .any(|p| p.session == panel.session)
+        {
+            return invalid("two agent panels name the same session");
+        }
+    }
+    Ok(())
+}
+
+// What an agent's change keeps to, said so the agent can fix it: each panel of `new` names one of
+// `members`, once and with its own agent, and each running session `now` lists keeps its panel.
+fn check_sessions(
+    now: &Workspace,
+    new: &Workspace,
+    members: &[Member],
+) -> std::result::Result<(), String> {
     let mut kept = Vec::new();
     for panel in &new.chat {
-        let Some(session) = panel.session else {
-            continue;
-        };
+        let session = panel.session;
         if kept.contains(&session) {
             return Err(format!("it names agent session {session} twice"));
         }
         kept.push(session);
-        match now.chat.iter().find(|p| p.session == Some(session)) {
+        match members.iter().find(|m| m.session == session) {
             None => {
                 return Err(format!(
-                    "agent session {session} is not running in this worktree"
+                    "agent session {session} is not this workspace's session or a subagent of it"
                 ));
             }
-            Some(running) if running.agent != panel.agent => {
+            Some(member) if member.agent != panel.agent => {
                 return Err(format!(
                     "agent session {session} runs {}, not {}",
-                    running.agent.name(),
+                    member.agent.name(),
                     panel.agent.name()
                 ));
             }
             Some(_) => {}
         }
     }
+    let running = |session: &SessionId| members.iter().any(|m| m.session == *session && !m.ended);
     let dropped = now
         .chat
         .iter()
-        .filter_map(|p| p.session)
-        .find(|s| !kept.contains(s));
+        .map(|p| p.session)
+        .find(|s| running(s) && !kept.contains(s));
     match dropped {
         Some(session) => Err(format!(
             "it drops the panel of agent session {session}, which is running"
         )),
         None => Ok(()),
-    }
-}
-
-fn check_tracked(tracked: &[WorktreeInfo], worktree: &Path) -> Result<()> {
-    if tracked.iter().any(|w| w.path == worktree) {
-        Ok(())
-    } else {
-        Err(CoreError::UnknownWorktree(worktree.to_path_buf()))
     }
 }

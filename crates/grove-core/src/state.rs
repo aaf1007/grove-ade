@@ -11,7 +11,6 @@ use tokio::sync::Notify;
 use crate::comments::Kept;
 use crate::restore::Relaunch;
 use crate::run::Settings;
-use crate::workspace::{self, Workspaces};
 use crate::{
     Agent, AgentPanel, CommentId, CommentState, Core, CoreError, PanelKind, ProfileSettings,
     RepoSettings, Result, ReviewComment, RunSession, SessionId, Workspace, WorktreeInfo,
@@ -24,11 +23,13 @@ use crate::{
 // panel. Version 6 added the parent of each agent session that is a subagent. Version 7 added
 // each agent session's model and effort. Version 8 added the worktree each worktree nests
 // under. Version 9 keeps each agent session until the user deletes it, with its title, its
-// created time and whether its process had ended.
-const VERSION: u32 = 9;
+// created time and whether its process had ended. Version 10 moved the workspace from each
+// worktree to each of its agent sessions.
+const VERSION: u32 = 10;
 
 /// `state.json` in the home folder: the repos and worktrees grove tracks, each repo's settings,
-/// and each worktree's workspace, sessions and review comments, kept across restarts.
+/// and each worktree's sessions and review comments, kept across restarts. An agent session's
+/// workspace is kept with it.
 pub(crate) struct StateFile {
     home: PathBuf,
     path: PathBuf,
@@ -41,7 +42,7 @@ pub(crate) struct StateFile {
     current: Box<dyn Fn() -> SessionsAndComments + Send + Sync>,
 }
 
-/// What a save reads from the running core besides worktrees, settings and workspaces.
+/// What a save reads from the running core besides worktrees and settings.
 pub(crate) struct SessionsAndComments {
     pub(crate) sessions: HashMap<PathBuf, Vec<Relaunch>>,
     pub(crate) comments: Kept,
@@ -52,8 +53,11 @@ pub(crate) struct Restored {
     /// Repo by repo, main worktree first.
     pub(crate) worktrees: Vec<WorktreeInfo>,
     pub(crate) settings: Settings,
-    pub(crate) workspaces: Workspaces,
+    /// Each agent session with its workspace.
     pub(crate) sessions: HashMap<PathBuf, Vec<Relaunch>>,
+    /// The agent panel of each subagent session in a file from before version 10, where it
+    /// showed in its worktree's workspace. It belongs in the workspace of its top parent.
+    pub(crate) subagent_panels: Vec<AgentPanel>,
     pub(crate) comments: Kept,
 }
 
@@ -100,8 +104,9 @@ struct SavedWorktree {
     // An older file has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nested_under: Option<PathBuf>,
-    // None uses the profile layout, as for every worktree in an older file.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Only a file from versions 4 to 9 has one. Its tabs, selected tab and terminal move to each
+    // agent session of the worktree.
+    #[serde(default, skip_serializing)]
     workspace: Option<SavedWorkspace>,
     // An older file has neither.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -110,19 +115,21 @@ struct SavedWorktree {
     comments: Vec<SavedComment>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct SavedWorkspace {
+/// An agent session's workspace as the state file keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SavedWorkspace {
     chat: Vec<SavedAgentPanel>,
     panels: Vec<PanelKind>,
     selected: Option<PanelKind>,
     terminal: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SavedAgentPanel {
     agent: Agent,
     shown: bool,
-    // A restart keeps session ids. None in an older file.
+    // A restart keeps session ids. None only in a file from before version 10, for a panel with
+    // no session yet. Such a panel is not kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session: Option<SessionId>,
 }
@@ -171,8 +178,8 @@ pub(crate) fn read(home: &Path) -> Result<Restored> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Restored {
             worktrees: Vec::new(),
             settings: Settings::new(),
-            workspaces: Workspaces::new(),
             sessions: HashMap::new(),
+            subagent_panels: Vec::new(),
             comments: Kept::new(),
         }),
         Err(e) => Err(CoreError::io("read the state file", &path)(e)),
@@ -195,8 +202,8 @@ impl StateFile {
         }
     }
 
-    /// Saves the whole of `worktrees`, `settings` and `workspaces`, and the sessions and review
-    /// comments. It writes the temp file, flushes it to disk and renames it over the state file,
+    /// Saves the whole of `worktrees` and `settings`, and the sessions and review comments. It
+    /// writes the temp file, flushes it to disk and renames it over the state file,
     /// so the state file always holds one whole save. Then it flushes the home folder, so the
     /// rename itself survives a power cut. It blocks while it writes. Once the state file is
     /// closed it writes nothing.
@@ -204,9 +211,8 @@ impl StateFile {
         &self,
         worktrees: &Mutex<Vec<WorktreeInfo>>,
         settings: &Mutex<Settings>,
-        workspaces: &Mutex<Workspaces>,
     ) -> Result<()> {
-        self.save_then(false, worktrees, settings, workspaces)
+        self.save_then(false, worktrees, settings)
     }
 
     /// Saves for the last time, then closes the state file, so the sessions a stopping core ends
@@ -215,9 +221,8 @@ impl StateFile {
         &self,
         worktrees: &Mutex<Vec<WorktreeInfo>>,
         settings: &Mutex<Settings>,
-        workspaces: &Mutex<Workspaces>,
     ) -> Result<()> {
-        self.save_then(true, worktrees, settings, workspaces)
+        self.save_then(true, worktrees, settings)
     }
 
     fn save_then(
@@ -225,7 +230,6 @@ impl StateFile {
         close: bool,
         worktrees: &Mutex<Vec<WorktreeInfo>>,
         settings: &Mutex<Settings>,
-        workspaces: &Mutex<Workspaces>,
     ) -> Result<()> {
         let mut closed = self.closed.lock().unwrap_or_else(PoisonError::into_inner);
         if *closed {
@@ -235,17 +239,11 @@ impl StateFile {
         // Read under the save lock, so the last save carries every change made before it. Each
         // of these takes its own locks and releases them before the next.
         let current = (self.current)();
-        // The worktrees lock comes first and the workspaces lock last, as everywhere that holds
-        // more than one.
+        // The worktrees lock comes first, as everywhere that holds more than one.
         let saved = {
             let worktrees = worktrees.lock().unwrap_or_else(PoisonError::into_inner);
             let settings = settings.lock().unwrap_or_else(PoisonError::into_inner);
-            Saved::of(
-                &worktrees,
-                &settings,
-                &workspaces.lock().unwrap_or_else(PoisonError::into_inner),
-                current,
-            )
+            Saved::of(&worktrees, &settings, current)
         };
         let json = serde_json::to_vec_pretty(&saved)
             .map_err(|e| CoreError::io("encode the state for", &self.path)(e.into()))?;
@@ -270,34 +268,26 @@ pub(crate) async fn save_when_asked(
     state: Arc<StateFile>,
     worktrees: Arc<Mutex<Vec<WorktreeInfo>>>,
     settings: Arc<Mutex<Settings>>,
-    workspaces: Arc<Mutex<Workspaces>>,
 ) {
     loop {
         saves.0.notified().await;
-        let (state, worktrees, settings, workspaces) = (
-            state.clone(),
-            worktrees.clone(),
-            settings.clone(),
-            workspaces.clone(),
-        );
+        let (state, worktrees, settings) = (state.clone(), worktrees.clone(), settings.clone());
         // Fails only if the save panics.
-        let _ = tokio::task::spawn_blocking(move || state.save(&worktrees, &settings, &workspaces))
-            .await;
+        let _ = tokio::task::spawn_blocking(move || state.save(&worktrees, &settings)).await;
     }
 }
 
 impl Core {
     /// Saves the state file off the tokio workers.
     pub(crate) async fn save_state(&self) -> Result<()> {
-        let (state, tracked, settings, workspaces) = (
+        let (state, tracked, settings) = (
             self.state_file.clone(),
             self.worktrees.clone(),
             self.repo_settings.clone(),
-            self.workspaces.clone(),
         );
         let path = state.path.clone();
         self.runtime
-            .spawn_blocking(move || state.save(&tracked, &settings, &workspaces))
+            .spawn_blocking(move || state.save(&tracked, &settings))
             .await
             // This fails only if the task panics.
             .map_err(|e| CoreError::io("save the state to", &path)(io::Error::other(e)))?
@@ -321,8 +311,8 @@ fn parse(path: &Path, bytes: &[u8]) -> Result<Restored> {
     let mut restored = Restored {
         worktrees: Vec::new(),
         settings: Settings::new(),
-        workspaces: Workspaces::new(),
         sessions: HashMap::new(),
+        subagent_panels: Vec::new(),
         comments: Kept::new(),
     };
     for repo in saved.repos {
@@ -338,15 +328,13 @@ impl Saved {
     fn of(
         tracked: &[WorktreeInfo],
         settings: &Settings,
-        workspaces: &Workspaces,
         mut current: SessionsAndComments,
     ) -> Saved {
         let mut repos: Vec<SavedRepo> = Vec::new();
         for worktree in tracked {
-            let workspace = workspaces.get(&worktree.path).map(|w| &w.workspace);
             let sessions = current.sessions.remove(&worktree.path).unwrap_or_default();
             let comments = current.comments.remove(&worktree.path).unwrap_or_default();
-            let saved = SavedWorktree::of(worktree, workspace, sessions, comments);
+            let saved = SavedWorktree::of(worktree, sessions, comments);
             match repos.last_mut() {
                 Some(repo) if !worktree.is_main => repo.linked_worktrees.push(saved),
                 _ => {
@@ -370,8 +358,8 @@ impl Saved {
 }
 
 impl SavedRepo {
-    // Adds the repo's worktrees, main worktree first, and their workspaces, sessions and comments
-    // to `restored`, and returns the repo's settings.
+    // Adds the repo's worktrees, main worktree first, and their sessions and comments to
+    // `restored`, and returns the repo's settings.
     fn restore(self, restored: &mut Restored) -> RepoSettings {
         let mut overrides = self.overrides;
         let runs = self.run_sessions.into_iter().map(Into::into).collect();
@@ -383,11 +371,13 @@ impl SavedRepo {
             .chain(self.linked_worktrees.into_iter().map(|w| (w, false)));
         for (mut worktree, is_main) in worktrees {
             let path = worktree.path.clone();
-            if let Some(saved) = worktree.workspace.take() {
-                let workspace = workspace::Saved::restored(saved.into());
-                restored.workspaces.insert(path.clone(), workspace);
+            let mut sessions = std::mem::take(&mut worktree.sessions);
+            let of_worktree = worktree.workspace.take();
+            let of_subagents = subagent_panels(of_worktree.as_ref(), &sessions);
+            restored.subagent_panels.extend(of_subagents);
+            if let Some(of_worktree) = of_worktree {
+                of_worktree.move_to_sessions(&mut sessions);
             }
-            let sessions = std::mem::take(&mut worktree.sessions);
             if !sessions.is_empty() {
                 restored.sessions.insert(path.clone(), sessions);
             }
@@ -422,7 +412,6 @@ impl From<SavedRunSession> for RunSession {
 impl SavedWorktree {
     fn of(
         worktree: &WorktreeInfo,
-        workspace: Option<&Workspace>,
         sessions: Vec<Relaunch>,
         comments: Vec<(ReviewComment, Option<PathBuf>)>,
     ) -> SavedWorktree {
@@ -433,7 +422,7 @@ impl SavedWorktree {
             issue_link: worktree.issue_link.clone(),
             base_branch: worktree.base_branch.clone(),
             nested_under: worktree.nested_under.clone(),
-            workspace: workspace.map(SavedWorkspace::of),
+            workspace: None,
             sessions,
             comments: comments.into_iter().map(Into::into).collect(),
         }
@@ -453,7 +442,64 @@ impl SavedWorktree {
 }
 
 impl SavedWorkspace {
-    fn of(workspace: &Workspace) -> SavedWorkspace {
+    // How a file from before version 10 comes into this one: each agent session in `sessions`,
+    // ended or not, gets a copy of this worktree workspace's tabs, selected tab and terminal,
+    // with one shown agent panel of its own. Its own panel is shown even if it was hidden: a
+    // workspace with no panel shown would show nothing of the session it belongs to. A workspace
+    // of a worktree with no agent session is dropped this way, and so is a panel with no session.
+    // `subagent_panels` keeps the panels of subagent sessions.
+    fn move_to_sessions(self, sessions: &mut [Relaunch]) {
+        for relaunch in sessions {
+            let Relaunch::Agent(record) = relaunch else {
+                continue;
+            };
+            record.workspace.get_or_insert_with(|| SavedWorkspace {
+                chat: vec![SavedAgentPanel {
+                    agent: record.agent,
+                    shown: true,
+                    session: Some(record.id),
+                }],
+                panels: self.panels.clone(),
+                selected: self.selected,
+                terminal: self.terminal,
+            });
+        }
+    }
+}
+
+// The agent panel of each subagent session in `sessions` that a file from before version 10
+// saved: first those `of_worktree` showed, in its order and shown or hidden as there, then
+// those it had no panel for, hidden. A version 10 file saves every session with a workspace, so
+// it gives none.
+fn subagent_panels(of_worktree: Option<&SavedWorkspace>, sessions: &[Relaunch]) -> Vec<AgentPanel> {
+    let chat = of_worktree.map_or(&[][..], |workspace| &workspace.chat);
+    let mut panels: Vec<(usize, AgentPanel)> = sessions
+        .iter()
+        .filter_map(|relaunch| match relaunch {
+            Relaunch::Agent(record) if record.parent.is_some() && record.workspace.is_none() => {
+                Some(record)
+            }
+            _ => None,
+        })
+        .map(|record| {
+            let at = chat
+                .iter()
+                .position(|panel| panel.session == Some(record.id));
+            let panel = AgentPanel {
+                agent: record.agent,
+                session: record.id,
+                shown: at.is_some_and(|at| chat[at].shown),
+            };
+            (at.unwrap_or(chat.len()), panel)
+        })
+        .collect();
+    // A stable sort, so those with no panel keep the order of `sessions`.
+    panels.sort_by_key(|(at, _)| *at);
+    panels.into_iter().map(|(_, panel)| panel).collect()
+}
+
+impl From<&Workspace> for SavedWorkspace {
+    fn from(workspace: &Workspace) -> Self {
         SavedWorkspace {
             chat: workspace
                 .chat
@@ -461,7 +507,7 @@ impl SavedWorkspace {
                 .map(|panel| SavedAgentPanel {
                     agent: panel.agent,
                     shown: panel.shown,
-                    session: panel.session,
+                    session: Some(panel.session),
                 })
                 .collect(),
             panels: workspace.panels.clone(),
@@ -477,10 +523,12 @@ impl From<SavedWorkspace> for Workspace {
             chat: saved
                 .chat
                 .into_iter()
-                .map(|panel| AgentPanel {
-                    agent: panel.agent,
-                    session: panel.session,
-                    shown: panel.shown,
+                .filter_map(|panel| {
+                    Some(AgentPanel {
+                        agent: panel.agent,
+                        session: panel.session?,
+                        shown: panel.shown,
+                    })
                 })
                 .collect(),
             panels: saved.panels,

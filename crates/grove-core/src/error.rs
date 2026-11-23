@@ -203,8 +203,8 @@ pub enum CoreError {
     InvalidProfileName(String),
     #[error("the workspace is not valid: {reason}")]
     InvalidWorkspace { reason: &'static str },
-    #[error("no agent change to the workspace of {} is left to undo", .0.display())]
-    NothingToUndo(PathBuf),
+    #[error("no agent change to the workspace of agent session {0} is left to undo")]
+    NothingToUndo(SessionId),
     #[error("the repo at {} uses no profile", .0.display())]
     NoRepoProfile(PathBuf),
 }

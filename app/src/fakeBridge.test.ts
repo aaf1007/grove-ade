@@ -10,7 +10,7 @@ test("the fake tells session-list listeners when an agent session starts, gets i
   const changed = vi.fn();
   bridge.onAgentSessionsChanged(changed);
 
-  const session = await bridge.spawnAgent(main, "Claude", null);
+  const session = await bridge.spawnAgent(main, "Claude");
   expect(changed).toHaveBeenCalledTimes(1);
   await bridge.sendMessage(session, "Fix the login bug");
   expect(changed).toHaveBeenCalledTimes(2);

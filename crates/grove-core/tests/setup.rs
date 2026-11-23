@@ -77,12 +77,11 @@ fn agent_log(dir: &Path) -> PathBuf {
 
 fn claude_in_terminal_mode() -> AgentSpec {
     AgentSpec {
-        agent: Agent::Claude,
+        agent: Some(Agent::Claude),
         mode: Mode::Terminal,
         prompt: None,
         cols: 80,
         rows: 24,
-        panel: None,
     }
 }
 
