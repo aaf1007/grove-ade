@@ -22,6 +22,7 @@ mod snapshot;
 mod state;
 mod terminal;
 mod usage;
+mod warnings;
 mod watch;
 mod workspace;
 mod worktree;
@@ -64,6 +65,7 @@ pub use session::{OutputFrame, OutputSink, SessionId, SpawnSpec};
 pub use setup::{Setup, SetupState};
 pub use snapshot::Snapshot;
 pub use usage::{ContextReading, ContextWindow, PlanLimits, UsageReading, UsageWindow};
+pub use warnings::ActiveWarning;
 pub use workspace::{AgentPanel, Workspace};
 pub use worktree::{AddedWorktree, NewWorktree, WorktreeInfo};
 
@@ -122,6 +124,8 @@ pub enum CoreEvent {
     Setup { worktree: PathBuf, setup: Setup },
     /// Something failed that the core worked around. The UI shows it to the user.
     Warning(Warning),
+    /// The warning with this id no longer applies.
+    WarningCleared { id: usize },
     /// Who is logged in to an agent, as its chat-mode transport reported it. None when nobody
     /// is.
     Account {
@@ -232,6 +236,7 @@ mod core_inner {
         // Held by `spawn_shell` from its look for a running shell until a new one is listed, so two
         // calls at once open one shell.
         pub(crate) opening_shell: Mutex<()>,
+        pub(crate) warnings: Arc<warnings::Warnings>,
         pub(crate) events: broadcast::Sender<CoreEvent>,
         pub(crate) runtime: Runtime,
         // Rust drops fields in order. The lock stays last so it is released after the rest.
@@ -287,12 +292,13 @@ impl Core {
         let (session_env, warning) =
             shell_env::for_sessions(cfg.login_shell.as_deref(), cfg.login_shell_timeout);
         let (events, rx) = broadcast::channel(EVENT_CAPACITY);
+        let warnings = Arc::new(warnings::Warnings::new(events.clone()));
         if let Some(warning) = warning {
             // `rx` already exists, so it gets this.
-            let _ = events.send(CoreEvent::Warning(warning));
+            warnings.raise(warning);
         }
         let saves = state::SaveRequests::default();
-        let agents = Arc::new(agent::Agents::new(&cfg, saves.clone()));
+        let agents = Arc::new(agent::Agents::new(&cfg, saves.clone(), warnings.clone()));
         let profiles = Arc::new(profile::Profiles::open(&cfg.home.join("profiles"))?);
         // Watched before the first read, so no change is missed between the two.
         let profiles_watch = watch::Watch::folder(profiles.dir(), {
@@ -323,7 +329,7 @@ impl Core {
         let (watches, failed) = watch_all(&restored.worktrees, &events);
         for warning in failed {
             // As with the login shell's warning, `rx` gets it.
-            let _ = events.send(CoreEvent::Warning(warning));
+            warnings.raise(warning);
         }
         let worktrees = Arc::new(Mutex::new(restored.worktrees));
         let comments = Arc::new(comments::Comments::new(
@@ -383,6 +389,7 @@ impl Core {
             panels: Arc::default(),
             saves,
             opening_shell: Mutex::default(),
+            warnings,
             events,
             runtime,
             _lock: lock,
@@ -439,10 +446,9 @@ impl Core {
             }
             self.watches().extend(watches);
             tracked.extend(found);
-        }
-        // Once tracked, so a retry finds the worktree.
-        for warning in failed {
-            let _ = self.events.send(CoreEvent::Warning(warning));
+            for warning in failed {
+                self.warnings.raise(warning);
+            }
         }
         self.save_state().await
     }

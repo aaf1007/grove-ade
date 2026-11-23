@@ -1793,6 +1793,12 @@ fn a_session_that_cannot_relaunch_is_left_out_with_a_warning() {
         Ok(CoreEvent::Warning(warning)) => Some(warning),
         _ => None,
     });
+    assert!(
+        s.core()
+            .warnings()
+            .iter()
+            .any(|entry| entry.warning == warning)
+    );
     let Warning::SessionNotRestored { worktree, reason } = warning else {
         panic!("{warning:?}");
     };

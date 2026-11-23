@@ -22,6 +22,10 @@ const LOW: usize = 4 * 1024;
 const READ: usize = 64 * 1024;
 // Long enough that a session still being read sends a frame.
 const QUIET: Duration = Duration::from_millis(300);
+// How long a session read at full speed may take to print 3 MB and exit. Alone it takes under a
+// second, and 14 s while a build keeps every core busy. A paused session never exits, so this
+// only sets how long a failure takes.
+const PRINTED_3_MB: Duration = Duration::from_secs(60);
 
 // macOS caps a socket path at 104 bytes, and its default temp folder is long.
 // Tests keep the home folder, and the socket in it, under /tmp.
@@ -298,15 +302,38 @@ fn eventually(done: impl Fn() -> bool) -> bool {
     true
 }
 
-fn next_event(events: &mut broadcast::Receiver<CoreEvent>) -> CoreEvent {
-    let deadline = Instant::now() + TIMEOUT;
+// Waits for `session` to exit and returns its exit code. It skips other events, since the
+// worktree's watcher can send `DiffChanged` at any time.
+fn wait_exit(events: &mut broadcast::Receiver<CoreEvent>, session: SessionId) -> Option<i32> {
+    wait_exit_within(events, session, TIMEOUT)
+}
+
+fn wait_exit_within(
+    events: &mut broadcast::Receiver<CoreEvent>,
+    session: SessionId,
+    within: Duration,
+) -> Option<i32> {
+    let deadline = Instant::now() + within;
     loop {
         match events.try_recv() {
-            Ok(event) => return event,
+            Ok(CoreEvent::SessionExited { session: s, code }) if s == session => return code,
+            Ok(_) => {}
             Err(TryRecvError::Empty) => {
-                assert!(Instant::now() < deadline, "no core event");
+                assert!(Instant::now() < deadline, "the session never exited");
                 thread::sleep(Duration::from_millis(10));
             }
+            Err(e) => panic!("{e}"),
+        }
+    }
+}
+
+// Whether `session` has exited by now. It skips other events.
+fn has_exited(events: &mut broadcast::Receiver<CoreEvent>, session: SessionId) -> bool {
+    loop {
+        match events.try_recv() {
+            Ok(CoreEvent::SessionExited { session: s, .. }) if s == session => return true,
+            Ok(_) => {}
+            Err(TryRecvError::Empty) => return false,
             Err(e) => panic!("{e}"),
         }
     }
@@ -362,11 +389,7 @@ fn a_shell_that_exits_by_itself_sends_its_exit_code_while_a_job_still_holds_the_
 
     core.write(session, b"exit 3\r").unwrap();
 
-    let event = next_event(&mut events);
-    assert!(
-        matches!(event, CoreEvent::SessionExited { session: s, code: Some(3) } if s == session),
-        "{event:?}"
-    );
+    assert_eq!(wait_exit(&mut events, session), Some(3));
     assert!(job.is_running());
 }
 
@@ -381,11 +404,7 @@ fn kill_ends_the_shell_and_its_background_job() {
 
     core.kill(session).unwrap();
 
-    let event = next_event(&mut events);
-    assert!(
-        matches!(event, CoreEvent::SessionExited { session: s, code: None } if s == session),
-        "{event:?}"
-    );
+    assert_eq!(wait_exit(&mut events, session), None);
     assert!(eventually(|| !job.is_running()));
 }
 
@@ -574,7 +593,7 @@ fn with_no_acks_a_fast_printer_blocks_at_the_high_watermark_until_acks_take_it_b
     let paused = output.total();
     assert!(paused < HIGH + READ, "{paused} bytes unacked");
     // Unread, it would have printed all of it and ended.
-    assert!(matches!(events.try_recv(), Err(TryRecvError::Empty)));
+    assert!(!has_exited(&mut events, session));
 
     core.ack(session, paused - LOW);
     output.wait_quiet(QUIET);
@@ -593,11 +612,7 @@ fn with_no_acks_a_fast_printer_blocks_at_the_high_watermark_until_acks_take_it_b
         acked = o.total();
         o.total() >= 2 + 300_000
     });
-    let event = next_event(&mut events);
-    assert!(
-        matches!(event, CoreEvent::SessionExited { session: s, code: Some(0) } if s == session),
-        "{event:?}"
-    );
+    assert_eq!(wait_exit(&mut events, session), Some(0));
     let printed = [b"\r\n".as_slice(), &b"y\n".repeat(150_000)].concat();
     // Too long to print.
     assert!(
@@ -624,10 +639,9 @@ fn a_detached_session_is_read_at_full_speed() {
     output.wait_closed();
     assert!(output.total() < HIGH + READ, "{} bytes", output.total());
     // With no acks it printed far more than the high watermark.
-    let event = next_event(&mut events);
-    assert!(
-        matches!(event, CoreEvent::SessionExited { session: s, code: Some(0) } if s == session),
-        "{event:?}"
+    assert_eq!(
+        wait_exit_within(&mut events, session, PRINTED_3_MB),
+        Some(0)
     );
 }
 
@@ -646,10 +660,9 @@ fn a_paused_session_whose_panel_goes_without_a_detach_is_read_at_full_speed() {
 
     drop(output);
 
-    let event = next_event(&mut events);
-    assert!(
-        matches!(event, CoreEvent::SessionExited { session: s, code: Some(0) } if s == session),
-        "{event:?}"
+    assert_eq!(
+        wait_exit_within(&mut events, session, PRINTED_3_MB),
+        Some(0)
     );
 }
 
@@ -671,11 +684,7 @@ fn a_job_still_printing_after_its_session_exits_stays_paced() {
 
     core.write(session, b"\r").unwrap();
 
-    let event = next_event(&mut events);
-    assert!(
-        matches!(event, CoreEvent::SessionExited { session: s, code: Some(0) } if s == session),
-        "{event:?}"
-    );
+    assert_eq!(wait_exit(&mut events, session), Some(0));
     output.wait_until(|o| o.total() >= HIGH);
     output.wait_quiet(QUIET);
     assert!(output.total() < HIGH + READ, "{} bytes", output.total());
@@ -695,11 +704,7 @@ fn killing_a_paused_session_ends_it_and_reports_its_exit() {
 
     core.kill(session).unwrap();
 
-    let event = next_event(&mut events);
-    assert!(
-        matches!(event, CoreEvent::SessionExited { session: s, code: None } if s == session),
-        "{event:?}"
-    );
+    assert_eq!(wait_exit(&mut events, session), None);
     // Acks still reach it, so its reader reads to the end and stops, which drops the sink.
     output.ack_until(&core, session, Output::closed);
     // Its output has ended, so these do nothing.

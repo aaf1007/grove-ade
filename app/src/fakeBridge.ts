@@ -314,8 +314,9 @@ export function fakeBridge(
   const tracked: Worktree[] = [];
   const listeners = new Set<(worktree: string) => void>();
   const stateListeners = new Set<(change: AgentStateChanged) => void>();
-  const warnings: WarningSent[] = [];
-  const warningListeners = new Set<(warning: WarningSent) => void>();
+  let warnings: WarningSent[] = [];
+  let nextWarningId = 0;
+  const warningListeners = new Set<(warnings: WarningSent[]) => void>();
   const watcherFailures = new Map<string, string>();
   const watcherRetries: string[] = [];
   const accounts = new Map<Agent, AccountChanged>();
@@ -619,7 +620,13 @@ export function fakeBridge(
   }
 
   // As the core: removing a worktree ends its sessions first.
+  function clearWatcherWarning(worktree: string) {
+    warnings = warnings.filter((w) => w.kind !== "WatcherNotStarted" || w.worktree !== worktree);
+    warningListeners.forEach((listener) => listener([...warnings]));
+  }
+
   function untrack(worktree: string) {
+    clearWatcherWarning(worktree);
     for (const session of [...running]) {
       const own = [...spawned, ...spawnedRuns].some((s) => s.session === session && s.worktree === worktree);
       if (own || agentWorktrees.get(session) === worktree) running.delete(session);
@@ -742,9 +749,9 @@ export function fakeBridge(
       sessionsListeners.add(listener);
       return () => sessionsListeners.delete(listener);
     },
-    onWarning(listener) {
+    onWarnings(listener) {
       warningListeners.add(listener);
-      warnings.forEach(listener);
+      listener([...warnings]);
       return () => warningListeners.delete(listener);
     },
     async retryWatcher(worktree) {
@@ -752,6 +759,7 @@ export function fakeBridge(
       checkTracked(worktree);
       const reason = watcherFailures.get(worktree);
       if (reason !== undefined) throw reason;
+      clearWatcherWarning(worktree);
     },
     // `Done` becomes `Idle` and keeps its source, as in the core.
     async focus(session) {
@@ -936,9 +944,9 @@ export function fakeBridge(
     },
     agentStateChanged: changeState,
     warn(warning) {
-      const sent = { ...warning, id: warnings.length };
+      const sent = { ...warning, id: nextWarningId++ };
       warnings.push(sent);
-      warningListeners.forEach((listener) => listener(sent));
+      warningListeners.forEach((listener) => listener([...warnings]));
     },
     failWatcherRetry(worktree, reason) {
       if (reason === null) watcherFailures.delete(worktree);
