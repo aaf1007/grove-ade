@@ -1,4 +1,4 @@
-import { Columns2, NotebookText, PanelLeft } from "lucide-react";
+import { NotebookText, PanelLeft } from "lucide-react";
 import type { Ref } from "react";
 
 import type { AgentStateChanged } from "./bridge";
@@ -10,8 +10,8 @@ import { IconButton } from "./ui/IconButton";
 
 /**
  * The bar over the chat lane: the selected worktree's repo and name, and the switch that opens the
- * details card. With one agent panel shown, it also names that panel's agent and state, and holds
- * its Split, since the panel then draws no header. While the panel area is closed, the terminal and panel area switches follow it.
+ * details card. With one agent panel shown, it also names that panel's agent and state, since the
+ * panel then draws no header. While the panel area is closed, the terminal and panel area switches follow it.
  * It sits in the window's top row, so its empty part drags the window. While the sidebar is
  * collapsed it starts after the window controls and holds the sidebar switch, which the sidebar's
  * own top row holds otherwise.
@@ -29,7 +29,6 @@ export function TitleBar({
   detailsOpen,
   onToggleDetails,
   soleAgent,
-  onSplit,
 }: {
   /** The selected worktree's repo name. null while none is selected. */
   repo: string | null;
@@ -37,7 +36,7 @@ export function TitleBar({
   worktree: string | null;
   sidebarOpen: boolean;
   panelsOpen: boolean;
-  /** Whether the selected worktree's terminal is open. null until a worktree's workspace is known. */
+  /** Whether the terminal is open in the workspace shown. null until one is known. */
   terminalOpen: boolean | null;
   onShowSidebar(): void;
   /** The sidebar switch, while the sidebar is collapsed. */
@@ -52,8 +51,6 @@ export function TitleBar({
   onToggleDetails(): void;
   /** The agent and state of the one agent panel shown. null while none or several are. */
   soleAgent: { name: string; state: AgentStateChanged | undefined } | null;
-  /** Starts another agent session beside the one agent panel shown. No button without it. */
-  onSplit?: () => void;
 }) {
   return (
     <header className="titlebar" data-tauri-drag-region="deep">
@@ -87,14 +84,6 @@ export function TitleBar({
         </div>
       )}
       <div className="switches">
-        {onSplit && (
-          <IconButton
-            icon={Columns2}
-            label="Split"
-            title="Start another agent session beside this one"
-            onClick={onSplit}
-          />
-        )}
         <IconButton
           icon={NotebookText}
           label="Details"

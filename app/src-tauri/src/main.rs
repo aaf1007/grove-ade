@@ -861,8 +861,14 @@ impl From<TurnOutcome> for Outcome {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind")]
 enum AgentChange {
-    Workspace { worktree: PathBuf, by: String },
-    Profiles { by: String },
+    /// `session` is the agent session the workspace belongs to.
+    Workspace {
+        session: String,
+        by: String,
+    },
+    Profiles {
+        by: String,
+    },
 }
 
 impl AgentChange {
@@ -870,10 +876,10 @@ impl AgentChange {
     fn of(event: &CoreEvent) -> Option<Self> {
         match event {
             CoreEvent::WorkspaceChanged {
-                worktree,
+                session,
                 by: Some(by),
             } => Some(Self::Workspace {
-                worktree: worktree.clone(),
+                session: session.to_string(),
                 by: by.to_string(),
             }),
             CoreEvent::ProfilesChanged { by: Some(by) } => {
@@ -1097,11 +1103,11 @@ impl From<PanelKind> for grove_core::PanelKind {
 #[derive(Serialize, Deserialize)]
 struct AgentPanel {
     agent: Agent,
-    session: Option<String>,
+    session: String,
     shown: bool,
 }
 
-/// One worktree's layout. Mirrors `Workspace` in `app/src/bridge.ts`.
+/// One agent session's layout. Mirrors `Workspace` in `app/src/bridge.ts`.
 #[derive(Serialize, Deserialize)]
 struct Workspace {
     chat: Vec<AgentPanel>,
@@ -1119,7 +1125,7 @@ impl Workspace {
                 .into_iter()
                 .map(|panel| AgentPanel {
                     agent: panel.agent.into(),
-                    session: panel.session.map(|id| remember(sessions, id)),
+                    session: remember(sessions, panel.session),
                     shown: panel.shown,
                 })
                 .collect(),
@@ -1131,22 +1137,13 @@ impl Workspace {
 
     /// Fails when a panel names a session grove never gave the UI.
     fn into_core(self, sessions: &Sessions) -> Result<grove_core::Workspace, String> {
-        let known = lock(sessions);
         let chat = self
             .chat
             .into_iter()
             .map(|panel| {
-                let session = match panel.session {
-                    Some(id) => Some(
-                        *known
-                            .get(&id)
-                            .ok_or_else(|| format!("grove has no session {id}"))?,
-                    ),
-                    None => None,
-                };
                 Ok(grove_core::AgentPanel {
                     agent: panel.agent.into(),
-                    session,
+                    session: known_session(sessions, &panel.session)?,
                     shown: panel.shown,
                 })
             })
@@ -1160,16 +1157,33 @@ impl Workspace {
     }
 }
 
+/// The workspace agent session `session` shows in: its own, or its top parent's.
 #[tauri::command]
 fn workspace(
     grove: State<'_, Grove>,
     sessions: State<'_, Sessions>,
-    worktree: PathBuf,
+    session: String,
 ) -> Result<Workspace, String> {
+    let session = known_session(&sessions, &session)?;
     // Only quitting holds the write lock, so this never waits.
     let core = grove.0.try_read().map_err(|_| QUITTING)?;
     let core = core.as_ref().ok_or(QUITTING)?;
-    let workspace = core.workspace(&worktree).map_err(|e| e.to_string())?;
+    let workspace = core.workspace(session).map_err(|e| e.to_string())?;
+    Ok(Workspace::from_core(workspace, &sessions))
+}
+
+/// The workspace a new agent session in `worktree` starts from, with no agent panel yet.
+#[tauri::command]
+fn starting_workspace(
+    grove: State<'_, Grove>,
+    sessions: State<'_, Sessions>,
+    worktree: PathBuf,
+) -> Result<Workspace, String> {
+    let core = grove.0.try_read().map_err(|_| QUITTING)?;
+    let core = core.as_ref().ok_or(QUITTING)?;
+    let workspace = core
+        .starting_workspace(&worktree)
+        .map_err(|e| e.to_string())?;
     Ok(Workspace::from_core(workspace, &sessions))
 }
 
@@ -1177,13 +1191,14 @@ fn workspace(
 async fn set_workspace(
     grove: State<'_, Grove>,
     sessions: State<'_, Sessions>,
-    worktree: PathBuf,
+    session: String,
     workspace: Workspace,
 ) -> Result<(), String> {
+    let session = known_session(&sessions, &session)?;
     let workspace = workspace.into_core(&sessions)?;
     let core = grove.0.read().await;
     let core = core.as_ref().ok_or(QUITTING)?;
-    core.set_workspace(&worktree, workspace, None)
+    core.set_workspace(session, workspace, None)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1191,10 +1206,15 @@ async fn set_workspace(
 // The agent change notice (#4).
 
 #[tauri::command]
-async fn undo_workspace(grove: State<'_, Grove>, worktree: PathBuf) -> Result<(), String> {
+async fn undo_workspace(
+    grove: State<'_, Grove>,
+    sessions: State<'_, Sessions>,
+    session: String,
+) -> Result<(), String> {
+    let session = known_session(&sessions, &session)?;
     let core = grove.0.read().await;
     let core = core.as_ref().ok_or(QUITTING)?;
-    core.undo_workspace(&worktree)
+    core.undo_workspace(session)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1202,11 +1222,13 @@ async fn undo_workspace(grove: State<'_, Grove>, worktree: PathBuf) -> Result<()
 #[tauri::command]
 async fn save_workspace_to_profile(
     grove: State<'_, Grove>,
-    worktree: PathBuf,
+    sessions: State<'_, Sessions>,
+    session: String,
 ) -> Result<(), String> {
+    let session = known_session(&sessions, &session)?;
     let core = grove.0.read().await;
     let core = core.as_ref().ok_or(QUITTING)?;
-    core.save_workspace_to_profile(&worktree)
+    core.save_workspace_to_profile(session)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1586,13 +1608,12 @@ async fn spawn_agent_after_setup(
     sessions: State<'_, Sessions>,
     quitting: State<'_, Quitting>,
     worktree: PathBuf,
-    agent: Agent,
-    panel: Option<usize>,
+    agent: Option<Agent>,
 ) -> Result<String, String> {
     let core = grove.0.read().await;
     let core = core.as_ref().ok_or(QUITTING)?;
     let after_setup = async {
-        core.spawn_agent_after_setup(&worktree, agent_spec(agent, panel))
+        core.spawn_agent_after_setup(&worktree, agent_spec(agent))
             .await
             .map_err(|e| with_causes(&e))
     };
@@ -1872,28 +1893,26 @@ fn spawn_agent(
     grove: State<'_, Grove>,
     sessions: State<'_, Sessions>,
     worktree: PathBuf,
-    agent: Agent,
-    panel: Option<usize>,
+    agent: Option<Agent>,
 ) -> Result<String, String> {
     let core = grove.0.try_read().map_err(|_| QUITTING)?;
     let core = core.as_ref().ok_or(QUITTING)?;
     let session = core
-        .spawn_agent(&worktree, agent_spec(agent, panel))
+        .spawn_agent(&worktree, agent_spec(agent))
         .map_err(|e| with_causes(&e))?;
     Ok(remember(&sessions, session))
 }
 
 // The user types the first prompt into the agent panel's composer. A switch to terminal mode
 // starts the agent's TUI at this size, as a shell starts, until its panel has measured itself.
-// It goes in agent panel `panel` of the worktree's workspace, or a new one after the last.
-fn agent_spec(agent: Agent, panel: Option<usize>) -> AgentSpec {
+// With no `agent`, the core picks the one the worktree's profile starts with.
+fn agent_spec(agent: Option<Agent>) -> AgentSpec {
     AgentSpec {
-        agent: agent.into(),
+        agent: agent.map(Into::into),
         mode: grove_core::Mode::Chat,
         prompt: None,
         cols: 80,
         rows: 24,
-        panel,
     }
 }
 
@@ -2232,6 +2251,14 @@ fn report_account(app: &tauri::AppHandle, change: AccountChanged) {
     let _ = app.emit("account", change);
 }
 
+/// The session the UI knows as `id`.
+fn known_session(sessions: &Sessions, id: &str) -> Result<SessionId, String> {
+    lock(sessions)
+        .get(id)
+        .copied()
+        .ok_or_else(|| format!("grove has no session {id}"))
+}
+
 /// Keeps a new session under the id the UI will know it by, and returns that id.
 fn remember(sessions: &Sessions, session: SessionId) -> String {
     let id = session.to_string();
@@ -2481,8 +2508,8 @@ fn main() -> anyhow::Result<()> {
                             if let Some(change) = AgentChange::of(&event) {
                                 let _ = app.emit("agent-change", change);
                             }
-                            if let CoreEvent::WorkspaceChanged { worktree, .. } = event {
-                                let _ = app.emit("workspace-changed", worktree);
+                            if let CoreEvent::WorkspaceChanged { session, .. } = event {
+                                let _ = app.emit("workspace-changed", session.to_string());
                             }
                         }
                         Ok(_) => {}
@@ -2540,6 +2567,7 @@ fn main() -> anyhow::Result<()> {
             resume_agent_session,
             // Workspaces (#122).
             workspace,
+            starting_workspace,
             set_workspace,
             undo_workspace,
             save_workspace_to_profile,
@@ -2670,11 +2698,11 @@ mod tests {
 
     #[test]
     fn only_a_change_an_agent_made_reaches_the_ui_as_an_agent_change() {
+        let by: SessionId = serde_json::from_str("7").unwrap();
         let workspace = |by| CoreEvent::WorkspaceChanged {
-            worktree: "/code/wt".into(),
+            session: serde_json::from_str("3").unwrap(),
             by,
         };
-        let by: SessionId = serde_json::from_str("7").unwrap();
 
         let changes = [
             workspace(Some(by)),
@@ -2688,7 +2716,7 @@ mod tests {
 
         assert_eq!(
             serde_json::to_string(&changes).unwrap(),
-            r#"[{"kind":"Workspace","worktree":"/code/wt","by":"7"},{"kind":"Profiles","by":"7"}]"#
+            r#"[{"kind":"Workspace","session":"3","by":"7"},{"kind":"Profiles","by":"7"}]"#
         );
     }
 
@@ -3036,7 +3064,7 @@ mod tests {
         let core = grove_core::Workspace {
             chat: vec![grove_core::AgentPanel {
                 agent: grove_core::Agent::Codex,
-                session: None,
+                session: serde_json::from_str("4").unwrap(),
                 shown: false,
             }],
             panels: vec![grove_core::PanelKind::Files, grove_core::PanelKind::Logs],
@@ -3048,7 +3076,7 @@ mod tests {
 
         assert_eq!(
             sent,
-            r#"{"chat":[{"agent":"Codex","session":null,"shown":false}],"panels":["Files","Logs"],"selected":"Logs","terminal":true}"#
+            r#"{"chat":[{"agent":"Codex","session":"4","shown":false}],"panels":["Files","Logs"],"selected":"Logs","terminal":true}"#
         );
         let back: Workspace = serde_json::from_str(&sent).unwrap();
         assert_eq!(back.into_core(&sessions), Ok(core));

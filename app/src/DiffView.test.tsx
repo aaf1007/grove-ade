@@ -749,7 +749,7 @@ async function reviewable() {
   await bridge.addComment(worktree, { path: "src/lib.rs", startLine: 1, endLine: 1, body: "first" });
   await bridge.addComment(worktree, { path: "src/lib.rs", startLine: 2, endLine: 3, body: "second" });
   for (const agent of ["Claude", "Codex", "Claude", "Claude", "Claude"] as const) {
-    await bridge.spawnAgent(worktree, agent, null);
+    await bridge.spawnAgent(worktree, agent);
   }
   await bridge.setMode("2", "Terminal");
   await bridge.setMode("4", "Terminal");

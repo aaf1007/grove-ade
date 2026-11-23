@@ -217,7 +217,7 @@ L=$(wc -l < <run>/evidence/session-0.log)
 | `forget_repo` | `path` | ends the sessions of a repo and stops tracking it, with the disk left alone |
 | `worktrees` | | the tracked worktrees |
 | `create_worktree` | `repo`, `branch` | a new worktree on a new branch, prints its path |
-| `spawn_agent` | `worktree`, `agent=claude\|codex`, `mode=chat\|terminal`, optional `prompt` | starts an agent session on the fake, prints its id |
+| `spawn_agent` | `worktree`, `mode=chat\|terminal`, optional `agent=claude\|codex` (without it, the first agent the profile's layout names), optional `prompt` | starts an agent session on the fake, with a workspace of its own, prints its id |
 | `spawn_shell` | `worktree` | a shell session |
 | `follow` | `session:=N` | logs a session the core restored after `restart` to `session-<id>.log` |
 | `send` | `session:=N`, `text` | a chat-mode message |
@@ -228,8 +228,9 @@ L=$(wc -l < <run>/evidence/session-0.log)
 | `write` | `session:=N`, `text` | bytes to a PTY, such as `text=$'\r'` for Enter |
 | `kill` | `session:=N` | ends a session |
 | `diff` | `worktree`, `base=head\|merge_base` | the structured diff, lines as `+`, `-` or space then text |
-| `workspace` | `worktree` | the worktree's layout |
-| `undo_workspace` | `worktree` | undoes the last layout change |
+| `workspace` | `session:=N` | the workspace the agent session shows in: its own, or its top parent's for a subagent |
+| `starting_workspace` | `worktree` | the layout a new agent session in the worktree starts from |
+| `undo_workspace` | `session:=N` | undoes the last change an agent made to that workspace |
 | `add_comment` | `worktree`, `path` (relative), `start_line:=N`, `end_line:=N`, `body` | a review comment |
 | `comments` | `worktree` | the open review comments and their state |
 | `send_review_batch` | `worktree`, optional `session:=N` | sends the open comments as one message |
