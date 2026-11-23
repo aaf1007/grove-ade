@@ -236,10 +236,15 @@ impl Core {
     }
 
     // Kills every session in `worktrees` and waits until their `SessionExited` is sent, so every
-    // receiver has it before the worktree goes. Fails if they have not exited after EXIT_WAIT.
+    // receiver has it before the worktree goes. Then it waits until every agent session there
+    // has ended: the core applies a process exit to its agent session after `SessionExited`,
+    // and a record dropped in between would never get its last state. Fails if any of this
+    // is not done after EXIT_WAIT.
     async fn end_sessions(&self, worktrees: Vec<PathBuf>) -> Result<()> {
         // Subscribed before listing, so no exit is missed between the two.
         let exits = self.events.subscribe();
+        // Asked before any is killed, and it covers one whose process has already exited.
+        let agents_ended = self.agents.session_ends_in(&worktrees);
         let left: HashSet<SessionId> = self.sessions.in_worktrees(&worktrees).into_iter().collect();
         for &session in &left {
             // It fails only when the session already exited. Its event still comes.
@@ -249,7 +254,17 @@ impl Core {
         // The caller's runtime may have no timer, so wait on the core's.
         let waited = self
             .runtime
-            .spawn(wait_for_exits(exits, left, running, EXIT_WAIT))
+            .spawn(async move {
+                let deadline = tokio::time::Instant::now() + EXIT_WAIT;
+                let all_ended = async {
+                    for ended in agents_ended {
+                        // Closed means its record is gone, which leaves nothing to end.
+                        let _ = ended.await;
+                    }
+                };
+                wait_for_exits(exits, left, running, EXIT_WAIT).await
+                    && tokio::time::timeout_at(deadline, all_ended).await.is_ok()
+            })
             .await;
         match waited {
             Ok(true) => Ok(()),
