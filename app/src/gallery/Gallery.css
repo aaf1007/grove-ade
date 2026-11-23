@@ -64,6 +64,18 @@ body {
   min-width: 0;
 }
 
+/* A details card on its own, in the column it has at the chat area's right edge. */
+.gallery-details {
+  --details-card-width: 320px;
+
+  position: relative;
+  width: var(--details-card-width);
+  height: 520px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
 .gallery-chat-lane {
   max-width: var(--chat-lane);
 }
