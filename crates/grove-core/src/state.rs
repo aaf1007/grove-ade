@@ -12,8 +12,9 @@ use crate::comments::Kept;
 use crate::restore::Relaunch;
 use crate::run::Settings;
 use crate::{
-    Agent, AgentPanel, CommentId, CommentState, Core, CoreError, PanelKind, ProfileSettings,
-    RepoSettings, Result, ReviewComment, RunSession, SessionId, Workspace, WorktreeInfo,
+    Agent, AgentPanel, CommentId, CommentState, Core, CoreError, DiffBase, PanelKind,
+    ProfileSettings, RepoSettings, Result, ReviewComment, RunSession, SessionId, Workspace,
+    WorktreeInfo,
 };
 
 // The schema version this grove writes. It reads this one and every older one. Version 2 added
@@ -24,8 +25,8 @@ use crate::{
 // each agent session's model and effort. Version 8 added the worktree each worktree nests
 // under. Version 9 keeps each agent session until the user deletes it, with its title, its
 // created time and whether its process had ended. Version 10 moved the workspace from each
-// worktree to each of its agent sessions.
-const VERSION: u32 = 10;
+// worktree to each of its agent sessions. Version 11 added each workspace's diff base.
+const VERSION: u32 = 11;
 
 /// `state.json` in the home folder: the repos and worktrees grove tracks, each repo's settings,
 /// and each worktree's sessions and review comments, kept across restarts. An agent session's
@@ -122,6 +123,9 @@ pub(crate) struct SavedWorkspace {
     panels: Vec<PanelKind>,
     selected: Option<PanelKind>,
     terminal: bool,
+    // A file from before version 11 has none. Its Diff panel opened on `Head`.
+    #[serde(default)]
+    diff_base: DiffBase,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -462,6 +466,7 @@ impl SavedWorkspace {
                 panels: self.panels.clone(),
                 selected: self.selected,
                 terminal: self.terminal,
+                diff_base: self.diff_base,
             });
         }
     }
@@ -513,6 +518,7 @@ impl From<&Workspace> for SavedWorkspace {
             panels: workspace.panels.clone(),
             selected: workspace.selected,
             terminal: workspace.terminal,
+            diff_base: workspace.diff_base,
         }
     }
 }
@@ -534,6 +540,7 @@ impl From<SavedWorkspace> for Workspace {
             panels: saved.panels,
             selected: saved.selected,
             terminal: saved.terminal,
+            diff_base: saved.diff_base,
         }
     }
 }
