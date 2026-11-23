@@ -353,7 +353,7 @@ button.tool:hover {
 }
 
 .approval-show-input {
-  margin: var(--space-6) 0 0 calc(-1 * var(--space-8));
+  margin-top: var(--space-6);
 }
 
 .approval-actions {
