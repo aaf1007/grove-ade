@@ -855,7 +855,7 @@ describe("the usage reading", () => {
     const usage = vi
       .fn<() => Promise<unknown>>()
       .mockReturnValueOnce(firstRead)
-      .mockResolvedValueOnce(planUsage);
+      .mockResolvedValue(planUsage);
     const s = startWithUsage(usage);
     await playTurn(s);
     await vi.waitFor(() => expect(usageLines(s.out)).toEqual([planWindows]));
@@ -863,8 +863,19 @@ describe("the usage reading", () => {
     failTheFirstRead(new Error("request timed out"));
     await playTurn(s);
 
-    await vi.waitFor(() => expect(usage).toHaveBeenCalledTimes(3));
-    expect(usageLines(s.out)).toEqual([planWindows]);
+    await vi.waitFor(() => expect(usageLines(s.out)).toEqual([planWindows, planWindows]));
+  });
+
+  it("is unsupported when the call returns no promise, and no turn fails for it", async () => {
+    const usage = vi.fn(() => undefined);
+    const s = startWithUsage(usage);
+    await vi.waitFor(() => expect(usageLines(s.out)).toEqual([{ type: "usage", reading: "unsupported" }]));
+
+    await playTurn(s);
+    await playTurn(s);
+
+    expect(usage).toHaveBeenCalledTimes(1);
+    expect(usageLines(s.out)).toHaveLength(1);
   });
 
   it("never holds up a turn while a read has no answer", async () => {

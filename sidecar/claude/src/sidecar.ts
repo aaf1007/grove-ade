@@ -239,7 +239,9 @@ export async function run(launch: Launch, deps: Deps): Promise<void> {
       write({ type: "usage", ...reading });
     };
     if (typeof read !== "function") return line({ reading: "unsupported" });
-    void (read.call(q, { skipBehaviors: true }) as Promise<unknown>).then(
+    // The call is experimental, so its answer is not trusted to be a promise: a plain value
+    // goes the same way as a promise's, and a call that throws counts as a failed read.
+    void new Promise((resolve) => resolve(read.call(q, { skipBehaviors: true }))).then(
       (response) => line(usageLine(response)),
       (error: unknown) => {
         logError(error);
