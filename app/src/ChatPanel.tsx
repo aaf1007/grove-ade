@@ -8,6 +8,7 @@ import {
   useCallback,
   useEffect,
   useEffectEvent,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -33,6 +34,7 @@ import { AgentMarkdown } from "./AgentMarkdown";
 import "./ChatPanel.css";
 import { takeCommands, useCommandMenu } from "./CommandMenu";
 import { AgentMark, type ModelChoice, Picker, useModelChoice } from "./Picker";
+import { type PanelShortcut, pressedShortcut } from "./shortcuts";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { TerminalPanel } from "./TerminalPanel";
 import { DeclinedCall, relative, type ToolCall, ToolCalls } from "./ToolCalls";
@@ -158,6 +160,8 @@ export function ChatPanel({
     />
   );
   const reportMode = useEffectEvent((mode: Mode) => onMode?.(mode));
+  // None in terminal mode, where the keys of the turn and the composer belong to the agent's TUI.
+  const chat = useRef<ChatHandle>(null);
 
   useEffect(() => {
     if (modeSwitch.mode !== null) reportMode(modeSwitch.mode);
@@ -191,6 +195,18 @@ export function ChatPanel({
       () => setModeSwitch(({ switches }) => ({ mode, switches: switches + 1, pending: null, error: null })),
       (e: unknown) => setModeSwitch((current) => ({ ...current, pending: null, error: String(e) })),
     );
+  }
+
+  // Each says whether it took the key.
+  const shortcutActions: Record<PanelShortcut["id"], () => boolean> = {
+    stopTurn: () => chat.current?.stopTurn() ?? false,
+  };
+
+  // A held key repeats, and acts once.
+  function onShortcutKey(event: KeyboardEvent) {
+    if (event.repeat) return;
+    const pressed = pressedShortcut(event.nativeEvent, "agentPanel");
+    if (pressed && shortcutActions[pressed.id]()) event.preventDefault();
   }
 
   const strip = (
@@ -229,6 +245,7 @@ export function ChatPanel({
       tabIndex={-1}
       onFocus={onFocus}
       onBlur={onBlur}
+      onKeyDown={onShortcutKey}
     >
       {showHeader && (
         <div className="pane-head">
@@ -260,6 +277,7 @@ export function ChatPanel({
       )}
       {modeSwitch.mode === "Chat" && (
         <ChatView
+          ref={chat}
           notice={notice}
           strip={strip}
           key={modeSwitch.switches}
@@ -551,11 +569,18 @@ const RESUMED = { type: "Resumed" } as const;
 /** What the message list holds: the agent session's messages, and where the panel resumed them. */
 type ChatMessage = AgentMessage | typeof RESUMED;
 
+/** What the panel's shortcuts ask of the conversation. Each says whether it did it. */
+interface ChatHandle {
+  /** Interrupts the turn, as the stop button does. Does nothing while the button does not show. */
+  stopTurn(): boolean;
+}
+
 /**
  * The conversation of a chat-mode agent session and the composer with the agent and model picker.
  * It follows the conversation while `shown`, and gets the whole of it again each time it is shown.
  */
 function ChatView({
+  ref,
   notice,
   strip,
   bridge,
@@ -577,6 +602,7 @@ function ChatView({
   switchBlocked,
   onSwitchToTerminal,
 }: {
+  ref: Ref<ChatHandle>;
   /** Goes right above the composer. */
   notice: ReactNode;
   /** Goes right under the composer. */
@@ -820,6 +846,13 @@ function ChatView({
   function interrupt() {
     bridge.interrupt(session).catch(() => {});
   }
+
+  useImperativeHandle(ref, () => ({
+    stopTurn() {
+      if (working) interrupt();
+      return working;
+    },
+  }));
 
   // A refused answer means the request has ended.
   function answer(request: string, reply: Reply) {

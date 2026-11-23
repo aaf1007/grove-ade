@@ -126,12 +126,17 @@ export function Picker({
     const outside = (event: MouseEvent) => {
       if (!root.current?.contains(event.target as Node)) setOpen(false);
     };
-    const escape = (event: KeyboardEvent) => event.key === "Escape" && setOpen(false);
+    // In the capture phase, and taken, so this Escape closes the popover and nothing behind it.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setOpen(false);
+    };
     document.addEventListener("mousedown", outside);
-    document.addEventListener("keydown", escape);
+    document.addEventListener("keydown", escape, true);
     return () => {
       document.removeEventListener("mousedown", outside);
-      document.removeEventListener("keydown", escape);
+      document.removeEventListener("keydown", escape, true);
     };
   }, [open]);
 

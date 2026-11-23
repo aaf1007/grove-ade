@@ -34,6 +34,7 @@ test("a hint writes the keys as macOS shows them", () => {
   expect(keyHint("Meta+N")).toBe("⌘N");
   expect(keyHint("Meta+/")).toBe("⌘/");
   expect(keyHint("Shift+Meta+K")).toBe("⇧⌘K");
+  expect(keyHint("Escape")).toBe("Esc");
 });
 
 test("keys match only their own key with exactly their modifiers", () => {

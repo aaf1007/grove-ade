@@ -4,7 +4,9 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import type { Agent, AgentStateChanged, Question, Reply } from "./bridge";
 import { ChatPanel } from "./ChatPanel";
+import { Dialog } from "./Dialog";
 import { fakeBridge, type FakeBridge, type FakeChange, type FakeDiffs, type FakeMessage } from "./fakeBridge";
+import { shortcut, type ShortcutId } from "./shortcuts";
 
 // TerminalPanel.test.tsx covers the terminal itself. The stub says which session it shows.
 vi.mock("./TerminalPanel", () => ({
@@ -2226,4 +2228,107 @@ test("an unanswered notice stays through a switch to terminal mode and back", as
 
   await act(async () => fireEvent.click(within(notice()!).getByRole("button", { name: "Undo" })));
   expect(bridge.undone).toEqual([worktree]);
+});
+
+// Presses a shortcut by the keys the list gives it, with focus on `target`. Says whether grove
+// took the key.
+function press(id: ShortcutId, target: Element, more: KeyboardEventInit = {}) {
+  const keys = shortcut(id).keys.split("+");
+  let taken = false;
+  act(() => {
+    taken = !fireEvent.keyDown(target, {
+      key: keys.at(-1),
+      metaKey: keys.includes("Meta"),
+      shiftKey: keys.includes("Shift"),
+      ...more,
+    });
+  });
+  return taken;
+}
+
+test("Esc during a turn sends one interrupt, as the stop button does", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+
+  expect(press("stopTurn", composer())).toBe(true);
+  // A held key repeats. The turn is still stopped once.
+  press("stopTurn", composer(), { repeat: true });
+
+  expect(bridge.interrupted).toEqual(["0"]);
+});
+
+test.each<AgentStateChanged>([
+  working("Idle"),
+  working("Done"),
+  working("Failed"),
+  { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" },
+])("Esc stops nothing while the stop button does not show", async (state) => {
+  const bridge = await started();
+  await shownPanel(bridge, { state });
+
+  expect(press("stopTurn", composer())).toBe(false);
+
+  expect(bridge.interrupted).toEqual([]);
+});
+
+test("Esc closes the open picker first, and stops the turn only on the next press", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+  openPicker();
+
+  press("stopTurn", composer());
+
+  expect(screen.queryByRole("dialog", { name: "Agent and model" })).toBeNull();
+  expect(bridge.interrupted).toEqual([]);
+
+  press("stopTurn", composer());
+
+  expect(bridge.interrupted).toEqual(["0"]);
+});
+
+test("Esc closes the open command menu first, and stops the turn only on the next press", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+  act(() =>
+    bridge.messages("0", {
+      type: "Commands",
+      commands: [{ name: "init", description: "", argumentHint: "", invocation: "/init" }],
+    }),
+  );
+  nextFrame();
+  fireEvent.change(composer(), { target: { value: "/" } });
+  expect(screen.getByRole("listbox", { name: "Commands" })).toBeTruthy();
+
+  press("stopTurn", composer());
+
+  expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull();
+  expect(bridge.interrupted).toEqual([]);
+
+  press("stopTurn", composer());
+
+  expect(bridge.interrupted).toEqual(["0"]);
+});
+
+test("Esc stops no turn while a dialog is open", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+  render(
+    <Dialog label="Remove worktree" onSubmit={() => {}} onCancel={() => {}}>
+      <button type="submit">Remove</button>
+    </Dialog>,
+  );
+
+  expect(press("stopTurn", composer())).toBe(false);
+
+  expect(bridge.interrupted).toEqual([]);
+});
+
+test("Esc in terminal mode stays with the agent's TUI, and grove stops nothing", async () => {
+  const bridge = await started();
+  await bridge.setMode("0", "Terminal");
+  await shownPanel(bridge, { state: { session: "0", state: "Working", source: "Hook" } });
+
+  expect(press("stopTurn", terminal()!)).toBe(false);
+
+  expect(bridge.interrupted).toEqual([]);
 });
