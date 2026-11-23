@@ -401,6 +401,198 @@ test("Cancel in Delete session deletes nothing, and a failed delete says why", a
   expect(session).toBe("0");
 });
 
+// The worktree actions on a session row's menu (#103).
+
+// Opens the session row's menu and gives it.
+function openSessionMenu(row: HTMLElement) {
+  fireEvent.click(within(sessionItem(row)).getByRole("button", { name: /^Actions for / }));
+  return screen.getByRole("menu");
+}
+
+// Picks `item` in the session row's menu and gives the dialog it opens.
+async function pickInSessionMenu(row: HTMLElement, item: string) {
+  fireEvent.click(within(openSessionMenu(row)).getByRole("menuitem", { name: item }));
+  return await screen.findByRole("dialog", { name: item });
+}
+
+test("a session row in a worktree offers its worktree's actions under Delete session, in a group named for the worktree", async () => {
+  const { bridge } = await oneSession();
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+
+  const menu = openSessionMenu(sessionRows()[0]);
+
+  const items = within(menu).getAllByRole("menuitem");
+  expect(items.map((item) => item.textContent)).toEqual([
+    "Delete session",
+    "Change base branch",
+    "Forget worktree",
+    "Delete worktree",
+  ]);
+  const group = within(menu).getByRole("group", { name: "Worktree feat-35-tauri-sidebar" });
+  expect(items.map((item) => group.contains(item))).toEqual([false, true, true, true]);
+  expect(group.textContent).toContain("Worktree feat-35-tauri-sidebar");
+
+  // The arrows reach the group's items, and wrap past its last one.
+  expect(document.activeElement).toBe(items[0]);
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+  expect(document.activeElement).toBe(items[1]);
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+  expect(document.activeElement).toBe(items[3]);
+});
+
+test("a session in the local checkout offers only Delete session", async () => {
+  const bridge = fakeBridge({ "/code/grove": groveRepo });
+  await bridge.addRepo("/code/grove");
+  await bridge.spawnAgent("/code/grove", "Claude");
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+
+  const menu = openSessionMenu(sessionRows()[0]);
+
+  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Delete session"]);
+  expect(within(menu).queryByRole("group")).toBeNull();
+});
+
+test("Change base branch on a session row saves its worktree's base branch", async () => {
+  const { bridge } = await oneSession();
+  const setBaseBranch = vi.spyOn(bridge, "setBaseBranch");
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+
+  const dialog = await pickInSessionMenu(sessionRows()[0], "Change base branch");
+  expect(dialog.textContent).toContain("The whole-branch diff of feat-35-tauri-sidebar compares against it.");
+  expect(within(dialog).getByLabelText<HTMLInputElement>("Base branch").value).toBe("main");
+  fireEvent.change(within(dialog).getByLabelText("Base branch"), { target: { value: "feat-35-tauri-sidebar" } });
+  await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Save" })));
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(setBaseBranch.mock.calls).toEqual([[feature, "feat-35-tauri-sidebar"]]);
+  expect((await bridge.listWorktrees())[1].baseBranch).toBe("feat-35-tauri-sidebar");
+  expect(sessionRows()).toHaveLength(1);
+});
+
+test("Forget worktree on a session row asks first, then forgets the worktree, and its session's row goes", async () => {
+  const { bridge } = await oneSession();
+  const forgetWorktree = vi.spyOn(bridge, "forgetWorktree");
+  const selected: (string | null)[] = [];
+  const removed: string[] = [];
+  render(
+    <Sidebar
+      bridge={bridge}
+      selected={feature}
+      onSelect={(path) => selected.push(path)}
+      {...noAgents}
+      onRemoved={(path) => removed.push(path)}
+    />,
+  );
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+  const toggle = within(sessionItem(sessionRows()[0])).getByRole("button", { name: /^Actions for / });
+
+  let dialog = await pickInSessionMenu(sessionRows()[0], "Forget worktree");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(document.activeElement).toBe(toggle);
+  expect(forgetWorktree).not.toHaveBeenCalled();
+
+  dialog = await pickInSessionMenu(sessionRows()[0], "Forget worktree");
+  await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Forget" })));
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(forgetWorktree.mock.calls).toEqual([[feature]]);
+  expect(sessionRows()).toEqual([]);
+  expect((await bridge.listWorktrees()).map((worktree) => worktree.path)).not.toContain(feature);
+  expect(bridge.deleted).toEqual([]);
+  expect(removed).toEqual([feature]);
+  expect(selected).toEqual([null]);
+});
+
+test("Delete worktree on a session row asks as the worktree's own Delete does, then deletes the worktree", async () => {
+  const { bridge } = await oneSession();
+  bridge.setStatus(feature, { uncommitted: true });
+  const removed: string[] = [];
+  render(
+    <Sidebar
+      bridge={bridge}
+      selected={null}
+      onSelect={() => {}}
+      {...noAgents}
+      onRemoved={(path) => removed.push(path)}
+    />,
+  );
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+
+  const dialog = await pickInSessionMenu(sessionRows()[0], "Delete worktree");
+  expect(await within(dialog).findByText("It has uncommitted changes. Deleting loses them.")).toBeTruthy();
+  const button = within(dialog).getByRole<HTMLButtonElement>("button", { name: "Delete" });
+  expect(button.disabled).toBe(true);
+  expect(bridge.deleted).toEqual([]);
+  fireEvent.change(within(dialog).getByLabelText("Type feat-35-tauri-sidebar to confirm"), {
+    target: { value: "feat-35-tauri-sidebar" },
+  });
+  await act(async () => fireEvent.click(button));
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(bridge.deleted).toEqual([{ worktree: feature, confirmed: true, deleteBranch: false }]);
+  expect(sessionRows()).toEqual([]);
+  expect(removed).toEqual([feature]);
+});
+
+test.each([
+  ["the only session", 0, "1 session"],
+  ["one other session", 1, "2 sessions"],
+  ["several other sessions", 3, "4 sessions"],
+])("with %s in the worktree, Forget and Delete say how many sessions end with it", async (_, others, counted) => {
+  const { bridge, session } = await oneSession();
+  for (let other = 0; other < others; other++) await bridge.spawnAgent(feature, "Codex");
+  // A subagent session in another worktree stays, so it is not counted.
+  bridge.spawnSubagent("/code/grove-wt/spike", "Claude", session);
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(others + 2));
+
+  const forget = await pickInSessionMenu(sessionRows()[0], "Forget worktree");
+  expect(forget.textContent).toContain(
+    `grove stops tracking feat-35-tauri-sidebar and ends its ${counted}. Its folder and branch stay on disk.`,
+  );
+  fireEvent.click(within(forget).getByRole("button", { name: "Cancel" }));
+
+  const remove = await pickInSessionMenu(sessionRows()[0], "Delete worktree");
+  expect(remove.textContent).toContain(`grove ends the ${counted} of feat-35-tauri-sidebar and removes its folder.`);
+});
+
+test("a session that ended, and a subagent session in the worktree, count among the sessions that go with it", async () => {
+  const { bridge, session } = await oneSession();
+  bridge.spawnSubagent(feature, "Codex", session);
+  bridge.exit(await bridge.spawnAgent(feature, "Claude"));
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(3));
+
+  const dialog = await pickInSessionMenu(sessionRows()[0], "Forget worktree");
+
+  expect(dialog.textContent).toContain("grove stops tracking feat-35-tauri-sidebar and ends its 3 sessions.");
+});
+
+test("the confirms of a worktree with no session read as before", async () => {
+  const { bridge } = await oneSession();
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await worktreeRow("spike");
+
+  fireEvent.click(screen.getByRole("button", { name: "Actions for spike" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Forget" }));
+  const forget = await screen.findByRole("dialog", { name: "Forget worktree" });
+  expect(forget.textContent).toContain(
+    "grove stops tracking spike and ends its sessions. Its folder and branch stay on disk.",
+  );
+  fireEvent.click(within(forget).getByRole("button", { name: "Cancel" }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Actions for spike" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+  const remove = await screen.findByRole("dialog", { name: "Delete worktree" });
+  expect(remove.textContent).toContain("grove ends the sessions of spike and removes its folder.");
+  expect(bridge.deleted).toEqual([]);
+});
+
 test("a worktree with no session is dimmed at the bottom of its project, and selecting it selects the worktree", async () => {
   const { bridge } = await oneSession();
   const selected: (string | null)[] = [];

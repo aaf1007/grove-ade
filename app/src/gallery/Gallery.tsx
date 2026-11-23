@@ -364,6 +364,16 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
             ]}
           />
           <Menu
+            label="Actions for a session in feat-235"
+            icon={Ellipsis}
+            items={[
+              { key: "deleteSession", label: "Delete session", onSelect() {} },
+              { key: "base", label: "Change base branch", group: "Worktree feat-235", onSelect() {} },
+              { key: "forget", label: "Forget worktree", group: "Worktree feat-235", onSelect() {} },
+              { key: "delete", label: "Delete worktree", group: "Worktree feat-235", onSelect() {} },
+            ]}
+          />
+          <Menu
             label="Open a panel"
             icon={Plus}
             heading="Open a panel"
