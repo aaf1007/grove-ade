@@ -78,10 +78,11 @@ async function trackedBridge() {
   return bridge;
 }
 
-// The sidebar row of the `nth` agent session on `branch`, in the order they started.
+// The sidebar row of the `nth` agent session on `branch`, in the order they started. Its tooltip
+// names the branch, after the state.
 function sessionRow(branch: string, nth = 0): HTMLElement | undefined {
   return [...document.querySelectorAll<HTMLElement>(".session-row")].filter(
-    (row) => row.querySelector(".session-branch")?.textContent === branch,
+    (row) => row.title.split("\n")[1]?.split(" · ").pop() === branch,
   )[nth];
 }
 

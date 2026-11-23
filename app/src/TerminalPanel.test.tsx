@@ -3,6 +3,7 @@ import type { Terminal } from "@xterm/xterm";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 
 import { fakeBridge } from "./fakeBridge";
+import appStyles from "./styles.css?raw";
 import { TerminalPanel } from "./TerminalPanel";
 import { setAppearance, tokensInDocument } from "./tokensInDocument";
 
@@ -52,11 +53,15 @@ vi.mock("./cellSize", () => ({ cellSize: () => ({ width: 8, height: 16 }) }));
 
 // jsdom has no ResizeObserver. Tests size the panel as WebKit reports it: a hidden panel is 0x0.
 const observers: ResizeObserverCallback[] = [];
+// Every element a panel measures.
+const measured: Element[] = [];
 class FakeResizeObserver {
   constructor(callback: ResizeObserverCallback) {
     observers.push(callback);
   }
-  observe() {}
+  observe(target: Element) {
+    measured.push(target);
+  }
   disconnect() {}
 }
 
@@ -86,6 +91,7 @@ afterEach(() => {
   vi.useRealTimers();
   terminals.length = 0;
   observers.length = 0;
+  measured.length = 0;
   drawLog.length = 0;
   vi.unstubAllGlobals();
 });
@@ -268,6 +274,22 @@ test("a hidden or collapsed panel never sends a zero size", async () => {
   resizeTo(0, 0);
   vi.runAllTimers();
 
+  expect(bridge.resizes).toEqual([{ session, cols: 98, rows: 25 }]);
+});
+
+// A ResizeObserver's content box leaves padding out, so the fit counts only the room inside it.
+test("the terminal sits 8px in from the panel's edges, and its cells fit in the room left inside", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const { bridge, session } = await shellSession();
+  const { container } = render(<TerminalPanel bridge={bridge} session={session} shown />);
+
+  // jsdom computes no var() in a shorthand, so the rule and the token are read apart.
+  expect(measured).toEqual([container.querySelector(".terminal-panel .terminal")]);
+  expect(appStyles).toMatch(/\.terminal-panel \.terminal \{[^}]*padding: var\(--space-8\);/);
+  expect(getComputedStyle(document.documentElement).getPropertyValue("--space-8").trim()).toBe("8px");
+  // An 816x416 panel less 8px on each side is 800x400 inside.
+  resizeTo(800, 400);
+  vi.runAllTimers();
   expect(bridge.resizes).toEqual([{ session, cols: 98, rows: 25 }]);
 });
 

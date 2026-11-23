@@ -134,6 +134,31 @@ button.tool:hover {
   white-space: nowrap;
 }
 
+/* A line of an opened folded row, which opens to its output. */
+.tool-call {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-call:hover,
+.tool-call[aria-expanded="true"] {
+  color: var(--fg);
+}
+
+/* The list already sits under the row's label. */
+.tool-calls .tool-output {
+  margin-left: 0;
+}
+
 /* An opened summary's rows, under its label. */
 .tool-rows {
   display: flex;
@@ -181,7 +206,7 @@ button.tool:hover {
 }
 
 .question-text {
-  margin-bottom: var(--space-8);
+  margin: 0 0 var(--space-8);
   padding: 0;
   font-weight: 500;
 }
@@ -219,6 +244,7 @@ button.tool:hover {
 .question-actions {
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-8);
   margin-top: var(--space-8);
 }
 
