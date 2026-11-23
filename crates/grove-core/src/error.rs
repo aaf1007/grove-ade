@@ -127,6 +127,16 @@ pub enum CoreError {
     UnknownPanel { session: SessionId, panel: String },
     #[error("session {session} has {limit} panels open, the most grove allows. Close one first")]
     TooManyPanels { session: SessionId, limit: usize },
+    #[error("html_show takes html or a path, one of the two")]
+    PageNeedsOneSource,
+    #[error("a page needs a title")]
+    PageNeedsTitle,
+    #[error("the page is empty")]
+    EmptyPage,
+    #[error("the page has {bytes} bytes, and grove shows at most {limit}")]
+    PageTooLarge { bytes: u64, limit: usize },
+    #[error("{} cannot be shown: {reason}", path.display())]
+    NotAPage { path: PathBuf, reason: &'static str },
     #[error("agent session {0} has bracketed paste off, so it cannot take a review batch")]
     BracketedPasteOff(SessionId),
     #[error("{} has no open review comments to send", .0.display())]

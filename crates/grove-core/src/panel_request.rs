@@ -19,6 +19,10 @@
 //! {"session": "3", "token": "...", "request": {"type": "profile_get"}}
 //! {"session": "3", "token": "...", "request": {"type": "profile_set", "changes": {"agent":
 //!  {"model": "sonnet"}}}}
+//! {"session": "3", "token": "...", "request": {"type": "html_show", "title": "Build workflow",
+//!  "html": "<svg>...</svg>", "height": 320}}
+//! {"session": "3", "token": "...", "request": {"type": "html_show", "title": "Build workflow",
+//!  "path": "/the/worktree/docs/build.html"}}
 //! ```
 
 use std::fmt::Display;
@@ -158,6 +162,14 @@ pub(crate) enum Request {
     /// Change the profile of the calling session's repo. Read by `change_agent_profile`, as
     /// `WorkspaceSet` is.
     ProfileSet { changes: Value },
+    /// Show a page in the calling session's conversation: `html`, or the `.html` file at `path`
+    /// in its worktree. One of the two.
+    HtmlShow {
+        title: String,
+        html: Option<String>,
+        path: Option<PathBuf>,
+        height: Option<u32>,
+    },
 }
 
 /// Why a workspace or profile request was refused, where a `CoreError` does not say.

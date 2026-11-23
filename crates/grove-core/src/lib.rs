@@ -8,6 +8,7 @@ mod diff;
 mod editor;
 mod error;
 mod files;
+mod inline_page;
 mod notify;
 mod panel;
 mod panel_request;
@@ -52,6 +53,7 @@ pub use diff::{
 };
 pub use editor::Editor;
 pub use error::{CoreError, Result};
+pub use inline_page::{INLINE_PAGE_CSP, INLINE_PAGE_FRAME};
 pub use panel_request::PanelSpec;
 pub use profile::{
     AgentDefaults, AgentStateKind, Layout, Notify, PanelKind, Profile, ProfileSettings,
