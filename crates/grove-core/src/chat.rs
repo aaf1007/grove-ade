@@ -21,6 +21,7 @@ use tokio::sync::{Notify, broadcast, watch};
 
 use crate::agent::{Agents, ChatSpec};
 use crate::comments::{BatchComment, CommentId};
+use crate::inline_page::SavedPages;
 use crate::session::{Batch, Flushed, flush_batches, start_thread};
 use crate::usage::{ContextReading, UsageRead};
 use crate::{
@@ -88,6 +89,17 @@ pub enum AgentMessage {
     /// The commands and skills the agent offers now, in place of any list before. Never part
     /// of the conversation: a panel gets the latest list after it, and live as it changes.
     Commands { commands: Vec<SlashCommand> },
+    /// An inline page: HTML the agent showed with `html_show`, where it called the tool. Part
+    /// of the conversation, so it comes back when the conversation does (ADR 0018). `html` is
+    /// the agent's own and never trusted: a panel renders it only in a sandboxed frame.
+    InlinePage {
+        /// grove's id for the page, which the reply to `html_show` names.
+        id: String,
+        title: String,
+        html: String,
+        /// The frame's height in CSS pixels, at most 2000. None fits the page's content.
+        height: Option<u32>,
+    },
 }
 
 /// A slash command or skill the agent offers, as it lists it.
@@ -331,6 +343,12 @@ impl Chat {
             self.push_live_locked(s, message.clone());
         }
         s.history.push(message);
+    }
+
+    /// Adds `message` to the conversation, as something grove did for the agent.
+    pub(crate) fn add(&self, message: AgentMessage) {
+        let mut s = self.state();
+        self.push_locked(&mut s, message);
     }
 
     /// Sends `message` to the sink only, so it never joins the history.
@@ -920,6 +938,7 @@ fn apply(
         }
         // The record sets no state: the session stays as it was when it switched.
         FromAgent::History { messages } => {
+            let mut pages = SavedPages::of(agents.session_folder(session));
             for message in messages {
                 if let Some(message) = recorded(message) {
                     // A session with no title yet takes it from its record, as one saved
@@ -927,7 +946,19 @@ fn apply(
                     if let AgentMessage::User { text } = &message {
                         agents.title_from(session, text, events);
                     }
+                    // The record holds the call that showed a page, not the page.
+                    let shown = match &message {
+                        AgentMessage::ToolResult {
+                            output,
+                            is_error: false,
+                            ..
+                        } => pages.named_in(output),
+                        _ => Vec::new(),
+                    };
                     chat.push_locked(s, message);
+                    for page in shown {
+                        chat.push_locked(s, page);
+                    }
                 }
             }
             chat.history_read.send_replace(true);

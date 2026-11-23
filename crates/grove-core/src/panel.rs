@@ -60,6 +60,15 @@ impl Core {
                 self.change_agent_profile(session, changes)
                     .map(|profile| json!({ "profile": profile })),
             ),
+            Request::HtmlShow {
+                title,
+                html,
+                path,
+                height,
+            } => panel_request::reply(
+                self.show_inline_page(session, title, html, path, height)
+                    .map(|page| json!({ "page": page })),
+            ),
         }
     }
 

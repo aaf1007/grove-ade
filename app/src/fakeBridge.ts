@@ -732,6 +732,7 @@ export function fakeBridge(
   }
 
   return {
+    inlinePageFrame: null,
     async addRepo(path) {
       const found = repos[path];
       if (!found) throw `${path} is not a git repo`;

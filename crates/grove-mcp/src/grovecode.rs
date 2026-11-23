@@ -22,12 +22,15 @@ Usage:
   grovecode workspace set <json>
   grovecode profile get
   grovecode profile set <json>
+  grovecode html show <title> (--html <html> | --path <path>) [--height <n>]
 
 Run it in the shell of an agent session that grove started, and it acts as that session. It
 prints what happened and exits 0, or prints why not to stderr and exits 1. A command it cannot
 parse exits 2. Put -- before an argument that starts with --. A relative --worktree is taken
 from the current folder. workspace set takes the whole workspace as workspace get prints it,
-and profile set the settings to change, as profile get prints them under settings.
+and profile set the settings to change, as profile get prints them under settings. html show
+puts a page in this session's conversation, in chat mode: --html is the page, and --path an
+.html file in the session's worktree, relative to the current folder or absolute.
 ";
 
 /// A command as typed, checked as far as it can be without grove.
@@ -61,6 +64,12 @@ enum Call {
     ProfileGet,
     ProfileSet {
         changes: Value,
+    },
+    HtmlShow {
+        title: String,
+        html: Option<String>,
+        path: Option<PathBuf>,
+        height: Option<u32>,
     },
 }
 
@@ -118,6 +127,12 @@ fn run(core: &CoreClient, call: Call) -> Result<String, String> {
         Call::WorkspaceSet { workspace } => tools::workspace_set(core, workspace),
         Call::ProfileGet => tools::profile_get(core),
         Call::ProfileSet { changes } => tools::profile_set(core, changes),
+        Call::HtmlShow {
+            title,
+            html,
+            path,
+            height,
+        } => tools::html_show(core, &title, html.as_deref(), path.as_deref(), height),
     }
 }
 
@@ -164,6 +179,7 @@ fn parse(args: Vec<std::ffi::OsString>) -> Result<Option<Call>, String> {
         ["workspace", "set"] => ("workspace set", 1, &[]),
         ["profile", "get"] => ("profile get", 0, &[]),
         ["profile", "set"] => ("profile set", 1, &[]),
+        ["html", "show"] => ("html show", 1, &["html", "path", "height"]),
         _ => return Err(format!("unknown command: {}", command.join(" "))),
     };
     for (option, value) in &options {
@@ -240,8 +256,15 @@ fn parse(args: Vec<std::ffi::OsString>) -> Result<Option<Call>, String> {
             workspace: json("the workspace is", next())?,
         },
         "profile get" => Call::ProfileGet,
-        _ => Call::ProfileSet {
+        "profile set" => Call::ProfileSet {
             changes: json("the changes are", next())?,
+        },
+        _ => Call::HtmlShow {
+            title: next(),
+            html: option("html"),
+            path: option("path").map(page_path).transpose()?,
+            // grove caps the height, so one past a u32 is as good as the largest.
+            height: number("height")?.map(|height| u32::try_from(height).unwrap_or(u32::MAX)),
         },
     };
     Ok(Some(call))
@@ -255,4 +278,10 @@ fn worktree(path: String) -> Result<PathBuf, String> {
         return Ok(PathBuf::from(path));
     }
     fs::canonicalize(&path).map_err(|e| format!("--worktree {path}: {e}"))
+}
+
+/// The page file `path` names. grove takes an absolute path and resolves it itself, so a
+/// relative one is only joined to the current folder.
+fn page_path(path: String) -> Result<PathBuf, String> {
+    std::path::absolute(&path).map_err(|e| format!("--path {path}: {e}"))
 }

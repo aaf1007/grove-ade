@@ -1,0 +1,6 @@
+/* An inline page: the agent's HTML in a frame, under its title. */
+.inline-page iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+}

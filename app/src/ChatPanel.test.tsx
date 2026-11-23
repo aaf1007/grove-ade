@@ -1,12 +1,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Profiler } from "react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 
 import type { Agent, AgentStateChanged, Question, Reply } from "./bridge";
 import { ChatPanel } from "./ChatPanel";
 import { Dialog } from "./Dialog";
 import { fakeBridge, type FakeBridge, type FakeChange, type FakeDiffs, type FakeMessage } from "./fakeBridge";
 import { shortcut, type ShortcutId } from "./shortcuts";
+import { tokensInDocument } from "./tokensInDocument";
 
 // TerminalPanel.test.tsx covers the terminal itself. The stub says which session it shows.
 vi.mock("./TerminalPanel", () => ({
@@ -2961,4 +2962,94 @@ test("focus that moves to the panel around the picker leaves the popover open", 
   expect(screen.getByRole("dialog", { name: "Agent and model" })).toBeTruthy();
   fireEvent.click(pickerButton());
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("a page the agent shows is its own item, where the agent called the tool", async () => {
+  // A page takes its theme from the tokens.
+  const removeTokens = tokensInDocument();
+  onTestFinished(removeTokens);
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted" },
+      { type: "ToolCall", id: "toolu_01", tool: "Bash", input: { command: "npm test" } },
+      { type: "ToolResult", id: "toolu_01", output: "3 passed", isError: false },
+      { type: "ToolCall", id: "toolu_02", tool: "mcp__grove__html_show", input: { title: "Build workflow" } },
+      { type: "InlinePage", id: "page-0123456789abcdef", title: "Build workflow", html: "<svg></svg>", height: 320 },
+      { type: "ToolResult", id: "toolu_02", output: "Showed the page as page-0123456789abcdef.", isError: false },
+      { type: "ToolCall", id: "toolu_03", tool: "Bash", input: { command: "npm run build" } },
+      { type: "TextDelta", text: "That is the build." },
+    ),
+  );
+  nextFrame();
+
+  const page = screen.getByRole("group", { name: "Page: Build workflow" });
+  const frame = within(page).getByTitle<HTMLIFrameElement>("Build workflow");
+  expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+  expect(frame.srcdoc).toContain("<svg></svg>");
+  expect(frame.style.height).toBe("320px");
+  // It sits after the call that showed it and before what the agent did next.
+  const before = screen.getByRole("button", { name: "Used mcp__grove__html_show" });
+  const after = screen.getByRole("button", { name: "Ran npm run build" });
+  expect(before.compareDocumentPosition(page) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(page.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("a page shown outside a turn shows too, and two pages keep their own frames", async () => {
+  const removeTokens = tokensInDocument();
+  onTestFinished(removeTokens);
+  const bridge = await started();
+  await shownPanel(bridge);
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "InlinePage", id: "page-0000000000000001", title: "Before", html: "<p>one</p>", height: null },
+      { type: "InlinePage", id: "page-0000000000000002", title: "After", html: "<p>two</p>", height: null },
+    ),
+  );
+  nextFrame();
+
+  expect(screen.getByTitle<HTMLIFrameElement>("Before").srcdoc).toContain("<p>one</p>");
+  expect(screen.getByTitle<HTMLIFrameElement>("After").srcdoc).toContain("<p>two</p>");
+});
+
+test("a page that grows keeps the end of the conversation in view, unless the user scrolled away", async () => {
+  const removeTokens = tokensInDocument();
+  onTestFinished(removeTokens);
+  const bridge = await started();
+  await shownPanel(bridge);
+  const list = document.querySelector<HTMLElement>(".messages")!;
+  // jsdom lays nothing out: the list is 400 pixels of a conversation 1000 pixels long.
+  let length = 1000;
+  Object.defineProperty(list, "scrollHeight", { get: () => length });
+  Object.defineProperty(list, "clientHeight", { get: () => 400 });
+  act(() =>
+    bridge.messages("0", { type: "InlinePage", id: "page-0000000000000001", title: "Chart", html: "<p>one</p>", height: null }),
+  );
+  nextFrame();
+  const page = screen.getByTitle<HTMLIFrameElement>("Chart");
+  const grows = (height: number) => {
+    length += height;
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", { data: { type: "grove-page-height", height }, source: page.contentWindow }),
+      );
+    });
+  };
+  expect(list.scrollTop).toBe(1000);
+
+  grows(300);
+
+  expect(list.scrollTop).toBe(1300);
+
+  // The user scrolls up to read, and the page grows again.
+  list.scrollTop = 200;
+  fireEvent.scroll(list);
+  grows(500);
+
+  expect(list.scrollTop).toBe(200);
 });

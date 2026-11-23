@@ -176,6 +176,51 @@ fn the_workspace_tools_say_the_workspace_is_the_sessions_and_a_subagent_shares_i
 }
 
 #[test]
+fn the_html_show_tool_takes_a_title_and_html_or_a_path_and_an_optional_height() {
+    let list = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
+    let [init, initialized] = initialize();
+
+    let (replies, _) = run(&SESSION, &[init, initialized, list]);
+
+    let schema = input_schema(&replies[1], "html_show");
+    assert_eq!(schema["required"], json!(["title"]), "{schema}");
+    for argument in ["title", "html", "path", "height"] {
+        assert!(schema["properties"][argument].is_object(), "{schema}");
+    }
+    let tools = replies[1]["result"]["tools"].as_array().unwrap();
+    let tool = tools.iter().find(|t| t["name"] == "html_show").unwrap();
+    let description = tool["description"].as_str().unwrap();
+    // What an agent must know to write a page that renders: nothing loads, and the theme.
+    for part in [
+        "nothing loads from the network",
+        "--background",
+        "--chart-1",
+    ] {
+        assert!(description.contains(part), "{part} in {description}");
+    }
+}
+
+#[test]
+fn a_page_too_large_to_send_inline_is_refused_before_asking_grove() {
+    let call = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+        "name": "html_show",
+        "arguments": {"title": "Chart", "html": "a".repeat(64 * 1024)},
+    }});
+    let [init, initialized] = initialize();
+
+    // No core runs, so a call that reached grove would say so.
+    let (replies, _) = run(&SESSION, &[init, initialized, call]);
+
+    let result = &replies[1]["result"];
+    assert_eq!(result["isError"], true, "{result}");
+    assert_eq!(
+        result["content"][0]["text"],
+        "The page is too large to send inline. Write it to an .html file in the worktree and \
+         pass its path."
+    );
+}
+
+#[test]
 fn panel_calls_that_cannot_be_right_are_refused_before_asking_grove() {
     let calls = [
         (

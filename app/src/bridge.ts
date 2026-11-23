@@ -329,7 +329,12 @@ export type AgentMessage =
    * The commands and skills the agent offers now, in place of any list before. Never part of the
    * conversation: a subscribe gets the latest list after the history, and frames bring changes.
    */
-  | { type: "Commands"; commands: SlashCommand[] };
+  | { type: "Commands"; commands: SlashCommand[] }
+  /**
+   * An inline page: HTML the agent showed in the conversation with `html_show`, as it was when
+   * shown. `height` is its frame's height in CSS pixels, or null to fit the page.
+   */
+  | { type: "InlinePage"; id: string; title: string; html: string; height: number | null };
 
 /** A slash command or skill the agent offers, as `SlashCommand` in `app/src-tauri/src/main.rs` sends it. */
 export interface SlashCommand {
@@ -449,6 +454,11 @@ export type AgentChange = { kind: "Workspace"; session: SessionId; by: SessionId
 
 /** Everything the UI asks of the core. The app uses `tauriBridge`; tests use `fakeBridge`. */
 export interface Bridge {
+  /**
+   * The URL the app serves an inline page's frame from, under the page policy. null where
+   * nothing serves one: the frame then holds the page itself.
+   */
+  inlinePageFrame: string | null;
   /** Adds the repo that `path` is in and adopts every worktree in its `git worktree list`. */
   addRepo(path: string): Promise<void>;
   /** Opens the system folder picker. The picked folder's path, or null when cancelled. */
@@ -732,6 +742,8 @@ export interface Bridge {
 
 // A failed command rejects with the core's error message as a string.
 export const tauriBridge: Bridge = {
+  // The scheme is `INLINE_PAGE_SCHEME` in `app/src-tauri/src/main.rs`.
+  inlinePageFrame: "grove-page://localhost/",
   addRepo: (path) => invoke("add_repo", { path }),
   pickFolder: () => open({ directory: true, multiple: false, title: "Add repo" }),
   listWorktrees: () => invoke("list_worktrees"),

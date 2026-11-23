@@ -43,6 +43,7 @@ import type {
 import { AgentMarkdown } from "./AgentMarkdown";
 import "./ChatPanel.css";
 import { takeCommands, useCommandMenu } from "./CommandMenu";
+import { InlinePage } from "./InlinePage";
 import {
   AgentMark,
   type ModelChoice,
@@ -774,10 +775,13 @@ function ChatView({
   }, [historyTurnCount, loginFailedTurn]);
   const changes = useHeadDiff(bridge, worktree);
 
-  useLayoutEffect(() => {
+  // Keeps the end of the conversation in view while the user follows it. Not after they scrolled
+  // away to read.
+  const followEnd = useCallback(() => {
     const el = list.current;
     if (el && following.current) el.scrollTop = el.scrollHeight;
-  }, [items, unechoed]);
+  }, []);
+  useLayoutEffect(followEnd, [followEnd, items, unechoed]);
 
   // A jump lands on the approval that waits, else in the composer.
   useEffect(() => {
@@ -968,6 +972,8 @@ function ChatView({
               changes={changes}
               onOpenDiff={onOpenDiff}
               onOpenLink={openLink}
+              pageFrame={bridge.inlinePageFrame}
+              onPageResize={followEnd}
               switchBlocked={switchBlocked}
               onSwitchToTerminal={onSwitchToTerminal}
             />
@@ -1076,6 +1082,7 @@ type ThreadItem =
   /** Where the worktree's changed files show, once its turn ends. Only the last one shows. */
   | { kind: "files"; last: boolean }
   | { kind: "review"; comments: BatchComment[] }
+  | { kind: "page"; title: string; html: string; height: number | null }
   | { kind: "notice"; text: string }
   | { kind: "resumed" }
   | ErrorItem
@@ -1212,6 +1219,10 @@ function thread(messages: ChatMessage[]): ThreadItem[] {
       case "ReviewBatch":
         items.push(keyed({ kind: "review", comments: message.comments }));
         break;
+      case "InlinePage":
+        // Its own item where the agent showed it, so the calls after it start a new run.
+        items.push(keyed({ kind: "page", title: message.title, html: message.html, height: message.height }));
+        break;
       case "Resumed":
         items.push(keyed({ kind: "resumed" }));
         break;
@@ -1294,6 +1305,8 @@ function Item({
   changes,
   onOpenDiff,
   onOpenLink,
+  pageFrame,
+  onPageResize,
   switchBlocked,
   onSwitchToTerminal,
 }: {
@@ -1308,6 +1321,10 @@ function Item({
   changes: FileDiff[] | null;
   onOpenDiff(path?: string): void;
   onOpenLink(link: string): void;
+  /** Where an inline page's frame loads from, as `Bridge.inlinePageFrame`. */
+  pageFrame: string | null;
+  /** An inline page's frame changed height, which moves everything below it. */
+  onPageResize(): void;
   /** Why the mode switch is off. null while it is on. */
   switchBlocked: string | null;
   onSwitchToTerminal(): void;
@@ -1363,6 +1380,16 @@ function Item({
         </div>
       );
     }
+    case "page":
+      return (
+        <InlinePage
+          title={item.title}
+          html={item.html}
+          height={item.height}
+          frame={pageFrame}
+          onResize={onPageResize}
+        />
+      );
     case "resumed":
       return (
         <div className="notice-line">

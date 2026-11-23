@@ -58,6 +58,26 @@ struct NotificationClicked {
 
 const QUITTING: &str = "grove is quitting";
 
+/// The URL scheme an inline page's frame loads from. `tauri.conf.json` lets the window frame it.
+const INLINE_PAGE_SCHEME: &str = "grove-page";
+
+/// What every URL of the inline page scheme serves: the core's frame document under the core's
+/// policy. The page itself never comes from here: the window sends it to the frame.
+fn inline_page_frame() -> tauri::http::Response<Vec<u8>> {
+    let mut response =
+        tauri::http::Response::new(grove_core::INLINE_PAGE_FRAME.as_bytes().to_vec());
+    let headers = response.headers_mut();
+    headers.insert(
+        tauri::http::header::CONTENT_TYPE,
+        tauri::http::HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    headers.insert(
+        tauri::http::header::CONTENT_SECURITY_POLICY,
+        tauri::http::HeaderValue::from_static(grove_core::INLINE_PAGE_CSP),
+    );
+    response
+}
+
 /// A worktree as the UI sees it. Mirrors `Worktree` in `app/src/bridge.ts`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -610,6 +630,12 @@ enum Message {
     Commands {
         commands: Vec<SlashCommand>,
     },
+    InlinePage {
+        id: String,
+        title: String,
+        html: String,
+        height: Option<u32>,
+    },
 }
 
 /// Mirrors `SlashCommand` in `app/src/bridge.ts`.
@@ -774,6 +800,17 @@ impl From<AgentMessage> for Message {
             AgentMessage::NotDelivered { text } => Message::NotDelivered { text },
             AgentMessage::Commands { commands } => Message::Commands {
                 commands: commands.into_iter().map(SlashCommand::from).collect(),
+            },
+            AgentMessage::InlinePage {
+                id,
+                title,
+                html,
+                height,
+            } => Message::InlinePage {
+                id,
+                title,
+                html,
+                height,
             },
         }
     }
@@ -2429,6 +2466,7 @@ fn main() -> anyhow::Result<()> {
     let (core, mut events) = Core::start(cfg)?;
 
     tauri::Builder::default()
+        .register_uri_scheme_protocol(INLINE_PAGE_SCHEME, |_context, _request| inline_page_frame())
         .manage(Grove(RwLock::new(Some(core))))
         .manage(Sessions(Mutex::default()))
         .manage(Quitting(watch::Sender::new(false)))
@@ -3319,6 +3357,56 @@ mod tests {
             }),
             r#"[{"type":"Commands","commands":[{"name":"review","description":"Review a pull request","argumentHint":"<pr>","invocation":"/review"}]}]"#
         );
+        assert_eq!(
+            message(AgentMessage::InlinePage {
+                id: "page-0123456789abcdef".into(),
+                title: "Build workflow".into(),
+                html: "<svg></svg>".into(),
+                height: Some(320),
+            }),
+            r#"[{"type":"InlinePage","id":"page-0123456789abcdef","title":"Build workflow","html":"<svg></svg>","height":320}]"#
+        );
+    }
+
+    // An inline page is the agent's own HTML. The window may frame only the scheme that serves
+    // it under the core's policy, so a page cannot send the frame anywhere else either.
+    #[test]
+    fn the_csp_lets_the_window_frame_only_the_inline_page_scheme() {
+        let config = include_str!("../tauri.conf.json");
+
+        assert!(config.contains(&format!("; frame-src {INLINE_PAGE_SCHEME}:\"")));
+    }
+
+    // The UI names the scheme and states the policy again inside each page, where a `<meta>`
+    // cannot set `sandbox`. Both must stay what the core and this file say.
+    #[test]
+    fn the_ui_names_the_inline_page_scheme_and_the_cores_policy() {
+        let bridge = include_str!("../../src/bridge.ts");
+        let page = include_str!("../../src/InlinePage.tsx");
+        let policy = grove_core::INLINE_PAGE_CSP
+            .strip_suffix("; sandbox allow-scripts")
+            .expect("the policy ends with its sandbox");
+
+        assert!(bridge.contains(&format!(
+            "inlinePageFrame: \"{INLINE_PAGE_SCHEME}://localhost/\""
+        )));
+        assert!(page.contains(&format!("\"{policy}\"")));
+    }
+
+    #[test]
+    fn the_inline_page_scheme_serves_the_cores_frame_under_the_cores_policy() {
+        let response = inline_page_frame();
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.headers()["content-security-policy"],
+            grove_core::INLINE_PAGE_CSP
+        );
+        assert_eq!(
+            response.headers()["content-type"],
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(response.body(), grove_core::INLINE_PAGE_FRAME.as_bytes());
     }
 
     #[test]

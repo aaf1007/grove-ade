@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import { fakeBridge } from "../fakeBridge";
 import type { MonacoDiffProps } from "../MonacoDiff";
+import { tokensInDocument } from "../tokensInDocument";
 import { addGallerySessions, Gallery, GALLERY_DIFFS, GALLERY_REPO } from "./Gallery";
 
 // Monaco needs a real browser. The stub only shows the new text.
@@ -10,8 +11,11 @@ vi.mock("../MonacoDiff", () => ({
   MonacoDiff: ({ modified }: MonacoDiffProps) => <pre aria-label="Modified">{modified}</pre>,
 }));
 
+let removeTokens = () => {};
+
 afterEach(() => {
   cleanup();
+  removeTokens();
   vi.unstubAllGlobals();
 });
 
@@ -24,12 +28,14 @@ test("the gallery shows every component, every agent state, and switches between
   };
   vi.stubGlobal("ResizeObserver", observer);
   vi.stubGlobal("IntersectionObserver", observer);
+  // The inline page takes its theme from the tokens.
+  removeTokens = tokensInDocument();
   const bridge = fakeBridge(GALLERY_REPO, GALLERY_DIFFS);
   await bridge.addRepo(Object.keys(GALLERY_REPO)[0]);
   await addGallerySessions(bridge);
   await act(async () => render(<Gallery bridge={bridge} />));
 
-  for (const name of ["Button", "IconButton", "AgentState", "Segmented", "PanelTabs", "Menu", "Card", "AgentMarkdown", "DetailsCard", "DiffView"]) {
+  for (const name of ["Button", "IconButton", "AgentState", "Segmented", "PanelTabs", "Menu", "Card", "AgentMarkdown", "DetailsCard", "DiffView", "InlinePage"]) {
     expect(screen.getByRole("region", { name })).toBeTruthy();
   }
   const states = screen.getByRole("region", { name: "AgentState" });
@@ -68,4 +74,7 @@ test("the gallery shows every component, every agent state, and switches between
   fireEvent.click(within(screen.getByRole("group", { name: "Theme" })).getByRole("button", { name: "Light" }));
 
   expect(document.documentElement.dataset.theme).toBe("light");
+  const page = screen.getByTitle<HTMLIFrameElement>("Agent sessions by state");
+  expect(page.getAttribute("sandbox")).toBe("allow-scripts");
+  expect(page.srcdoc).toContain("var(--muted)");
 });
