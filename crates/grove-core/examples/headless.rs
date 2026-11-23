@@ -323,7 +323,7 @@ fn handle(
     })
 }
 
-/// A file's diff as JSON, with each line as text after a `+`, `-` or space, as `git diff` shows it.
+/// The diff base named `head` or `merge_base`.
 fn diff_base(name: &str) -> Result<DiffBase, Failure> {
     match name {
         "head" => Ok(DiffBase::Head),
@@ -332,6 +332,7 @@ fn diff_base(name: &str) -> Result<DiffBase, Failure> {
     }
 }
 
+/// A file's diff as JSON, with each line as text after a `+`, `-` or space, as `git diff` shows it.
 fn file_diff(file: &FileDiff) -> Value {
     let hunks: Vec<Value> = file
         .hunks

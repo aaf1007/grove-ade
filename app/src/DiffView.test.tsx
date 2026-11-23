@@ -318,7 +318,7 @@ test("a revealed file that is not in the HEAD diff is dropped, so it does not sc
   expect(scrolledTo).toEqual([]);
 });
 
-test("the Diff opens on the base it is asked for, and a new ask switches to it again", async () => {
+test("the Diff shows the base it is given, and a pick only asks for the new base", async () => {
   const diffs: FakeDiffs = {
     [worktree]: {
       Head: [change({ newPath: "a.rs", added: 1, removed: 1 }, "staged a\n", "saved a\n")],
