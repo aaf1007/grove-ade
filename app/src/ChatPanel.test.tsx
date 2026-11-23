@@ -1309,6 +1309,124 @@ test("an approval for a tool the panel does not know shows its whole input", asy
   expect(JSON.parse(card.querySelector("code")!.textContent!)).toEqual(input);
 });
 
+// What the card says approving also grants, beyond the command or files.
+function grants(card: HTMLElement) {
+  return within(card)
+    .queryAllByRole("listitem")
+    .map((line) => line.textContent);
+}
+
+// As `codex app-server` sends an approval: the ids that say which request it is, and when.
+const codexRequest = { threadId: "thread_1", turnId: "turn_1", itemId: "item_1", startedAtMs: 1 };
+
+test("a Claude Bash approval with the sandbox off says the command runs outside the sandbox", async () => {
+  const input = { command: "npm publish", description: "Publish", dangerouslyDisableSandbox: true };
+  await asked({ ...approval, input });
+
+  const card = approvalCard();
+  expect(grants(card)).toEqual(["Runs outside the sandbox"]);
+  expect(card.querySelector(".approval-target")!.textContent).toBe("npm publish");
+});
+
+test("a Codex file-change approval with a root to grant shows the root it asks for", async () => {
+  const input = { ...codexRequest, reason: "write the build output", grantRoot: "/code/other-repo" };
+  await asked(
+    { type: "ToolCall", id: "item_1", tool: "fileChange", input: { changes: [{ path: `${worktree}/a.ts` }] } },
+    { type: "ApprovalRequested", request: "item_1", tool: "fileChange", input },
+  );
+
+  const card = approvalCard("edit a file");
+  expect(grants(card)).toEqual(["Allows writes anywhere under /code/other-repo for the rest of this session"]);
+  expect(card.querySelector(".approval-target")!.textContent).toBe("a.ts");
+});
+
+test("a Codex network approval shows the host it asks to reach", async () => {
+  const input = {
+    ...codexRequest,
+    command: "npm install",
+    networkApprovalContext: { host: "registry.npmjs.org", protocol: "https" },
+  };
+  await asked({ type: "ApprovalRequested", request: "item_1", tool: "commandExecution", input });
+
+  const card = approvalCard();
+  expect(grants(card)).toEqual(["Allows network access to registry.npmjs.org over https"]);
+  expect(card.querySelector(".approval-target")!.textContent).toBe("npm install");
+});
+
+test.each<[string, string, string, Record<string, unknown>]>([
+  ["a Claude Bash command", "Bash", "run a command", { command: "npm test", timeout: 600000, run_in_background: true }],
+  [
+    "a Claude edit",
+    "Edit",
+    "edit a file",
+    { file_path: `${worktree}/src/main.ts`, old_string: "let a = 1", new_string: "let a = 2" },
+  ],
+  [
+    "a Codex command",
+    "commandExecution",
+    "run a command",
+    { ...codexRequest, command: "npm test", cwd: "/tmp", proposedExecpolicyAmendment: ["npm", "test"] },
+  ],
+  [
+    "a Codex permissions request",
+    "permissions",
+    "change its permissions",
+    { ...codexRequest, cwd: "/code/other-repo", permissions: { network: { enabled: true } } },
+  ],
+  [
+    "a Bash command with the sandbox set on",
+    "Bash",
+    "run a command",
+    { command: "npm test", dangerouslyDisableSandbox: false },
+  ],
+  [
+    "a Codex network approval that says more than its host",
+    "commandExecution",
+    "run a command",
+    { command: "curl example.com", networkApprovalContext: { host: "example.com", protocol: "https", port: 8443 } },
+  ],
+])("the card for %s opens to its full input, which has the fields the card does not name", async (_, tool, action, input) => {
+  await asked({ type: "ApprovalRequested", request: "toolu_03", tool, input });
+
+  const card = approvalCard(action);
+  const show = within(card).getByRole("button", { name: "Show full input" });
+  expect(show.getAttribute("aria-expanded")).toBe("false");
+  expect(card.querySelector(".approval-full-input")).toBeNull();
+  fireEvent.click(show);
+
+  expect(show.getAttribute("aria-expanded")).toBe("true");
+  expect(JSON.parse(card.querySelector(".approval-full-input")!.textContent!)).toEqual(input);
+});
+
+test.each<[string, string, Record<string, unknown>]>([
+  ["Claude Bash", "Bash", { command: "npm test", description: "Run the tests" }],
+  ["Codex", "commandExecution", { ...codexRequest, approvalId: null, command: "npm test", reason: "Run the tests", networkApprovalContext: null }],
+])("the %s card for a plain command has no grants and no full input to open", async (_, tool, input) => {
+  await asked({ type: "ApprovalRequested", request: "item_1", tool, input });
+
+  const card = approvalCard();
+  expect(grants(card)).toEqual([]);
+  expect(choices(card)).toEqual(["DeclineN", "Always allow this session", "ApproveY"]);
+  expect([...card.children].map((part) => part.className)).toEqual([
+    "approval-head",
+    "approval-target",
+    "approval-why",
+    "approval-actions",
+  ]);
+});
+
+test("the card's keys still answer while focus is on Show full input", async () => {
+  const bridge = await asked({ ...approval, input: { command: "npm test", timeout: 600000 } });
+  const answer = vi.spyOn(bridge, "answer");
+  const show = within(approvalCard()).getByRole("button", { name: "Show full input" });
+  show.focus();
+
+  fireEvent.keyDown(show, { key: "y" });
+  await settle();
+
+  expect(answer).toHaveBeenCalledWith("0", "toolu_01", { type: "AllowOnce" });
+});
+
 test("an approval with no tool call of its own shows its own row", async () => {
   await asked({ ...approval, request: "item_7", tool: "commandExecution", input: { command: "ls -la" } });
 

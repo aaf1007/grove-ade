@@ -273,7 +273,8 @@ button.tool:hover {
   stroke-width: 1.75;
 }
 
-.approval-target {
+.approval-target,
+.approval-full-input {
   max-height: calc(var(--space-32) * 4);
   margin: var(--space-8) 0 0;
   padding: var(--space-8) var(--space-10);
@@ -285,10 +286,46 @@ button.tool:hover {
   overflow-wrap: anywhere;
 }
 
+/* What approving allows beyond the command or files, set apart from them. */
+.approval-grants {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: var(--space-8) 0 0;
+  padding: 0;
+  color: var(--needs);
+  font-weight: 500;
+  list-style: none;
+}
+
+.approval-grants li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+}
+
+.approval-grants svg {
+  width: var(--space-16);
+  height: var(--space-16);
+  flex: none;
+  margin-top: var(--space-2);
+  stroke-width: 1.75;
+}
+
+.approval-grants code {
+  color: var(--fg);
+  font: var(--text-code-sm);
+  overflow-wrap: anywhere;
+}
+
 .approval-why {
   margin: var(--space-8) 0 0;
   color: var(--muted);
   font-size: var(--text-meta-size);
+}
+
+.approval-show-input {
+  margin: var(--space-6) 0 0 calc(-1 * var(--space-8));
 }
 
 .approval-actions {

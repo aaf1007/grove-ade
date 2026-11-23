@@ -1,4 +1,15 @@
-import { ArrowUp, Columns2, GitBranch, Shield, SlidersHorizontal, Square, X } from "lucide-react";
+import {
+  ArrowUp,
+  ChevronDown,
+  ChevronRight,
+  Columns2,
+  GitBranch,
+  Shield,
+  SlidersHorizontal,
+  Square,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import {
   type Dispatch,
   type KeyboardEvent,
@@ -1433,7 +1444,8 @@ function ApprovalCard({
   ref: Ref<HTMLDivElement>;
 }) {
   const [sending, setSending] = useState(false);
-  const { action, target, why } = askedFor(item, worktree);
+  const [fullInputShown, setFullInputShown] = useState(false);
+  const { action, target, grants, why, fullInput } = askedFor(item, worktree);
 
   function answer(reply: Reply) {
     if (sending) return;
@@ -1470,7 +1482,34 @@ function ApprovalCard({
           <code>{target}</code>
         </pre>
       )}
+      {grants.length > 0 && (
+        <ul className="approval-grants">
+          {grants.map((grant, at) => (
+            <li key={at}>
+              <TriangleAlert aria-hidden="true" />
+              <span>{grant}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       {why && <p className="approval-why">{why}</p>}
+      {fullInput && (
+        <Button
+          variant="ghost"
+          size="xs"
+          className="approval-show-input"
+          icon={fullInputShown ? ChevronDown : ChevronRight}
+          aria-expanded={fullInputShown}
+          onClick={() => setFullInputShown(!fullInputShown)}
+        >
+          {fullInputShown ? "Hide full input" : "Show full input"}
+        </Button>
+      )}
+      {fullInput && fullInputShown && (
+        <pre className="approval-full-input">
+          <code>{fullInput}</code>
+        </pre>
+      )}
       <div className="approval-actions">
         <Button variant="ghost" size="sm" disabled={sending} onClick={() => answer({ type: "Deny", message: null })}>
           Decline
@@ -1497,46 +1536,90 @@ const APPROVAL_KEYS: Record<string, Reply> = {
 interface AskedFor {
   action: string;
   target: string | null;
+  /** What approving allows beyond the target, each in plain words. */
+  grants: ReactNode[];
   why: string | null;
+  /** The whole input, when it has a field the card shows nowhere else. */
+  fullInput: string | null;
 }
+
+/** The fields of a Codex approval that say which request it is, and when. They grant nothing. */
+const REQUEST_IDS = ["threadId", "turnId", "itemId", "approvalId", "startedAtMs"];
 
 /**
  * What an approval asks for: the action as the card's headline says it, the command or files it
- * acts on, and why, when the agent says. Requested permissions, and the input of a tool the panel
- * does not know, show whole, since approving grants all of it.
+ * acts on, what approving allows beyond those, and why, when the agent says. Requested
+ * permissions, and the input of a tool the panel does not know, show whole, since approving
+ * grants all of it. A known tool's input opens whole when it has a field the card does not show.
  */
 function askedFor(item: ApprovalItem, worktree: string): AskedFor {
   const asked = (item.asked ?? {}) as Record<string, unknown>;
   const call = (item.call.input ?? {}) as Record<string, unknown>;
-  const text = (name: string) =>
-    [asked[name], call[name]].find((value): value is string => typeof value === "string" && value !== "") ?? null;
-  // Claude Code says what a command is for as its description, Codex as its reason.
-  const why = text("description") ?? text("reason");
+  // The fields of the request that the card shows.
+  const shown = new Set(REQUEST_IDS);
+  const filled = (value: unknown): value is string => typeof value === "string" && value !== "";
+  const text = (name: string) => {
+    if (filled(asked[name])) shown.add(name);
+    return [asked[name], call[name]].find(filled) ?? null;
+  };
+  const grants: ReactNode[] = [];
+  const known = (action: string, target: string | null): AskedFor => {
+    // Claude Code says what a command is for as its description, Codex as its reason.
+    const why = text("description") ?? text("reason");
+    const unshown = Object.keys(asked).some((name) => asked[name] !== null && !shown.has(name));
+    return { action, target, grants, why, fullInput: unshown ? whole(asked) : null };
+  };
   switch (item.call.tool) {
     case "Bash":
-    case "commandExecution":
-      return { action: "run a command", target: text("command"), why };
+    case "commandExecution": {
+      if (asked.dangerouslyDisableSandbox === true) {
+        shown.add("dangerouslyDisableSandbox");
+        grants.push("Runs outside the sandbox");
+      }
+      const network = (asked.networkApprovalContext ?? {}) as Record<string, unknown>;
+      if (filled(network.host)) {
+        const { host, protocol } = network;
+        const named = filled(protocol) ? ["host", "protocol"] : ["host"];
+        if (Object.keys(network).every((name) => named.includes(name))) shown.add("networkApprovalContext");
+        grants.push(
+          <>
+            Allows network access to <code>{host}</code>
+            {filled(protocol) && ` over ${protocol}`}
+          </>,
+        );
+      }
+      return known("run a command", text("command"));
+    }
     case "Write":
     case "Edit":
     case "MultiEdit":
     case "NotebookEdit": {
       const path = text("file_path") ?? text("notebook_path");
       if (!path) break;
-      const action = item.call.tool === "Write" ? "write a file" : "edit a file";
-      return { action, target: relative(path, worktree), why };
+      return known(item.call.tool === "Write" ? "write a file" : "edit a file", relative(path, worktree));
     }
     case "fileChange": {
+      const root = text("grantRoot");
+      if (root) {
+        grants.push(
+          <>
+            Allows writes anywhere under <code>{root}</code> for the rest of this session
+          </>,
+        );
+      }
       const changes = Array.isArray(call.changes) ? (call.changes as { path?: unknown }[]) : [];
       const paths = changes.map((change) => change?.path).filter((path): path is string => typeof path === "string");
-      if (paths.length === 0) return { action: "edit files", target: null, why };
+      if (paths.length === 0) return known("edit files", null);
       const action = paths.length === 1 ? "edit a file" : `edit ${paths.length} files`;
-      return { action, target: paths.map((path) => relative(path, worktree)).join("\n"), why };
+      return known(action, paths.map((path) => relative(path, worktree)).join("\n"));
     }
     // Codex asks for wider sandbox access.
     case "permissions":
-      return { action: "change its permissions", target: whole(asked.permissions), why };
+      shown.add("permissions");
+      return known("change its permissions", whole(asked.permissions));
   }
-  return { action: `use ${item.call.tool}`, target: whole(item.asked), why };
+  const why = text("description") ?? text("reason");
+  return { action: `use ${item.call.tool}`, target: whole(item.asked), grants, why, fullInput: null };
 }
 
 /** `value` as indented JSON. null when it has nothing to show. */
