@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 
-import { type ToolCall, ToolCalls } from "./ToolCalls";
+import { relative, type ToolCall, ToolCalls } from "./ToolCalls";
 
 afterEach(cleanup);
 
@@ -156,4 +156,35 @@ test("a file a folded row read twice is listed once, and opens to the output of 
   expect(screen.getByText("first")).toBeTruthy();
   expect(screen.getByText("second")).toBeTruthy();
   expect(screen.queryByText("b")).toBeNull();
+});
+
+test("a wrapped command in the worktree reads from the worktree's root, in a row of its own and in a folded row", () => {
+  const wrapped = `bash -lc '${worktree}/scripts/check.sh --fast'`;
+  render(
+    <ToolCalls
+      calls={[
+        command("1", wrapped),
+        { id: "2", tool: "Grep", input: { pattern: "TODO" } },
+        command("3", wrapped),
+        command("4", "npm test"),
+      ]}
+      worktree={worktree}
+      live
+    />,
+  );
+
+  expect(screen.getByRole("button", { name: "Ran scripts/check.sh --fast" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Ran 2 commands" }));
+
+  const lines = within(screen.getByRole("list", { name: "Ran 2 commands" })).getAllByRole("listitem");
+  expect(lines.map((line) => line.textContent)).toEqual(["scripts/check.sh --fast", "npm test"]);
+});
+
+test.each([
+  ["a path inside the worktree", "/a/wt/src/x.ts", "src/x.ts"],
+  ["a path outside the worktree", "/elsewhere/x.ts", "/elsewhere/x.ts"],
+  ["the worktree's root", "/a/wt", "/a/wt"],
+  ["a sibling whose name starts with the worktree's", "/a/wt2/x", "/a/wt2/x"],
+])("%s reads from the worktree's root only when it is inside the worktree", (_, path, shown) => {
+  expect(relative(path, "/a/wt")).toBe(shown);
 });

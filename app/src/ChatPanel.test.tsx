@@ -314,6 +314,29 @@ test("three Read calls then two Bash calls fold into two rows, and each opens to
   expect(calls("Ran 2 commands")).toEqual(["npm test", "npm run lint"]);
 });
 
+test("a command in the worktree reads from the worktree's root in a folded row, as in a row of its own", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted" },
+      { type: "ToolCall", id: "1", tool: "Bash", input: { command: `${worktree}/scripts/check.sh` } },
+      { type: "ToolCall", id: "2", tool: "Read", input: { file_path: `${worktree}/a.ts` } },
+      { type: "ToolCall", id: "3", tool: "Bash", input: { command: `${worktree}/scripts/check.sh` } },
+      { type: "ToolCall", id: "4", tool: "Bash", input: { command: "npm test" } },
+    ),
+  );
+  nextFrame();
+
+  expect(screen.getByRole("button", { name: "Ran scripts/check.sh" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Ran 2 commands" }));
+
+  const lines = within(screen.getByRole("list", { name: "Ran 2 commands" })).getAllByRole("listitem");
+  expect(lines.map((line) => line.textContent)).toEqual(["scripts/check.sh", "npm test"]);
+});
+
 test("edits fold by file, and calls of other kinds stay apart", async () => {
   const bridge = await started();
   await shownPanel(bridge, { state: working("Working") });
@@ -1474,6 +1497,33 @@ test("while an approval waits, a message from the composer declines it with that
   expect(composer().getAttribute("placeholder")).toBe("Ask Claude Code anything. @ files, / commands");
 });
 
+const CODEX_DECLINE_HINT = "Send text to decline, or press Decline. Codex takes no message with a decline";
+
+test("while a Codex approval waits, Enter in the empty composer sends nothing, and the hint points at Decline", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, {
+    agent: "Codex",
+    state: { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" },
+  });
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted" },
+      { type: "ApprovalRequested", request: "item_1", tool: "commandExecution", input: { command: "npm test" } },
+    ),
+  );
+  nextFrame();
+
+  expect(composer().getAttribute("placeholder")).toBe(CODEX_DECLINE_HINT);
+  fireEvent.keyDown(composer(), { key: "Enter" });
+  await settle();
+  expect(bridge.answered).toEqual([]);
+
+  fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+  await settle();
+  expect(bridge.answered).toEqual([{ session: "0", request: "item_1", reply: { type: "Deny", message: null } }]);
+});
+
 test("while a Codex approval waits, a message declines it without the message, which stays in the composer", async () => {
   const bridge = await started("Codex");
   await shownPanel(bridge, {
@@ -1489,7 +1539,7 @@ test("while a Codex approval waits, a message declines it without the message, w
   );
   nextFrame();
 
-  expect(composer().getAttribute("placeholder")).toBe("Send to decline. Codex takes no message with a decline");
+  expect(composer().getAttribute("placeholder")).toBe(CODEX_DECLINE_HINT);
   fireEvent.change(composer(), { target: { value: "use vitest instead" } });
   fireEvent.keyDown(composer(), { key: "Enter" });
   await settle();
@@ -1625,6 +1675,17 @@ test("a request whose turn ended shows as expired and sends nothing", async () =
   expect(screen.queryByRole("group", { name: "Claude Code is asking" })).toBeNull();
   expect(screen.getByText("Expired")).toBeTruthy();
   expect(screen.getByText("Expired: Which test runner?")).toBeTruthy();
+  expect(bridge.answered).toEqual([]);
+});
+
+test("a request with no questions whose turn ended reads as expired, with nothing after it", async () => {
+  const bridge = await asked({ type: "QuestionAsked", request: "toolu_02", questions: [] });
+
+  act(() => bridge.messages("0", { type: "TurnEnded", outcome: "Interrupted" }));
+  nextFrame();
+
+  expect(screen.queryByRole("group", { name: "Claude Code is asking" })).toBeNull();
+  expect(document.querySelector(".record.expired")!.textContent).toBe("Expired");
   expect(bridge.answered).toEqual([]);
 });
 
