@@ -1432,12 +1432,70 @@ test.each<[string, string, Record<string, unknown>]>([
   const card = approvalCard();
   expect(grants(card)).toEqual([]);
   expect(choices(card)).toEqual(["DeclineN", "Always allow this session", "ApproveY"]);
-  expect([...card.children].map((part) => part.className)).toEqual([
+  expect([...card.children].map((part) => part.className)).toEqual(["approval-body", "approval-actions"]);
+  expect([...card.querySelector(".approval-body")!.children].map((part) => part.className)).toEqual([
     "approval-head",
     "approval-target",
     "approval-why",
-    "approval-actions",
   ]);
+});
+
+test.each<[string, unknown]>([
+  ["the string \"true\"", "true"],
+  ["the number 1", 1],
+  ["the string \"false\"", "false"],
+])("a Bash approval whose sandbox flag is %s warns, and still opens to its full input", async (_, flag) => {
+  const input = { command: "npm publish", dangerouslyDisableSandbox: flag };
+  await asked({ ...approval, input });
+
+  const card = approvalCard();
+  expect(grants(card)).toEqual(["Runs outside the sandbox"]);
+  fireEvent.click(within(card).getByRole("button", { name: "Show full input" }));
+  expect(JSON.parse(card.querySelector(".approval-full-input")!.textContent!)).toEqual(input);
+});
+
+test("a Bash approval with the sandbox set on has no sandbox warning", async () => {
+  await asked({ ...approval, input: { command: "npm test", dangerouslyDisableSandbox: false } });
+
+  expect(grants(approvalCard())).toEqual([]);
+});
+
+test.each<[string, string, string, Record<string, unknown>]>([
+  [
+    "root",
+    "fileChange",
+    "edit files",
+    { ...codexRequest, reason: "x".repeat(5000), cwd: "/tmp", grantRoot: `/${"a".repeat(5000)}` },
+  ],
+  [
+    "host",
+    "commandExecution",
+    "run a command",
+    {
+      ...codexRequest,
+      command: "curl example.com",
+      cwd: "/tmp",
+      networkApprovalContext: { host: `${"a".repeat(5000)}.example.com`, protocol: "https" },
+    },
+  ],
+])("a very long %s scrolls in the card's body, and the choices stay outside it", async (_, tool, action, input) => {
+  await asked({ type: "ApprovalRequested", request: "item_1", tool, input });
+  const card = approvalCard(action);
+  fireEvent.click(within(card).getByRole("button", { name: "Show full input" }));
+
+  // jsdom lays nothing out. ChatPanel.css makes the body the card's one scrolling part.
+  const [body, actions] = [...card.children];
+  expect([...card.children].map((part) => part.className)).toEqual(["approval-body", "approval-actions"]);
+  for (const part of [".approval-grants", ".approval-full-input", ".approval-head"]) {
+    expect(body.contains(card.querySelector(part))).toBe(true);
+  }
+  expect(body.textContent).toContain("a".repeat(5000));
+  expect(within(actions as HTMLElement).getAllByRole("button").map((b) => b.textContent)).toEqual([
+    "DeclineN",
+    "Always allow this session",
+    "ApproveY",
+  ]);
+  expect(body.querySelector("button[class*='ui-button-primary']")).toBeNull();
 });
 
 test("the card's keys still answer while focus is on Show full input", async () => {

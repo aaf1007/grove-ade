@@ -1514,7 +1514,8 @@ function Approval({
 
 /**
  * A pending approval, as a card above the composer: what the agent wants to do, and the choices.
- * While the card has focus, Y approves and N declines. It answers once.
+ * What it wants scrolls in the card's body, so the choices stay in view however much the agent
+ * sends. While the card has focus, Y approves and N declines. It answers once.
  */
 function ApprovalCard({
   item,
@@ -1557,45 +1558,47 @@ function ApprovalCard({
       tabIndex={-1}
       onKeyDown={onKeyDown}
     >
-      <div className="approval-head">
-        <Shield aria-hidden="true" />
-        <span>
-          {agentName} wants to {action}
-        </span>
+      <div className="approval-body">
+        <div className="approval-head">
+          <Shield aria-hidden="true" />
+          <span>
+            {agentName} wants to {action}
+          </span>
+        </div>
+        {target && (
+          <pre className="approval-target">
+            <code>{target}</code>
+          </pre>
+        )}
+        {grants.length > 0 && (
+          <ul className="approval-grants">
+            {grants.map((grant, at) => (
+              <li key={at}>
+                <TriangleAlert aria-hidden="true" />
+                <span>{grant}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {why && <p className="approval-why">{why}</p>}
+        {fullInput && (
+          <Button
+            variant="ghost"
+            size="xs"
+            className="approval-show-input"
+            icon={fullInputShown ? ChevronDown : ChevronRight}
+            aria-expanded={fullInputShown}
+            onClick={() => setFullInputShown(!fullInputShown)}
+          >
+            {fullInputShown ? "Hide full input" : "Show full input"}
+          </Button>
+        )}
+        {fullInput && fullInputShown && (
+          <pre className="approval-full-input">
+            <code>{fullInput}</code>
+          </pre>
+        )}
       </div>
-      {target && (
-        <pre className="approval-target">
-          <code>{target}</code>
-        </pre>
-      )}
-      {grants.length > 0 && (
-        <ul className="approval-grants">
-          {grants.map((grant, at) => (
-            <li key={at}>
-              <TriangleAlert aria-hidden="true" />
-              <span>{grant}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {why && <p className="approval-why">{why}</p>}
-      {fullInput && (
-        <Button
-          variant="ghost"
-          size="xs"
-          className="approval-show-input"
-          icon={fullInputShown ? ChevronDown : ChevronRight}
-          aria-expanded={fullInputShown}
-          onClick={() => setFullInputShown(!fullInputShown)}
-        >
-          {fullInputShown ? "Hide full input" : "Show full input"}
-        </Button>
-      )}
-      {fullInput && fullInputShown && (
-        <pre className="approval-full-input">
-          <code>{fullInput}</code>
-        </pre>
-      )}
       <div className="approval-actions">
         <Button variant="ghost" size="sm" disabled={sending} onClick={() => answer({ type: "Deny", message: null })}>
           Decline
@@ -1658,10 +1661,10 @@ function askedFor(item: ApprovalItem, worktree: string): AskedFor {
   switch (item.call.tool) {
     case "Bash":
     case "commandExecution": {
-      if (asked.dangerouslyDisableSandbox === true) {
-        shown.add("dangerouslyDisableSandbox");
-        grants.push("Runs outside the sandbox");
-      }
+      // Only a plain false is the sandbox on. Any other value warns, and an odd one stays unshown.
+      const sandboxOff = asked.dangerouslyDisableSandbox ?? false;
+      if (sandboxOff === true) shown.add("dangerouslyDisableSandbox");
+      if (sandboxOff !== false) grants.push("Runs outside the sandbox");
       const network = (asked.networkApprovalContext ?? {}) as Record<string, unknown>;
       if (filled(network.host)) {
         const { host, protocol } = network;

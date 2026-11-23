@@ -252,6 +252,25 @@ button.tool:hover {
   border-radius: var(--radius-full);
 }
 
+/* Its body scrolls and its choices do not, so they stay in view in a short panel. */
+.composer-wrap > .approval-card {
+  display: flex;
+  /* Never shorter than its choices: a row of buttons, the gap above it, and the card's padding. */
+  min-height: calc(var(--control-sm) + var(--space-12) * 3 + 2px);
+  flex: 0 1 auto;
+  flex-direction: column;
+}
+
+.approval-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.approval-actions {
+  flex: none;
+}
+
 /* Focus lands here on a jump to the session, and Y or N answers. */
 .approval-card:focus-visible {
   outline: 2px solid var(--accent);
@@ -273,14 +292,20 @@ button.tool:hover {
   stroke-width: 1.75;
 }
 
+/* Each part the agent sizes scrolls past this height, and not the card or the page with it. */
+.approval-target,
+.approval-full-input,
+.approval-grants,
+.approval-why {
+  max-height: calc(var(--space-32) * 4);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
 .approval-target,
 .approval-full-input {
-  max-height: calc(var(--space-32) * 4);
   margin: var(--space-8) 0 0;
   padding: var(--space-8) var(--space-10);
-  overflow: auto;
-  /* Scrolling past its end does not scroll the page, which can overflow in a short window. */
-  overscroll-behavior: contain;
   border-radius: var(--radius-lg);
   background: var(--bg);
   font: var(--text-code-sm);
@@ -324,6 +349,7 @@ button.tool:hover {
   margin: var(--space-8) 0 0;
   color: var(--muted);
   font-size: var(--text-meta-size);
+  overflow-wrap: anywhere;
 }
 
 .approval-show-input {
