@@ -1260,7 +1260,7 @@ test("after a turn fails to log in, the footer shows nothing for the agent until
 
   fireEvent.click(within(panel).getByRole("button", { name: "Fail to log in" }));
 
-  await waitFor(() => expect(footer().textContent).not.toContain("Logged in"));
+  await waitFor(() => expect(within(footer()).queryByRole("listitem")).toBeNull());
   // None of these says the login works: the same login reported again, as a new process does
   // after a mode switch, an interrupted turn, a failed one, and another session of the agent.
   act(() => bridge.accountChanged({ agent: "Claude", account: TOKEN_LOGIN }));
@@ -1269,7 +1269,7 @@ test("after a turn fails to log in, the footer shows nothing for the agent until
   await startAnother(bridge, feature);
   await screen.findByRole("region", { name: "Panel 1" });
   await act(async () => fireEvent.click(await findSessionRow("feat-36", 1)));
-  expect(footer().textContent).not.toContain("Logged in");
+  expect(within(footer()).queryByRole("listitem")).toBeNull();
 
   // A turn that completes, here in terminal mode after the user ran /login there.
   act(() => bridge.agentStateChanged({ session: "1", state: "Done", source: "Hook" }));
@@ -1287,7 +1287,7 @@ test("a login failure outlives its session", async () => {
   await act(async () => fireEvent.click(await findSessionRow("feat-36")));
 
   await screen.findByRole("region", { name: "Panel 1" });
-  expect(footer().textContent).not.toContain("Logged in");
+  expect(within(footer()).queryByRole("listitem")).toBeNull();
 });
 
 test("a new login report clears a login failure", async () => {
@@ -1321,7 +1321,7 @@ test("a failed turn whose panel is not shown blanks the footer, since the window
 
   act(() => bridge.agentStateChanged({ session: hidden, state: "Failed", source: "Protocol" }));
 
-  await waitFor(() => expect(footer().textContent).not.toContain("Logged in"));
+  await waitFor(() => expect(within(footer()).queryByRole("listitem")).toBeNull());
   act(() => bridge.agentStateChanged({ session: hidden, state: "Done", source: "Protocol" }));
   await waitFor(() => expect(within(footer()).getByRole("listitem").textContent).toBe("Logged in"));
 });
