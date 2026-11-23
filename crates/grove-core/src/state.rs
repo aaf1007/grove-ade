@@ -55,6 +55,9 @@ pub(crate) struct Restored {
     pub(crate) settings: Settings,
     /// Each agent session with its workspace.
     pub(crate) sessions: HashMap<PathBuf, Vec<Relaunch>>,
+    /// The agent panel of each subagent session in a file from before version 10, where it
+    /// showed in its worktree's workspace. It belongs in the workspace of its top parent.
+    pub(crate) subagent_panels: Vec<AgentPanel>,
     pub(crate) comments: Kept,
 }
 
@@ -176,6 +179,7 @@ pub(crate) fn read(home: &Path) -> Result<Restored> {
             worktrees: Vec::new(),
             settings: Settings::new(),
             sessions: HashMap::new(),
+            subagent_panels: Vec::new(),
             comments: Kept::new(),
         }),
         Err(e) => Err(CoreError::io("read the state file", &path)(e)),
@@ -308,6 +312,7 @@ fn parse(path: &Path, bytes: &[u8]) -> Result<Restored> {
         worktrees: Vec::new(),
         settings: Settings::new(),
         sessions: HashMap::new(),
+        subagent_panels: Vec::new(),
         comments: Kept::new(),
     };
     for repo in saved.repos {
@@ -367,7 +372,10 @@ impl SavedRepo {
         for (mut worktree, is_main) in worktrees {
             let path = worktree.path.clone();
             let mut sessions = std::mem::take(&mut worktree.sessions);
-            if let Some(of_worktree) = worktree.workspace.take() {
+            let of_worktree = worktree.workspace.take();
+            let of_subagents = subagent_panels(of_worktree.as_ref(), &sessions);
+            restored.subagent_panels.extend(of_subagents);
+            if let Some(of_worktree) = of_worktree {
                 of_worktree.move_to_sessions(&mut sessions);
             }
             if !sessions.is_empty() {
@@ -436,8 +444,10 @@ impl SavedWorktree {
 impl SavedWorkspace {
     // How a file from before version 10 comes into this one: each agent session in `sessions`,
     // ended or not, gets a copy of this worktree workspace's tabs, selected tab and terminal,
-    // with one shown agent panel of its own. A workspace of a worktree with no agent session is
-    // dropped this way, and so is a panel with no session.
+    // with one shown agent panel of its own. Its own panel is shown even if it was hidden: a
+    // workspace with no panel shown would show nothing of the session it belongs to. A workspace
+    // of a worktree with no agent session is dropped this way, and so is a panel with no session.
+    // `subagent_panels` keeps the panels of subagent sessions.
     fn move_to_sessions(self, sessions: &mut [Relaunch]) {
         for relaunch in sessions {
             let Relaunch::Agent(record) = relaunch else {
@@ -455,6 +465,37 @@ impl SavedWorkspace {
             });
         }
     }
+}
+
+// The agent panel of each subagent session in `sessions` that a file from before version 10
+// saved: first those `of_worktree` showed, in its order and shown or hidden as there, then
+// those it had no panel for, hidden. A version 10 file saves every session with a workspace, so
+// it gives none.
+fn subagent_panels(of_worktree: Option<&SavedWorkspace>, sessions: &[Relaunch]) -> Vec<AgentPanel> {
+    let chat = of_worktree.map_or(&[][..], |workspace| &workspace.chat);
+    let mut panels: Vec<(usize, AgentPanel)> = sessions
+        .iter()
+        .filter_map(|relaunch| match relaunch {
+            Relaunch::Agent(record) if record.parent.is_some() && record.workspace.is_none() => {
+                Some(record)
+            }
+            _ => None,
+        })
+        .map(|record| {
+            let at = chat
+                .iter()
+                .position(|panel| panel.session == Some(record.id));
+            let panel = AgentPanel {
+                agent: record.agent,
+                session: record.id,
+                shown: at.is_some_and(|at| chat[at].shown),
+            };
+            (at.unwrap_or(chat.len()), panel)
+        })
+        .collect();
+    // A stable sort, so those with no panel keep the order of `sessions`.
+    panels.sort_by_key(|(at, _)| *at);
+    panels.into_iter().map(|(_, panel)| panel).collect()
 }
 
 impl From<&Workspace> for SavedWorkspace {

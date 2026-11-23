@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use super::records::with_those_below;
 use super::{Agent, Agents, Tracked, lock};
 use crate::workspace::Saved;
-use crate::{CoreError, Result, SessionId};
+use crate::{AgentPanel, CoreError, Result, SessionId};
 
 /// An agent session whose panel a workspace may hold: the session the workspace belongs to, or
 /// a subagent session below it.
@@ -43,6 +43,23 @@ impl Agents {
             .get_mut(&owner)
             .ok_or(CoreError::NotAnAgentSession(session))?;
         Ok(change(owner, &members, &mut tracked.workspace))
+    }
+
+    /// Puts each of `panels`, the agent panels subagent sessions had in a state file from
+    /// before version 10, in the workspace of its top parent, after the panels already there.
+    /// A session that did not come back gets none, and neither does one whose parents are all
+    /// gone: it shows in its own workspace.
+    pub(crate) fn adopt_panels(&self, panels: Vec<AgentPanel>) {
+        for panel in panels {
+            let session = panel.session;
+            // It fails only for a session that did not come back.
+            let _ = self.with_workspace(session, |owner, _, saved| {
+                let chat = &mut saved.workspace.chat;
+                if owner != session && chat.iter().all(|shown| shown.session != session) {
+                    chat.push(panel);
+                }
+            });
+        }
     }
 
     /// Drops the agent panels of `gone`, sessions whose records were dropped, from every

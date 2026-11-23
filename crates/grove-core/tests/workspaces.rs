@@ -1041,6 +1041,70 @@ fn a_version_9_state_file_gives_ended_sessions_their_copy_and_drops_a_workspace_
     assert_saved_as_version_10(dir.path(), &[id(3), id(4), new]);
 }
 
+// A file from before version 10 whose one workspace showed a session, its subagent, the subagent
+// of that one and a second subagent that had no panel. Review thread 1 of PR #124.
+fn a_subagents_panel_moves_to_its_top_parents_workspace(version: u32) {
+    let dir = short_temp_dir();
+    let workspace = json!({
+        "chat": [
+            {"agent": "codex", "shown": true, "session": 3},
+            {"agent": "claude", "shown": false, "session": 1},
+            {"agent": "codex", "shown": false, "session": 2},
+        ],
+        "panels": ["diff", "logs"], "selected": "logs", "terminal": false,
+    });
+    let subagent = |session: u64, parent: u64| {
+        let mut record = agent_record(session, "codex");
+        record["parent"] = json!(parent);
+        record
+    };
+    let sessions = json!([
+        agent_record(1, "claude"),
+        subagent(2, 1),
+        subagent(3, 2),
+        subagent(4, 1),
+    ]);
+    state_before_version_10(dir.path(), version, workspace, sessions);
+
+    let (core, _events) = start(dir.path());
+
+    // The top parent's own panel first, shown. Then each subagent's in the order the old
+    // workspace had them, shown or hidden as it was, and the one that had no panel last, hidden.
+    let of_parent = arranged(vec![
+        panel(Agent::Claude, id(1), true),
+        panel(Agent::Codex, id(3), true),
+        panel(Agent::Codex, id(2), false),
+        panel(Agent::Codex, id(4), false),
+    ]);
+    for session in [1, 2, 3, 4] {
+        assert_eq!(core.workspace(id(session)).unwrap(), of_parent, "{session}");
+    }
+    let all = json!([1, 3, 2, 4]);
+    let saved = wait_saved(dir.path(), |state| {
+        state["version"] == 10 && saved_chat(state, id(1)).map(Value::from) == Some(all.clone())
+    });
+    // Each subagent keeps a copy with its own panel, for when its parent is deleted.
+    for session in [2, 3, 4] {
+        assert_eq!(
+            saved_chat(&saved, id(session)),
+            Some(vec![json!(session)]),
+            "{saved}"
+        );
+    }
+}
+
+#[test]
+fn a_version_9_state_file_keeps_each_subagents_panel_in_its_top_parents_workspace() {
+    let _serial = serial();
+    a_subagents_panel_moves_to_its_top_parents_workspace(9);
+}
+
+#[test]
+fn a_version_8_state_file_keeps_each_subagents_panel_in_its_top_parents_workspace() {
+    let _serial = serial();
+    a_subagents_panel_moves_to_its_top_parents_workspace(8);
+}
+
 #[test]
 fn a_state_file_from_before_workspaces_starts_each_session_from_the_layout() {
     let _serial = serial();

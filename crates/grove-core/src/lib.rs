@@ -385,6 +385,7 @@ impl Core {
             inner,
         };
         let back = core.restore(restored.sessions);
+        core.agents.adopt_panels(restored.subagent_panels);
         core.agents.keep_panels_of(&back);
         core.runtime.spawn(state::save_when_asked(
             core.saves.clone(),
