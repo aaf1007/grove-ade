@@ -860,6 +860,98 @@ test("an interrupted or failed turn says so", async () => {
   expect(screen.getByText("API Error: 529 overloaded")).toBeTruthy();
 });
 
+// Claude's and Codex's own names for a turn that failed because nobody is logged in.
+test.each<[Agent, string, string]>([
+  ["Claude", "authentication_failed", "Not logged in · Please run /login"],
+  ["Codex", "unauthorized", "401 Unauthorized"],
+])("a %s turn that failed to log in offers terminal mode, where the agent's own login runs", async (agent, kind, text) => {
+  const bridge = await started(agent);
+  await shownPanel(bridge, { agent, state: working("Failed") });
+  act(() => bridge.messages("0", { type: "TurnEnded", outcome: "Failed", kind, message: text }));
+  nextFrame();
+  const card = screen.getByRole("group", { name: "Turn failed" });
+  expect(card.textContent).toContain(text);
+
+  await act(async () => fireEvent.click(within(card).getByRole("button", { name: "Switch to terminal mode" })));
+
+  expect(bridge.modesSet).toEqual([{ session: "0", mode: "Terminal" }]);
+  expect(terminal()).toBeTruthy();
+});
+
+test("a turn that failed for another reason offers no switch", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Failed") });
+
+  act(() =>
+    bridge.messages("0", { type: "TurnEnded", outcome: "Failed", kind: "overloaded", message: "API Error: 529 overloaded" }),
+  );
+  nextFrame();
+
+  expect(within(screen.getByRole("group", { name: "Turn failed" })).queryByRole("button")).toBeNull();
+});
+
+const LOGIN_FAILED = {
+  type: "TurnEnded",
+  outcome: "Failed",
+  kind: "authentication_failed",
+  message: "Not logged in · Please run /login",
+} as const;
+
+test("only the latest turn's login failure offers the switch, and only until another turn ends", async () => {
+  const bridge = await started();
+  bridge.messages("0", LOGIN_FAILED, { type: "TurnStarted" }, LOGIN_FAILED);
+  await shownPanel(bridge, { state: working("Failed") });
+
+  const cards = screen.getAllByRole("group", { name: "Turn failed" });
+  expect(cards.map((card) => within(card).queryAllByRole("button").length)).toEqual([0, 1]);
+
+  act(() => bridge.messages("0", { type: "TurnStarted" }, { type: "TurnEnded", outcome: "Interrupted" }));
+  nextFrame();
+
+  expect(screen.queryByRole("button", { name: "Switch to terminal mode" })).toBeNull();
+});
+
+test("the switch in a failed turn is off while the agent works, with why as its tooltip", async () => {
+  const bridge = await started();
+  bridge.messages("0", LOGIN_FAILED, { type: "User", text: "try again" }, { type: "TurnStarted" });
+  await shownPanel(bridge, { state: working("Working") });
+
+  const button = screen.getByRole<HTMLButtonElement>("button", { name: "Switch to terminal mode" });
+  fireEvent.click(button);
+
+  expect(button.disabled).toBe(true);
+  expect(button.title).toBe("Claude Code is working. Switch modes once the turn ends.");
+  expect(bridge.modesSet).toEqual([]);
+});
+
+test("the panel reports each turn that failed to log in, by its number, once its history has come", async () => {
+  const bridge = await started();
+  bridge.messages("0", LOGIN_FAILED);
+  const reported: { turn: number; fromHistory: boolean }[] = [];
+  render(
+    <ChatPanel
+      bridge={bridge}
+      session="0"
+      agent="Claude"
+      worktree={worktree}
+      shown
+      state={undefined}
+      focusRequest={0}
+      onOpenDiff={() => {}}
+      onLoginFailed={(turn, fromHistory) => reported.push({ turn, fromHistory })}
+    />,
+  );
+  await act(async () => {});
+  expect(reported).toEqual([{ turn: 1, fromHistory: true }]);
+
+  act(() => bridge.messages("0", { type: "TurnStarted" }, { type: "TurnEnded", outcome: "Completed" }));
+  nextFrame();
+  act(() => bridge.messages("0", { type: "TurnStarted" }, LOGIN_FAILED));
+  nextFrame();
+
+  expect(reported).toEqual([{ turn: 1, fromHistory: true }, { turn: 3, fromHistory: false }]);
+});
+
 test("a message the agent never got says so, with its text", async () => {
   const bridge = await started();
   await shownPanel(bridge);
@@ -1206,6 +1298,15 @@ test("Codex's request for more permissions says so, with its reason", async () =
 
   const card = approvalCard("change its permissions");
   expect(within(card).getByText("fetch")).toBeTruthy();
+  expect(JSON.parse(card.querySelector("code")!.textContent!)).toEqual(permissions);
+});
+
+test("an approval for a tool the panel does not know shows its whole input", async () => {
+  const input = { server: "docs", query: "rm -rf build\nthen deploy" };
+  await asked({ type: "ApprovalRequested", request: "toolu_09", tool: "mcp__docs__search", input });
+
+  const card = approvalCard("use mcp__docs__search");
+  expect(JSON.parse(card.querySelector("code")!.textContent!)).toEqual(input);
 });
 
 test("an approval with no tool call of its own shows its own row", async () => {
@@ -1313,6 +1414,7 @@ test("a declined call keeps its call's clock time", async () => {
 
 test("an approval's buttons send once, even when pressed again before the answer is back", async () => {
   const bridge = await asked(bashCall, approval);
+  const answer = vi.spyOn(bridge, "answer");
 
   const approve = screen.getByRole("button", { name: "Approve" });
   fireEvent.click(approve);
@@ -1320,7 +1422,37 @@ test("an approval's buttons send once, even when pressed again before the answer
   fireEvent.click(screen.getByRole("button", { name: "Decline" }));
   await settle();
 
+  expect(answer).toHaveBeenCalledTimes(1);
   expect(bridge.answered).toHaveLength(1);
+});
+
+test("a message sent while an approval's answer is on its way sends no second reply and stays in the composer", async () => {
+  const bridge = await asked(bashCall, approval);
+  const answer = vi.spyOn(bridge, "answer");
+
+  fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+  fireEvent.change(composer(), { target: { value: "use vitest instead" } });
+  fireEvent.keyDown(composer(), { key: "Enter" });
+  await settle();
+
+  expect(answer).toHaveBeenCalledTimes(1);
+  expect(bridge.answered.map((a) => a.reply)).toEqual([{ type: "AllowOnce" }]);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect((composer() as HTMLTextAreaElement).value).toBe("use vitest instead");
+});
+
+test("an approval's buttons send nothing while a decline from the composer is on its way", async () => {
+  const bridge = await asked(bashCall, approval);
+  const answer = vi.spyOn(bridge, "answer");
+
+  fireEvent.change(composer(), { target: { value: "use vitest instead" } });
+  fireEvent.keyDown(composer(), { key: "Enter" });
+  fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+  await settle();
+
+  expect(answer).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByText("Declined: use vitest instead")).toBeTruthy();
 });
 
 test("while an approval waits, a message from the composer declines it with that message", async () => {
@@ -1338,6 +1470,34 @@ test("while an approval waits, a message from the composer declines it with that
   expect((composer() as HTMLTextAreaElement).value).toBe("");
   expect(screen.getByText("Declined: use vitest instead")).toBeTruthy();
   expect(composer().getAttribute("placeholder")).toBe("Ask Claude Code anything. @ files, / commands");
+});
+
+test("while a Codex approval waits, a message declines it without the message, which stays in the composer", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, {
+    agent: "Codex",
+    state: { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" },
+  });
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted" },
+      { type: "ApprovalRequested", request: "item_1", tool: "commandExecution", input: { command: "npm test" } },
+    ),
+  );
+  nextFrame();
+
+  expect(composer().getAttribute("placeholder")).toBe("Send to decline. Codex takes no message with a decline");
+  fireEvent.change(composer(), { target: { value: "use vitest instead" } });
+  fireEvent.keyDown(composer(), { key: "Enter" });
+  await settle();
+
+  expect(bridge.answered).toEqual([{ session: "0", request: "item_1", reply: { type: "Deny", message: null } }]);
+  expect(screen.getByText("Declined")).toBeTruthy();
+  expect((composer() as HTMLTextAreaElement).value).toBe("use vitest instead");
+  expect(screen.getByRole("alert").textContent).toBe(
+    "Declined. Codex takes no message with a decline, so yours was not sent. It is still here.",
+  );
 });
 
 test("a decline the core refuses puts the message back in the composer with its error", async () => {
@@ -1402,6 +1562,39 @@ test("a request of several questions shows one at a time, then sends every answe
 
   expect(bridge.answered[0].reply).toEqual({ type: "Answers", answers: [["vitest"], ["unit", "integration"]] });
   expect(screen.getByText("Answered: Runner: vitest; Kinds: unit, integration")).toBeTruthy();
+});
+
+test("Previous question goes back to an earlier answer, which can change before the last one sends", async () => {
+  const bridge = await asked({ type: "QuestionAsked", request: "toolu_02", questions: [runner, kinds] });
+
+  const card = questionCard();
+  expect(within(card).queryByRole("button", { name: "Previous question" })).toBeNull();
+  fireEvent.click(within(card).getByRole("radio", { name: /vitest/ }));
+  fireEvent.click(within(card).getByRole("button", { name: "Next question" }));
+  fireEvent.click(within(card).getByRole("checkbox", { name: /unit/ }));
+
+  fireEvent.click(within(card).getByRole("button", { name: "Previous question" }));
+  expect((within(card).getByRole("radio", { name: /vitest/ }) as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(within(card).getByRole("radio", { name: /jest/ }));
+  fireEvent.click(within(card).getByRole("button", { name: "Next question" }));
+  expect((within(card).getByRole("checkbox", { name: /unit/ }) as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(within(card).getByRole("button", { name: "Submit answer" }));
+  await settle();
+
+  expect(bridge.answered.map((a) => a.reply)).toEqual([{ type: "Answers", answers: [["jest"], ["unit"]] }]);
+});
+
+test("a request with no questions says so, and Continue answers it with none", async () => {
+  const bridge = await asked({ type: "QuestionAsked", request: "toolu_02", questions: [] });
+
+  const card = questionCard();
+  expect(within(card).getByText("Claude Code asked nothing. Continue to let it go on.")).toBeTruthy();
+  fireEvent.click(within(card).getByRole("button", { name: "Continue" }));
+  await settle();
+
+  expect(bridge.answered.map((a) => a.reply)).toEqual([{ type: "Answers", answers: [] }]);
+  expect(screen.queryByRole("group", { name: "Claude Code is asking" })).toBeNull();
+  expect(screen.getByText("Answered")).toBeTruthy();
 });
 
 test("a free-text answer sends the text in place of any option", async () => {

@@ -117,13 +117,14 @@ test("clicking a worktree selects it, and the selected one is marked", async () 
   );
 });
 
-// Each session row's title, branch and status dot, and whether it has the worktree badge, in order.
+// Each session row's title, its mark, the state and branch its tooltip names, and whether it has the
+// worktree badge, in order.
 function sessionRowsShown() {
   return sessionRows().map((row) => ({
     title: row.querySelector(".session-title")?.textContent,
-    branch: row.querySelector(".session-branch")?.textContent,
+    tooltip: row.title.split("\n")[1],
     worktree: within(row).queryByRole("img", { name: "Worktree" }) !== null,
-    dot: dot(row),
+    mark: mark(row),
   }));
 }
 
@@ -142,8 +143,8 @@ test("session rows come from the core's list under their project, with the state
   const repo = screen.getByRole("region", { name: "grove" });
   expect(sessionRows().every((row) => repo.contains(row))).toBe(true);
   expect(sessionRowsShown()).toEqual([
-    { title: "fix the login bug", branch: "main", worktree: false, dot: null },
-    { title: "New session", branch: "feat-35-tauri-sidebar", worktree: true, dot: "Approval" },
+    { title: "fix the login bug", tooltip: "main", worktree: false, mark: null },
+    { title: "New session", tooltip: "Approval · feat-35-tauri-sidebar", worktree: true, mark: "accent" },
   ]);
   expect(repo.textContent).not.toMatch(/Hook/);
 });
@@ -165,10 +166,10 @@ function sessionItem(row: HTMLElement) {
   return row.closest<HTMLElement>(".session-item")!;
 }
 
-// The state a row's status dot names, or null when it has none. The dot sits beside the row's
-// button, which it describes.
+// What a worktree row's dot names, or null when it has none. The dot sits beside the row's button,
+// which it describes.
 function dot(row: HTMLElement) {
-  const own = row.closest(".wt-row, .session-item")?.querySelector(".status-dot");
+  const own = row.closest(".wt-row")?.querySelector(".status-dot");
   return own?.getAttribute("aria-label") ?? null;
 }
 
@@ -180,7 +181,7 @@ async function oneSession() {
   return { bridge, session };
 }
 
-test("a session's dot shows its latest state, without its source, and never the session id", async () => {
+test("a session's row shows its latest state, without its source, and never the session id", async () => {
   const { bridge, session } = await oneSession();
   bridge.agentStateChanged({ session, state: "NeedsInput", kind: "Approval", source: "Hook" });
 
@@ -196,36 +197,11 @@ test("a session's dot shows its latest state, without its source, and never the 
 
   await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
   // The state the window got last beats the one the list has.
-  expect(dot(sessionRows()[0])).toBe("Working");
-  // The dot's word is its tooltip, and a screen reader reads it after the row's name.
-  expect(sessionItem(sessionRows()[0]).querySelector(".status-dot")!.getAttribute("title")).toBe("Working");
-  expect(screen.getByRole("button", { description: "Working" })).toBe(sessionRows()[0]);
+  expect(screen.getByRole("button", { name: "New session, Working" })).toBe(sessionRows()[0]);
+  expect(mark(sessionRows()[0])).toBe("spinner");
   const sidebar = screen.getByRole("complementary", { name: "Worktrees" });
   expect(sidebar.textContent).not.toMatch(/Hook|Protocol/);
   expect(sidebar.innerHTML).not.toMatch(new RegExp(`"${session}"`));
-});
-
-test.each([
-  ["Idle", { state: "Idle" as const }, null],
-  ["Exited", { state: "Exited" as const }, null],
-  ["Done", { state: "Done" as const }, "Done"],
-  ["Failed", { state: "Failed" as const }, "Failed"],
-  ["Question", { state: "NeedsInput" as const, kind: "Question" as const }, "Question"],
-])("a session that is %s shows the dot %s", async (_, state, shown) => {
-  const { bridge, session } = await oneSession();
-
-  render(
-    <Sidebar
-      bridge={bridge}
-      selected={null}
-      onSelect={() => {}}
-      {...noAgents}
-      agentStates={{ [session]: { session, ...state, source: "Protocol" } }}
-    />,
-  );
-
-  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
-  expect(dot(sessionRows()[0])).toBe(shown);
 });
 
 test("selecting a running session focuses it, and its row is marked while its panel shows", async () => {
@@ -339,7 +315,7 @@ test("a subagent session sits under the session that spawned it, in another work
     ["write the tests", "New session"],
     ["check the tests", "write the tests"],
   ]);
-  expect(sessionRowsShown()[1].branch).toBe("spike");
+  expect(sessionRowsShown()[1].tooltip).toBe("spike");
 });
 
 // Opens the session row's menu and picks Delete session.
@@ -493,41 +469,26 @@ test("the top rows fit the sidebar's width, so each key hint shows in full", asy
   expect([search.minWidth, search.width]).toEqual(["0px", "0px"]);
 });
 
-test("a long worktree name or session title is cut and fades out, and the dot is never squeezed", async () => {
-  const style = document.createElement("style");
-  style.textContent = sidebarStyles;
-  document.head.append(style);
-  onTestFinished(() => style.remove());
+test("a long worktree name is cut with an ellipsis, and the setup dot is never squeezed", async () => {
+  withStyles();
   const repo = [
     { path: "/code/grove", branch: "main", isMain: true },
     { path: "/code/grove-wt/spike", branch: "spike", isMain: false, setup: { state: "Running" as const } },
   ];
   const bridge = fakeBridge({ "/code/grove": repo });
   await bridge.addRepo("/code/grove");
-  const session = await bridge.spawnAgent("/code/grove", "Claude");
 
-  render(
-    <Sidebar
-      bridge={bridge}
-      selected={null}
-      onSelect={() => {}}
-      {...noAgents}
-      agentStates={{ [session]: { session, state: "NeedsInput", kind: "Question", source: "Hook" } }}
-    />,
-  );
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
   const row = await worktreeRow("spike");
-  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
 
-  for (const title of [row.querySelector(".wt-title")!, sessionRows()[0].querySelector(".session-title")!]) {
-    const box = getComputedStyle(title);
-    expect([box.overflow, box.whiteSpace, box.minWidth]).toEqual(["hidden", "nowrap", "0px"]);
-  }
-  // The title gives way first. The branch keeps its width, up to a third of the row.
-  const branch = getComputedStyle(sessionRows()[0].querySelector(".session-branch")!);
-  expect([branch.flexShrink, branch.maxWidth]).toEqual(["0", "33%"]);
-  for (const each of [row, sessionRows()[0]]) {
-    expect(getComputedStyle(each.closest(".wt-row, .session-item")!.querySelector(".status-dot")!).flexShrink).toBe("0");
-  }
+  const title = getComputedStyle(row.querySelector(".wt-title")!);
+  expect([title.overflow, title.whiteSpace, title.textOverflow, title.minWidth]).toEqual([
+    "hidden",
+    "nowrap",
+    "ellipsis",
+    "0px",
+  ]);
+  expect(getComputedStyle(row.closest(".wt-row")!.querySelector(".status-dot")!).flexShrink).toBe("0");
 });
 
 test("Tab moves from a session's row to its menu, then to its subagent session's row", async () => {
@@ -545,6 +506,266 @@ test("Tab moves from a session's row to its menu, then to its subagent session's
     within(sessionItem(sessionRows()[1])).getByRole("button", { name: /^Actions for / }),
   ]);
   expect(item.querySelector("[tabindex]")).toBeNull();
+});
+
+// Session rows that read like a session list (#83).
+
+// Puts the app's stylesheet in the document for the rest of the test, so computed styles apply.
+function withStyles() {
+  const style = document.createElement("style");
+  style.textContent = sidebarStyles;
+  document.head.append(style);
+  onTestFinished(() => style.remove());
+}
+
+// The mark before a session row's title: a spinner, an accent dot or a red dot. null for none.
+function mark(row: HTMLElement) {
+  const own = row.querySelector(".session-mark");
+  return ["spinner", "accent", "red"].find((kind) => own?.classList.contains(`mark-${kind}`)) ?? null;
+}
+
+// The age at the right of a session row.
+function age(row: HTMLElement) {
+  return row.querySelector(".session-age")?.textContent ?? null;
+}
+
+test.each([
+  ["Working", { state: "Working" as const }, "spinner"],
+  ["Approval", { state: "NeedsInput" as const, kind: "Approval" as const }, "accent"],
+  ["Question", { state: "NeedsInput" as const, kind: "Question" as const }, "accent"],
+  ["Done", { state: "Done" as const }, "accent"],
+  ["Failed", { state: "Failed" as const }, "red"],
+  ["Idle", { state: "Idle" as const }, null],
+  ["Exited", { state: "Exited" as const }, null],
+])("a session that is %s shows the mark %s, and its name and tooltip say the state", async (word, state, shown) => {
+  const { bridge, session } = await oneSession();
+  render(
+    <Sidebar
+      bridge={bridge}
+      selected={null}
+      onSelect={() => {}}
+      {...noAgents}
+      agentStates={{ [session]: { session, ...state, source: "Protocol" } }}
+    />,
+  );
+
+  const row = await screen.findByRole("button", { name: `New session, ${word}` });
+  expect(mark(row)).toBe(shown);
+  // The tooltip holds the whole title, then the state and the branch, which the row no longer shows.
+  expect(row.title.split("\n")).toEqual(["New session", `${word} · feat-35-tauri-sidebar`]);
+  expect(row.textContent).not.toMatch(/feat-35|Working|Done|Failed|Idle|Exited|Approval|Question/);
+});
+
+test("an ended session shows no mark, whatever its last state", async () => {
+  const { bridge, session } = await oneSession();
+  bridge.agentStateChanged({ session, state: "Failed", source: "Protocol" });
+  bridge.exit(session);
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+  expect(sessionItem(sessionRows()[0]).classList.contains("dimmed")).toBe(true);
+  expect(mark(sessionRows()[0])).toBeNull();
+});
+
+test("a row shows how long its session has been in its state, in minutes, hours or days, and keeps up", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"], now: Date.parse("2026-11-20T10:00:00Z") });
+  onTestFinished(() => void vi.useRealTimers());
+  const { bridge, session } = await oneSession();
+  bridge.agentStateChanged({ session, state: "Done", source: "Protocol" });
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+  expect(age(sessionRows()[0])).toBe("now");
+
+  act(() => vi.advanceTimersByTime(6 * 60_000));
+  expect(age(sessionRows()[0])).toBe("6m");
+  act(() => vi.advanceTimersByTime(2 * 3_600_000));
+  expect(age(sessionRows()[0])).toBe("2h");
+  act(() => vi.advanceTimersByTime(3 * 86_400_000));
+  expect(age(sessionRows()[0])).toBe("3d");
+});
+
+test("a new state never shows the old state's age: the sessions are listed again for the new since time", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"], now: Date.parse("2026-11-20T10:00:00Z") });
+  onTestFinished(() => void vi.useRealTimers());
+  const { bridge, session } = await oneSession();
+  bridge.agentStateChanged({ session, state: "Working", source: "Protocol" });
+  const sidebar = (state: "Working" | "Done") => (
+    <Sidebar
+      bridge={bridge}
+      selected={null}
+      onSelect={() => {}}
+      {...noAgents}
+      agentStates={{ [session]: { session, state, source: "Protocol" } }}
+    />
+  );
+  const { rerender } = render(sidebar("Working"));
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+  act(() => vi.advanceTimersByTime(6 * 60_000));
+  expect(age(sessionRows()[0])).toBe("6m");
+
+  // The window hears Done before the core lists it.
+  bridge.agentStateChanged({ session, state: "Done", source: "Protocol" });
+  rerender(sidebar("Done"));
+
+  expect(age(sessionRows()[0])).not.toBe("6m");
+  await vi.waitFor(() => expect(age(sessionRows()[0])).toBe("now"));
+});
+
+test.each([true, false])("reconciles a late session list with bounded requests (backend catches up: %s)", async (catchesUp) => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"], now: Date.parse("2026-11-20T10:00:00Z") });
+  onTestFinished(() => void vi.useRealTimers());
+  const { bridge, session } = await oneSession();
+  const working = { session, state: "Working", source: "Protocol" } as const;
+  const done = { ...working, state: "Done" } as const;
+  bridge.agentStateChanged(working);
+  const list = vi.spyOn(bridge, "agentSessions");
+  const sidebar = (event: typeof working | typeof done) => (
+    <Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} agentStates={{ [session]: event }} />
+  );
+  const { rerender } = render(sidebar(working));
+  const row = await screen.findByRole("button", { name: "New session, Working" });
+  act(() => vi.advanceTimersByTime(6 * 60_000));
+  expect(age(row)).toBe("6m");
+
+  bridge.agentStateChanged(done);
+  const stale = await bridge.agentSessions();
+  list.mockClear();
+  let deliverStaleList!: (records: typeof stale) => void;
+  list.mockReturnValueOnce(new Promise((resolve) => {
+    deliverStaleList = resolve;
+  }));
+  rerender(sidebar(done));
+  expect(list).toHaveBeenCalledTimes(1);
+
+  if (catchesUp) bridge.agentStateChanged(working);
+  rerender(sidebar(working));
+  expect(list).toHaveBeenCalledTimes(1);
+  await act(async () => deliverStaleList(stale));
+
+  expect(screen.getByRole("button", { name: "New session, Working" })).toBe(row);
+  expect(age(row)).toBe(catchesUp ? "now" : "");
+  act(() => vi.advanceTimersByTime(10 * 60_000));
+  expect(list).toHaveBeenCalledTimes(2);
+});
+
+test("the menu button takes the age's place while the row has focus, and the badge stays before it", async () => {
+  withStyles();
+  const { bridge } = await oneSession();
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+  const row = sessionRows()[0];
+  const menu = within(sessionItem(row)).getByRole("button", { name: /^Actions for / });
+  const shown = () => [
+    getComputedStyle(row.querySelector(".session-age")!).visibility,
+    getComputedStyle(menu.closest(".ui-menu")!).opacity,
+  ];
+  // The worktree badge sits right before the age.
+  const badge = within(row).getByRole("img", { name: "Worktree" });
+  expect(badge.nextElementSibling).toBe(row.querySelector(".session-age"));
+  expect(shown()).toEqual(["visible", "0"]);
+
+  act(() => row.focus());
+  expect(shown()).toEqual(["hidden", "1"]);
+  act(() => menu.focus());
+  expect(shown()).toEqual(["hidden", "1"]);
+});
+
+test("session row hover styles require a fine pointer with hover capability", () => {
+  withStyles();
+  const rules = Array.from(document.styleSheets).flatMap((sheet) => Array.from(sheet.cssRules));
+  const hoverRules = (rules: CSSRule[]) => rules.filter(
+    (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText.includes(".session-item:hover"),
+  );
+  expect(hoverRules(rules)).toHaveLength(0);
+  const finePointerRules = rules.flatMap((rule) =>
+    rule instanceof CSSMediaRule && rule.conditionText === "(hover: hover) and (pointer: fine)"
+      ? hoverRules(Array.from(rule.cssRules))
+      : [],
+  );
+  const hoverStyle = (selector: string) => finePointerRules.find((rule) => rule.selectorText === selector)?.style;
+  expect(hoverStyle(".session-item:hover")?.background).toBe("var(--hover)");
+  expect(hoverStyle(".session-item:hover .ui-menu")?.opacity).toBe("1");
+  expect(hoverStyle(".session-item:hover .session-age")?.visibility).toBe("hidden");
+});
+
+test("a session row is one 32px line: the title takes the free width and is cut with an ellipsis, never a fade", async () => {
+  withStyles();
+  const { bridge } = await oneSession();
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+  const row = sessionRows()[0];
+
+  expect(getComputedStyle(sessionItem(row)).height).toBe("var(--control-md)");
+  const title = getComputedStyle(row.querySelector(".session-title")!);
+  expect([title.flexGrow, title.overflow, title.whiteSpace, title.textOverflow, title.minWidth]).toEqual([
+    "1",
+    "hidden",
+    "nowrap",
+    "ellipsis",
+    "0px",
+  ]);
+  expect(sidebarStyles).not.toMatch(/mask-image/);
+  for (const part of [".session-mark", ".session-badge", ".session-age"]) {
+    expect(getComputedStyle(row.querySelector(part)!).flexShrink, part).toBe("0");
+  }
+});
+
+test("the selected row has a filled surface with a 6px radius, and hover is one step lighter", () => {
+  expect(sidebarStyles).toMatch(/\.session-item \{[^}]*border-radius: var\(--radius-md\)/);
+  expect(sidebarStyles).toMatch(/\.session-item:hover \{[^}]*background: var\(--hover\)/);
+  expect(sidebarStyles).toMatch(/\.session-item\.selected \{[^}]*background: var\(--row-selected\)/);
+});
+
+test("the spinner turns, and stops for reduced motion; the dots are the accent and the failed colors", () => {
+  expect(sidebarStyles).toMatch(/\.mark-spinner svg \{[^}]*animation: session-spin var\(--working-spin\)/);
+  expect(sidebarStyles).toMatch(/prefers-reduced-motion[\s\S]*\.mark-spinner svg \{[^}]*animation: none/);
+  expect(sidebarStyles).toMatch(/\.mark-accent::before \{[^}]*background: var\(--accent-text\)/);
+  expect(sidebarStyles).toMatch(/\.mark-red::before \{[^}]*background: var\(--failed\)/);
+});
+
+test("project headers are small muted labels, and a subagent session sits one step in with no tree line", async () => {
+  withStyles();
+  const { bridge, session } = await oneSession();
+  bridge.spawnSubagent(feature, "Codex", session);
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(2));
+
+  expect(getComputedStyle(folder("grove")).color).toBe("var(--muted)");
+  expect(sidebarStyles).toMatch(/\.repo-toggle \{[^}]*font: var\(--text-label\)/);
+  // One step in: the subagent's mark sits under its parent's title.
+  const subagents = sessionRows()[1].closest("ul")!;
+  expect(getComputedStyle(subagents).marginLeft).toBe("calc(var(--icon) + var(--space-8))");
+  expect(sidebarStyles).not.toMatch(/\.agent-sessions[^{]*::(before|after)/);
+});
+
+test("folding a project hides its sessions and keeps the Needs you count", async () => {
+  const { bridge } = await oneSession();
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} waiting={2} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
+
+  fireEvent.click(folder("grove"));
+
+  expect(sessionRows()).toEqual([]);
+  expect(screen.getByRole("button", { name: /^Needs you/ }).querySelector(".count")!.textContent).toBe("2");
+});
+
+test("every row is a button in the Tab order, and nothing hides its focus ring", async () => {
+  withStyles();
+  const { bridge, session } = await oneSession();
+  bridge.spawnSubagent(feature, "Codex", session);
+  render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
+  await vi.waitFor(() => expect(sessionRows()).toHaveLength(2));
+  const tree = document.querySelector(".sidebar-tree")!;
+
+  const rows = [...tree.querySelectorAll<HTMLElement>(".session-row, .wt-name")];
+  expect(rows).toHaveLength(4);
+  for (const row of rows) {
+    expect(row.tagName).toBe("BUTTON");
+    expect(row.getAttribute("tabindex")).toBeNull();
+    // The ring draws outside the button, so no row clips it.
+    expect(getComputedStyle(row.closest(".session-item, .wt-row")!).overflow).not.toBe("hidden");
+  }
+  expect(sidebarStyles).not.toMatch(/(session|wt)[^{]*\{[^}]*outline: (0|none)/);
 });
 
 // The sidebar's frame: the rows at its top and its footer (#29).
@@ -603,7 +824,7 @@ test("Search finds a session by its title or its worktree's branch", async () =>
   expect(rowNames()).toEqual([]);
 
   search("pty");
-  expect(sessionRowsShown().map(({ branch }) => branch)).toEqual(["fix-12-pty"]);
+  expect(sessionRowsShown().map(({ tooltip }) => tooltip)).toEqual(["fix-12-pty"]);
   expect(screen.queryByRole("region", { name: "grove" })).toBeNull();
 });
 
@@ -632,8 +853,10 @@ function placesIn(menu: string) {
 // The main New session button's places. Its picker must be open.
 const places = () => placesIn("New session");
 
+// A session row with no state yet is named by its title alone, which can be "New session" too.
 function pickPlace(name: string) {
-  fireEvent.click(screen.getByRole("button", { name: "New session" }));
+  const nav = screen.getByRole("navigation", { name: "Sidebar" });
+  fireEvent.click(within(nav).getByRole("button", { name: "New session" }));
   fireEvent.click(screen.getByRole("menuitem", { name }));
 }
 
@@ -1052,7 +1275,7 @@ test("a worktree whose setup script runs has no Start Claude Code in its menu", 
   expect(menuItems("feat-35-tauri-sidebar")).toEqual(["Change base branch", "Forget", "Delete"]);
 });
 
-test("the selected worktree's row is marked, and a session's Working dot pulses", async () => {
+test("the selected worktree's row is marked, and a Working session shows the spinner", async () => {
   const { bridge, session } = await oneSession();
   render(
     <Sidebar
@@ -1068,18 +1291,17 @@ test("the selected worktree's row is marked, and a session's Working dot pulses"
 
   expect(row.closest(".wt-row")!.classList.contains("selected")).toBe(true);
   expect(row.getAttribute("aria-current")).toBe("true");
-  expect(sessionItem(sessionRows()[0]).querySelector(".status-dot")!.classList.contains("status-working")).toBe(true);
-  expect(sidebarStyles).toMatch(/\.status-working\s*\{[^}]*animation/);
-  expect(sidebarStyles).toMatch(/prefers-reduced-motion[\s\S]*\.status-working[^}]*animation: none/);
+  expect(mark(sessionRows()[0])).toBe("spinner");
 });
 
-test("the status dot pulses with the Working icon's one keyframe and timing", () => {
+test("the setup dot pulses with the Working icon's one keyframe and timing, and stops for reduced motion", () => {
   const animation = (css: string, selector: string) =>
     css.match(new RegExp(`${selector}\\s*\\{[^}]*?animation: ([^;]+);`))?.[1];
 
   expect(animation(sidebarStyles, "\\.status-working")).toBe("ui-agent-state-pulse var(--working-pulse)");
   expect(animation(agentStateStyles, "\\.ui-agent-state-working svg")).toBe("ui-agent-state-pulse var(--working-pulse)");
   expect(sidebarStyles).not.toMatch(/@keyframes status-pulse/);
+  expect(sidebarStyles).toMatch(/prefers-reduced-motion[\s\S]*\.status-working[^}]*animation: none/);
 });
 
 // Add repo with a folder picker (#17).

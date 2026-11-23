@@ -79,10 +79,11 @@ async function trackedBridge() {
   return bridge;
 }
 
-// The sidebar row of the `nth` agent session on `branch`, in the order they started.
+// The sidebar row of the `nth` agent session on `branch`, in the order they started. Its tooltip
+// names the branch, after the state.
 function sessionRow(branch: string, nth = 0): HTMLElement | undefined {
   return [...document.querySelectorAll<HTMLElement>(".session-row")].filter(
-    (row) => row.querySelector(".session-branch")?.textContent === branch,
+    (row) => row.title.split("\n")[1]?.split(" · ").pop() === branch,
   )[nth];
 }
 
@@ -131,7 +132,11 @@ async function twoPanels(bridge: FakeBridge) {
 
 // Picks `place` in the sidebar's New session picker, which starts a session there and selects it.
 async function newSessionIn(place: string) {
-  fireEvent.click(await screen.findByRole("button", { name: "New session" }));
+  // In the sidebar's nav: a session row with no title yet is named "New session" too.
+  const nav = await screen.findByRole("navigation", { name: "Sidebar" });
+  const newSession = within(nav).getByRole("button", { name: "New session" });
+  await waitFor(() => expect(newSession).toHaveProperty("disabled", false));
+  fireEvent.click(newSession);
   await click(screen.getByRole("menuitem", { name: place }));
 }
 

@@ -17,6 +17,7 @@ import type {
   Worktree,
 } from "./bridge";
 import { ChatPanel } from "./ChatPanel";
+import { useLoginDoubt } from "./loginDoubt";
 import { useSetting } from "./settings";
 import { DetailsCard, type FocusedSession, type RunTab, useDetailsRoom } from "./DetailsCard";
 import { type DiffOpened, DiffView } from "./DiffView";
@@ -189,9 +190,13 @@ export function App({ bridge }: { bridge: Bridge }) {
   // The agent session whose panel last had focus, by worktree, for the Details card.
   const [lastFocused, setLastFocused] = useState<Record<string, SessionId>>({});
   // Each agent session's mode and model, as its panel reports them, by session.
-  const [sessionDetails, setSessionDetails] = useState<
-    Record<SessionId, { mode?: Mode; model?: ModelChoice | null }>
-  >({});
+  const [sessionDetails, setSessionDetails] = useState<Record<SessionId, SessionDetails>>({});
+  // A shown panel in chat mode says why its turns fail. The mode is unknown for a moment after
+  // the panel mounts, and the panel is in chat mode unless it says otherwise.
+  const { doubted: loginsInDoubt, loginFailed } = useLoginDoubt(
+    bridge,
+    (session) => !!places[session]?.shown && sessionDetails[session]?.mode !== "Terminal",
+  );
   // Whether the user opened Details. It shows while the chat area has room for it.
   const [detailsOpen, setDetailsOpen] = useSetting("grove.detailsOpen", false, (open) => typeof open === "boolean");
   const [chatLane, setChatLane] = useState<HTMLElement | null>(null);
@@ -621,7 +626,7 @@ export function App({ bridge }: { bridge: Bridge }) {
     if (session !== null && ended.has(session)) select(place);
   }
 
-  function reportDetails(session: SessionId, details: { mode?: Mode; model?: ModelChoice | null }) {
+  function reportDetails(session: SessionId, details: SessionDetails) {
     setSessionDetails((known) => ({ ...known, [session]: { ...known[session], ...details } }));
   }
 
@@ -639,6 +644,12 @@ export function App({ bridge }: { bridge: Bridge }) {
       mode,
       state: agentStates[found.session],
     };
+  }
+
+  // The footer shows only the selected agent's login, and nothing while that login is in doubt.
+  function selectedAgentAccount(agent: Agent | undefined): Partial<Record<Agent, Account | null>> {
+    if (!agent || accounts[agent] === undefined || loginsInDoubt.includes(agent)) return {};
+    return { [agent]: accounts[agent] };
   }
 
   // Each agent session's place in the chat area, by session, for those in the workspace shown.
@@ -680,6 +691,10 @@ export function App({ bridge }: { bridge: Bridge }) {
       ),
   );
   const detailsSession = selected ? focusedSession(selected) : null;
+  const footerSession = detailsSession && places[detailsSession.session]?.shown
+    ? detailsSession
+    : agents.find((started) => places[started.session]?.shown);
+  const footerAccounts = selectedAgentAccount(footerSession?.agent);
   const selectedRepo = byRepo(worktrees ?? []).find((repo) => repo.some((w) => w.path === selected));
   const selectedWorktree = selectedRepo?.find((w) => w.path === selected);
   const regions = ["regions"];
@@ -746,7 +761,7 @@ export function App({ bridge }: { bridge: Bridge }) {
               onOpenProfiles={() => open("Profile")}
               onShowSidebar={() => layout.sidebarOpen || toggleSidebar()}
               onHideSidebar={hideSidebarFromSwitch}
-              accounts={accounts}
+              accounts={footerAccounts}
               appearance={appearance}
               onAppearance={setAppearance}
               ref={sidebarRef}
@@ -811,6 +826,7 @@ export function App({ bridge }: { bridge: Bridge }) {
                   onHide={shownCount > 1 ? () => changeShown((w) => hideSession(w, started.session)) : undefined}
                   onMode={(mode) => reportDetails(started.session, { mode })}
                   onModelChoice={(model) => reportDetails(started.session, { model })}
+                  onLoginFailed={(turn, fromHistory) => loginFailed(started.session, started.agent, turn, fromHistory)}
                   onFocus={() => focus(started.session, started.worktree)}
                   onBlur={() => {
                     if (focusedAgent.current === started.session) focusedAgent.current = null;
@@ -1027,6 +1043,8 @@ function sameLayout(a: Workspace, b: Workspace): boolean {
 const PLACEHOLDER_TABS: PanelKind[] = ["Browser", "Logs"];
 
 type StartKind = "shell" | "agent" | `run ${string}`;
+
+type SessionDetails = { mode?: Mode; model?: ModelChoice | null };
 
 // JSON keeps any two kinds and worktrees apart, whatever a run session's name or a path holds.
 function startKey(kind: StartKind, worktree: string): string {
