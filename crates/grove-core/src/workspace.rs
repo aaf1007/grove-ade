@@ -106,6 +106,12 @@ pub(crate) struct Saved {
     before_agent_change: Option<Workspace>,
 }
 
+// An agent's change to a workspace, kept until it is saved.
+struct AgentChange {
+    changed: Workspace,
+    replaced: Saved,
+}
+
 impl Saved {
     pub(crate) fn restored(workspace: Workspace) -> Saved {
         Saved {
@@ -193,10 +199,11 @@ impl Core {
 
     /// Saves `workspace` as the one `session` shows in and sends one `WorkspaceChanged` with
     /// `by`. `by` is the agent session that changed it, None for the user. Undo restores the
-    /// workspace from before the last change an agent made, with the diff base as it is now.
-    /// Refused when the selected tab is not one of the tabs, or when an agent panel names a
-    /// session twice or one that is neither the workspace's own session nor a subagent below
-    /// it. A running session `workspace` has no panel for, such as a subagent started since the
+    /// workspace from before the last change an agent made, with the diff base as it is now. An
+    /// agent's change that cannot be saved is taken back, with no `WorkspaceChanged`. Refused
+    /// when the selected tab is not one of the tabs, or when an agent panel names a session
+    /// twice or one that is neither the workspace's own session nor a subagent below it. A
+    /// running session `workspace` has no panel for, such as a subagent started since the
     /// caller read it, keeps its panel, shown after the last one.
     pub async fn set_workspace(
         &self,
@@ -204,15 +211,14 @@ impl Core {
         workspace: Workspace,
         by: Option<SessionId>,
     ) -> Result<()> {
-        let owner = self
+        let (owner, change) = self
             .agents
             .with_workspace(session, |owner, members, saved| {
                 check_workspace(&workspace, members)?;
                 let workspace = workspace.with_running_panels_of(&saved.workspace, members);
-                saved.replace(workspace, by);
-                Ok::<_, CoreError>(owner)
+                Ok::<_, CoreError>((owner, saved.replace(workspace, by)))
             })??;
-        self.changed(owner, by).await
+        self.replaced(owner, by, change).await
     }
 
     /// Restores the workspace `session` shows in from before the last change an agent made to
@@ -235,6 +241,25 @@ impl Core {
                 Ok::<_, CoreError>(owner)
             })??;
         self.changed(owner, None).await
+    }
+
+    // `changed` for a workspace that was replaced. An agent's change that cannot be saved is
+    // taken back: the UI is told of no change, so the core must hold none, and a retry must not
+    // take the layout that failed as the one Undo restores.
+    async fn replaced(
+        &self,
+        owner: SessionId,
+        by: Option<SessionId>,
+        change: Option<AgentChange>,
+    ) -> Result<()> {
+        let saved = self.changed(owner, by).await;
+        if let (Err(_), Some(change)) = (&saved, change) {
+            // It fails only when the session was deleted meanwhile, and its workspace with it.
+            let _ = self
+                .agents
+                .with_workspace(owner, |_, _, saved| saved.take_back(change));
+        }
+        saved
     }
 
     async fn changed(&self, owner: SessionId, by: Option<SessionId>) -> Result<()> {
@@ -286,7 +311,8 @@ impl Core {
 
     /// Replaces the workspace agent session `caller` shows in with `workspace`, as grove-mcp
     /// sends it, with `caller` as `by`. Refuses one that drops the panel of an agent session
-    /// running in it, or names a session that is not part of it.
+    /// running in it, or names a session that is not part of it. One that cannot be saved is
+    /// taken back.
     pub(crate) fn set_agent_workspace(
         &self,
         caller: SessionId,
@@ -294,18 +320,18 @@ impl Core {
     ) -> std::result::Result<(), Refused> {
         let workspace: WorkspaceJson =
             serde_json::from_value(workspace).map_err(|e| Refused::BadWorkspace(e.to_string()))?;
-        let owner = self
+        let (owner, change) = self
             .agents
             .with_workspace(caller, |owner, members, saved| {
                 let workspace = workspace.with_diff_base(saved.workspace.diff_base);
                 let now = saved.workspace.listed(members);
                 check_sessions(&now, &workspace, members).map_err(Refused::BadWorkspace)?;
                 check_workspace(&workspace, members)?;
-                saved.replace(workspace, Some(caller));
-                Ok::<_, Refused>(owner)
+                Ok::<_, Refused>((owner, saved.replace(workspace, Some(caller))))
             })??;
         // The panel request thread is no runtime worker, so it may block on one.
-        self.runtime.block_on(self.changed(owner, Some(caller)))?;
+        self.runtime
+            .block_on(self.replaced(owner, Some(caller), change))?;
         Ok(())
     }
 
@@ -328,11 +354,25 @@ impl Core {
 }
 
 impl Saved {
-    // Only the last agent change can be undone.
-    fn replace(&mut self, workspace: Workspace, by: Option<SessionId>) {
+    // Only the last agent change can be undone. Returns an agent's change, for `take_back`.
+    fn replace(&mut self, workspace: Workspace, by: Option<SessionId>) -> Option<AgentChange> {
         let before = std::mem::replace(&mut self.workspace, workspace);
-        if by.is_some() {
-            self.before_agent_change = Some(before);
+        by?;
+        let undone_before = self.before_agent_change.replace(before.clone());
+        Some(AgentChange {
+            changed: self.workspace.clone(),
+            replaced: Saved {
+                workspace: before,
+                before_agent_change: undone_before,
+            },
+        })
+    }
+
+    // Puts back the workspace `change` replaced, and what Undo restored then. A workspace that
+    // changed again since is left as it is: that later change is not this one's to take back.
+    fn take_back(&mut self, change: AgentChange) {
+        if self.workspace == change.changed {
+            *self = change.replaced;
         }
     }
 }
@@ -402,5 +442,33 @@ fn check_sessions(
             "it drops the panel of agent session {session}, which is running"
         )),
         None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The risk this guards: taking back a change that was not saved also takes back a later
+    // change that was, such as the user's.
+    #[test]
+    fn taking_back_an_agents_change_leaves_a_workspace_that_changed_again_since() {
+        let before = Workspace::from_layout(Layout::default());
+        let by_agent = Workspace {
+            terminal: false,
+            ..before.clone()
+        };
+        let by_user = Workspace {
+            selected: None,
+            ..by_agent.clone()
+        };
+        let mut saved = Saved::restored(before.clone());
+        let change = saved.replace(by_agent, Some(SessionId(0))).unwrap();
+        saved.replace(by_user.clone(), None);
+
+        saved.take_back(change);
+
+        assert_eq!(saved.workspace, by_user);
+        assert_eq!(saved.before_agent_change, Some(before));
     }
 }

@@ -5,6 +5,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::Shutdown;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::pin::pin;
@@ -302,6 +303,17 @@ fn saved_chat(state: &Value, session: SessionId) -> Option<Vec<Value>> {
         .find(|record| record["id"] == json!(session))?;
     let chat = record["workspace"]["chat"].as_array()?;
     Some(chat.iter().map(|panel| panel["session"].clone()).collect())
+}
+
+// Runs `change` while no save of the state works: the state file's temp file cannot be made in
+// a home folder that takes no new files.
+fn while_no_save_works<T>(dir: &Path, change: impl FnOnce() -> T) -> T {
+    let home = dir.join("home");
+    let writable = fs::metadata(&home).unwrap().permissions();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+    let changed = change();
+    fs::set_permissions(&home, writable).unwrap();
+    changed
 }
 
 #[test]
@@ -1627,6 +1639,96 @@ fn an_agents_workspace_set_that_drops_the_panel_of_a_running_session_is_refused(
         core.workspace(parent).unwrap().chat,
         [panel(Agent::Claude, parent, true)]
     );
+}
+
+// The workspace `agent` reads, with the Logs tab opened and selected.
+fn with_logs_open(dir: &Path, agent: SessionId) -> Value {
+    let mut workspace = workspace_get(dir, agent);
+    workspace["panels"] = json!(["files", "diff", "logs"]);
+    workspace["selected"] = json!("logs");
+    workspace
+}
+
+// The risk this guards: the core keeps a layout the UI was never told of and the state file
+// does not hold.
+#[test]
+fn an_agents_workspace_set_that_cannot_be_saved_leaves_the_workspace_as_it_was() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let (core, mut events, repo) = core_with_repo(dir.path());
+    let agent = session(&core, &repo, Agent::Claude);
+    let before = workspace_get(dir.path(), agent);
+    let changed = with_logs_open(dir.path(), agent);
+
+    let reply = while_no_save_works(dir.path(), || workspace_set(dir.path(), agent, &changed));
+
+    assert!(reply.get("error").is_some(), "{reply}");
+    assert_eq!(workspace_get(dir.path(), agent), before);
+    assert_eq!(
+        workspace_changes_within(&mut events, Duration::from_millis(300)),
+        []
+    );
+    // Nothing is left to undo, as nothing changed.
+    let err = block_on(core.undo_workspace(agent)).unwrap_err();
+    assert!(
+        matches!(err, CoreError::NothingToUndo(s) if s == agent),
+        "{err}"
+    );
+}
+
+// The risk this guards: the retry takes the layout of the try that failed as the one to undo
+// to, so Undo puts back the agent's change.
+#[test]
+fn undo_after_a_set_that_could_not_be_saved_and_its_retry_restores_the_layout_from_before_both() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let (core, mut events, repo) = core_with_repo(dir.path());
+    let agent = session(&core, &repo, Agent::Claude);
+    let before = core.workspace(agent).unwrap();
+    let changed = with_logs_open(dir.path(), agent);
+    let failed = while_no_save_works(dir.path(), || workspace_set(dir.path(), agent, &changed));
+    assert!(failed.get("error").is_some(), "{failed}");
+
+    let retried = workspace_set(dir.path(), agent, &changed);
+
+    assert_eq!(retried, json!({"result": {}}));
+    // One notice with Undo, for the change that was saved.
+    assert_eq!(
+        workspace_changes_within(&mut events, Duration::from_millis(300)),
+        [(agent, Some(agent))]
+    );
+    block_on(core.undo_workspace(agent)).unwrap();
+    assert_eq!(core.workspace(agent).unwrap(), before);
+}
+
+#[test]
+fn an_agent_change_that_cannot_be_saved_keeps_the_undo_of_the_agent_change_before_it() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let (core, mut events, repo) = core_with_repo(dir.path());
+    let agent = session(&core, &repo, Agent::Claude);
+    let before = core.workspace(agent).unwrap();
+    let first = arranged(before.chat.clone());
+    block_on(core.set_workspace(agent, first.clone(), Some(agent))).unwrap();
+    workspace_changes_within(&mut events, Duration::from_millis(100));
+    let second = Workspace {
+        terminal: true,
+        ..first.clone()
+    };
+
+    let failed = while_no_save_works(dir.path(), || {
+        block_on(core.set_workspace(agent, second, Some(agent)))
+    });
+
+    assert!(matches!(failed, Err(CoreError::Io { .. })), "{failed:?}");
+    assert_eq!(core.workspace(agent).unwrap(), first);
+    assert_eq!(
+        workspace_changes_within(&mut events, Duration::from_millis(300)),
+        []
+    );
+    // The notice of the first change is still up, and its Undo does what it says.
+    block_on(core.undo_workspace(agent)).unwrap();
+    assert_eq!(core.workspace(agent).unwrap(), before);
 }
 
 #[test]
