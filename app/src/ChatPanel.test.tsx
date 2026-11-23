@@ -860,6 +860,98 @@ test("an interrupted or failed turn says so", async () => {
   expect(screen.getByText("API Error: 529 overloaded")).toBeTruthy();
 });
 
+// Claude's and Codex's own names for a turn that failed because nobody is logged in.
+test.each<[Agent, string, string]>([
+  ["Claude", "authentication_failed", "Not logged in · Please run /login"],
+  ["Codex", "unauthorized", "401 Unauthorized"],
+])("a %s turn that failed to log in offers terminal mode, where the agent's own login runs", async (agent, kind, text) => {
+  const bridge = await started(agent);
+  await shownPanel(bridge, { agent, state: working("Failed") });
+  act(() => bridge.messages("0", { type: "TurnEnded", outcome: "Failed", kind, message: text }));
+  nextFrame();
+  const card = screen.getByRole("group", { name: "Turn failed" });
+  expect(card.textContent).toContain(text);
+
+  await act(async () => fireEvent.click(within(card).getByRole("button", { name: "Switch to terminal mode" })));
+
+  expect(bridge.modesSet).toEqual([{ session: "0", mode: "Terminal" }]);
+  expect(terminal()).toBeTruthy();
+});
+
+test("a turn that failed for another reason offers no switch", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Failed") });
+
+  act(() =>
+    bridge.messages("0", { type: "TurnEnded", outcome: "Failed", kind: "overloaded", message: "API Error: 529 overloaded" }),
+  );
+  nextFrame();
+
+  expect(within(screen.getByRole("group", { name: "Turn failed" })).queryByRole("button")).toBeNull();
+});
+
+const LOGIN_FAILED = {
+  type: "TurnEnded",
+  outcome: "Failed",
+  kind: "authentication_failed",
+  message: "Not logged in · Please run /login",
+} as const;
+
+test("only the latest turn's login failure offers the switch, and only until another turn ends", async () => {
+  const bridge = await started();
+  bridge.messages("0", LOGIN_FAILED, { type: "TurnStarted" }, LOGIN_FAILED);
+  await shownPanel(bridge, { state: working("Failed") });
+
+  const cards = screen.getAllByRole("group", { name: "Turn failed" });
+  expect(cards.map((card) => within(card).queryAllByRole("button").length)).toEqual([0, 1]);
+
+  act(() => bridge.messages("0", { type: "TurnStarted" }, { type: "TurnEnded", outcome: "Interrupted" }));
+  nextFrame();
+
+  expect(screen.queryByRole("button", { name: "Switch to terminal mode" })).toBeNull();
+});
+
+test("the switch in a failed turn is off while the agent works, with why as its tooltip", async () => {
+  const bridge = await started();
+  bridge.messages("0", LOGIN_FAILED, { type: "User", text: "try again" }, { type: "TurnStarted" });
+  await shownPanel(bridge, { state: working("Working") });
+
+  const button = screen.getByRole<HTMLButtonElement>("button", { name: "Switch to terminal mode" });
+  fireEvent.click(button);
+
+  expect(button.disabled).toBe(true);
+  expect(button.title).toBe("Claude Code is working. Switch modes once the turn ends.");
+  expect(bridge.modesSet).toEqual([]);
+});
+
+test("the panel reports each turn that failed to log in, by its number, once its history has come", async () => {
+  const bridge = await started();
+  bridge.messages("0", LOGIN_FAILED);
+  const reported: { turn: number; fromHistory: boolean }[] = [];
+  render(
+    <ChatPanel
+      bridge={bridge}
+      session="0"
+      agent="Claude"
+      worktree={worktree}
+      shown
+      state={undefined}
+      focusRequest={0}
+      onOpenDiff={() => {}}
+      onLoginFailed={(turn, fromHistory) => reported.push({ turn, fromHistory })}
+    />,
+  );
+  await act(async () => {});
+  expect(reported).toEqual([{ turn: 1, fromHistory: true }]);
+
+  act(() => bridge.messages("0", { type: "TurnStarted" }, { type: "TurnEnded", outcome: "Completed" }));
+  nextFrame();
+  act(() => bridge.messages("0", { type: "TurnStarted" }, LOGIN_FAILED));
+  nextFrame();
+
+  expect(reported).toEqual([{ turn: 1, fromHistory: true }, { turn: 3, fromHistory: false }]);
+});
+
 test("a message the agent never got says so, with its text", async () => {
   const bridge = await started();
   await shownPanel(bridge);
