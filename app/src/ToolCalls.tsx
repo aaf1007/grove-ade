@@ -321,8 +321,8 @@ function unwrapped(command: string): string {
 
 /** How each tool's call reads: the input field it acts on, the sentence, and the icon. */
 const SENTENCES: Record<string, { field?: string; say(target: string): string; icon: LucideIcon }> = {
-  Bash: { field: "command", say: (command) => `Ran ${shortCommand(command)}`, icon: SquareTerminal },
-  commandExecution: { field: "command", say: (command) => `Ran ${shortCommand(command)}`, icon: SquareTerminal },
+  Bash: { field: "command", say: (command) => `Ran ${command}`, icon: SquareTerminal },
+  commandExecution: { field: "command", say: (command) => `Ran ${command}`, icon: SquareTerminal },
   Read: { field: "file_path", say: (path) => `Read ${path}`, icon: FileText },
   Write: { field: "file_path", say: (path) => `Wrote ${path}`, icon: Pencil },
   Edit: { field: "file_path", say: (path) => `Edited ${path}`, icon: Pencil },
@@ -348,7 +348,9 @@ function describe({ tool, input }: ToolCall, worktree: string): { label: string;
   const sentence = SENTENCES[tool];
   const target = sentence?.field ? (input as Record<string, unknown> | null)?.[sentence.field] : "";
   if (sentence && typeof target === "string" && (target !== "" || !sentence.field)) {
-    return { label: sentence.say(relative(target, worktree)), icon: sentence.icon };
+    // A command is unwrapped first, as in a folded row, so a path inside a shell wrapper is relative too.
+    const shown = KINDS[tool] === COMMAND ? shortCommand(target) : target;
+    return { label: sentence.say(relative(shown, worktree)), icon: sentence.icon };
   }
   return { label: `Used ${tool}`, icon: Wrench };
 }
