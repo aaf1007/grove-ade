@@ -5,6 +5,7 @@ import type { SlashCommand, AgentState as State, Workspace } from "../bridge";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { ChatPanel } from "../ChatPanel";
 import type { FakeBridge, FakeWorktree } from "../fakeBridge";
+import { InlinePage } from "../InlinePage";
 import { PanelTabs } from "../PanelTabs";
 import { Sidebar } from "../Sidebar";
 import { AgentState } from "../ui/AgentState";
@@ -51,6 +52,29 @@ const MARKDOWN_SAMPLE = [
   "| --- | --- |",
   "| cargo clippy | pass |",
   "| vitest run | pass |",
+].join("\n");
+
+/** A page as an agent writes one: its own styles and script, colored by the theme's variables. */
+const PAGE_SAMPLE = [
+  "<style>",
+  "  .chart { padding: 16px; }",
+  "  .row { display: grid; grid-template-columns: 96px 1fr 32px; align-items: center; gap: 12px; margin: 8px 0; }",
+  "  .name { color: var(--muted); }",
+  "  .track { border: 1px solid var(--border); border-radius: var(--radius); }",
+  "  .bar { height: 12px; border-radius: var(--radius); }",
+  "  .count { font-family: var(--font-mono); text-align: right; }",
+  "</style>",
+  '<div class="chart" id="chart"></div>',
+  "<script>",
+  '  var states = [["Working", 7, 1], ["Done", 12, 2], ["Needs input", 3, 3], ["Failed", 1, 5]];',
+  "  var most = Math.max.apply(null, states.map(function (state) { return state[1]; }));",
+  '  document.getElementById("chart").innerHTML = states.map(function (state) {',
+  "    var width = Math.round((state[1] / most) * 100);",
+  "    return '<div class=\"row\"><span class=\"name\">' + state[0] + '</span>' +",
+  "      '<div class=\"track\"><div class=\"bar\" style=\"width:' + width + '%;background:var(--chart-' + state[2] + ')\"></div></div>' +",
+  "      '<span class=\"count\">' + state[1] + '</span></div>';",
+  '  }).join("");',
+  "</script>",
 ].join("\n");
 
 /** The slash commands and skills the gallery's Claude session lists. */
@@ -319,6 +343,12 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
       <Section title="AgentMarkdown">
         <div className="gallery-chat-lane">
           <AgentMarkdown text={MARKDOWN_SAMPLE} onOpenLink={() => {}} />
+        </div>
+      </Section>
+
+      <Section title="InlinePage">
+        <div className="gallery-chat-lane">
+          <InlinePage title="Agent sessions by state" html={PAGE_SAMPLE} height={null} frame={null} />
         </div>
       </Section>
 

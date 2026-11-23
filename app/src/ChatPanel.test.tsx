@@ -1,10 +1,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Profiler } from "react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 
 import type { Agent, AgentStateChanged, Question, Reply } from "./bridge";
 import { ChatPanel } from "./ChatPanel";
 import { fakeBridge, type FakeBridge, type FakeChange, type FakeDiffs, type FakeMessage } from "./fakeBridge";
+import { tokensInDocument } from "./tokensInDocument";
 
 // TerminalPanel.test.tsx covers the terminal itself. The stub says which session it shows.
 vi.mock("./TerminalPanel", () => ({
@@ -2226,4 +2227,57 @@ test("an unanswered notice stays through a switch to terminal mode and back", as
 
   await act(async () => fireEvent.click(within(notice()!).getByRole("button", { name: "Undo" })));
   expect(bridge.undone).toEqual([worktree]);
+});
+
+test("a page the agent shows is its own item, where the agent called the tool", async () => {
+  // A page takes its theme from the tokens.
+  const removeTokens = tokensInDocument();
+  onTestFinished(removeTokens);
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted" },
+      { type: "ToolCall", id: "toolu_01", tool: "Bash", input: { command: "npm test" } },
+      { type: "ToolResult", id: "toolu_01", output: "3 passed", isError: false },
+      { type: "ToolCall", id: "toolu_02", tool: "mcp__grove__html_show", input: { title: "Build workflow" } },
+      { type: "InlinePage", id: "page-0123456789abcdef", title: "Build workflow", html: "<svg></svg>", height: 320 },
+      { type: "ToolResult", id: "toolu_02", output: "Showed the page as page-0123456789abcdef.", isError: false },
+      { type: "ToolCall", id: "toolu_03", tool: "Bash", input: { command: "npm run build" } },
+      { type: "TextDelta", text: "That is the build." },
+    ),
+  );
+  nextFrame();
+
+  const page = screen.getByRole("group", { name: "Page: Build workflow" });
+  const frame = within(page).getByTitle<HTMLIFrameElement>("Build workflow");
+  expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+  expect(frame.srcdoc).toContain("<svg></svg>");
+  expect(frame.style.height).toBe("320px");
+  // It sits after the call that showed it and before what the agent did next.
+  const before = screen.getByRole("button", { name: "Used mcp__grove__html_show" });
+  const after = screen.getByRole("button", { name: "Ran npm run build" });
+  expect(before.compareDocumentPosition(page) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(page.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("a page shown outside a turn shows too, and two pages keep their own frames", async () => {
+  const removeTokens = tokensInDocument();
+  onTestFinished(removeTokens);
+  const bridge = await started();
+  await shownPanel(bridge);
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "InlinePage", id: "page-0000000000000001", title: "Before", html: "<p>one</p>", height: null },
+      { type: "InlinePage", id: "page-0000000000000002", title: "After", html: "<p>two</p>", height: null },
+    ),
+  );
+  nextFrame();
+
+  expect(screen.getByTitle<HTMLIFrameElement>("Before").srcdoc).toContain("<p>one</p>");
+  expect(screen.getByTitle<HTMLIFrameElement>("After").srcdoc).toContain("<p>two</p>");
 });
