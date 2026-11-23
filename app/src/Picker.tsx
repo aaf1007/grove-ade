@@ -1,8 +1,9 @@
 import { Asterisk, Hexagon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type Ref, useEffect, useEffectEvent, useImperativeHandle, useRef, useState } from "react";
 
 import type { Agent, Bridge, Model, SessionId } from "./bridge";
 import { openedByPointer } from "./motion";
+import { matchesKeys, shortcut } from "./shortcuts";
 import { AGENT_NAMES } from "./Sidebar";
 import { Segmented } from "./ui/Segmented";
 
@@ -94,6 +95,24 @@ export function AgentMark({ agent }: { agent: Agent }) {
   );
 }
 
+/** A list of the popover that a shortcut opens it on. */
+export type PickerList = "model" | "effort";
+
+/** What the picker's owner can ask of it. */
+export interface PickerHandle {
+  /**
+   * Opens the popover on `list`, or moves an open one to it. Focus goes to the list's current
+   * item, and a digit 1 to 9 picks that item of the list and closes the popover.
+   */
+  openOn(list: PickerList): void;
+}
+
+// The buttons of each list, in the popover.
+const LIST_ITEMS: Record<PickerList, string> = {
+  model: "button[data-picker-list=model]",
+  effort: "[role=group][aria-label=Effort] button",
+};
+
 /**
  * The button in the composer's footer, with the agent's mark, the model and its effort, and its popover: the agent, until `agentLocked`, then the model
  * and its effort. Picking an agent or a model closes it. Picking an effort leaves it open.
@@ -105,6 +124,7 @@ export function Picker({
   choice,
   onAgent,
   onChoose,
+  ref,
 }: {
   agent: Agent;
   /** The conversation has a message, so the agent is fixed. */
@@ -113,44 +133,102 @@ export function Picker({
   choice: ModelChoice | null;
   onAgent(agent: Agent): void;
   onChoose(choice: ModelChoice): void;
+  ref?: Ref<PickerHandle>;
 }) {
   const [open, setOpen] = useState(false);
+  // The list a digit picks from. None after a click opened the popover.
+  const [list, setList] = useState<PickerList | null>(null);
   const [entering, setEntering] = useState(false);
   // Opened while the models load, it keeps one height until it closes, so they fill in below the
   // rows already shown and no row moves under the pointer.
   const [held, setHeld] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
+  // What had focus when a shortcut opened the popover. It gets focus back.
+  const opener = useRef<HTMLElement | null>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const outside = (event: MouseEvent) => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false);
-    };
-    // In the capture phase, and taken, so this Escape closes the popover and nothing behind it.
-    const escape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setOpen(false);
-    };
-    document.addEventListener("mousedown", outside);
-    document.addEventListener("keydown", escape, true);
-    return () => {
-      document.removeEventListener("mousedown", outside);
-      document.removeEventListener("keydown", escape, true);
-    };
-  }, [open]);
+  useImperativeHandle(ref, () => ({
+    openOn(wanted) {
+      if (!open) {
+        opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        setEntering(openedByPointer());
+        setHeld(models === null);
+      }
+      setList(wanted);
+      setOpen(true);
+    },
+  }));
+
+  // Focus in the popover would go away with it, so it goes back to what had it, or to the button.
+  function close() {
+    if (pop.current?.contains(document.activeElement)) {
+      (opener.current?.isConnected ? opener.current : button.current)?.focus();
+    }
+    setOpen(false);
+  }
 
   function pickAgent(picked: Agent) {
-    setOpen(false);
+    close();
     if (picked !== agent && !agentLocked) onAgent(picked);
   }
 
   const { name, effort } = describeChoice(models, choice);
 
   function pickModel(model: Model) {
-    setOpen(false);
+    close();
     onChoose({ model, effort: effortFor(model, choice?.effort ?? null) });
   }
+
+  // A place the list does not have picks nothing.
+  function pickItem(from: PickerList, place: number) {
+    if (from === "model") {
+      const model = models?.at(place);
+      if (model) pickModel(model);
+      return;
+    }
+    const picked = choice?.model.efforts.at(place);
+    if (!choice || picked === undefined) return;
+    close();
+    onChoose({ model: choice.model, effort: picked });
+  }
+
+  const onKey = useEffectEvent((event: KeyboardEvent) => {
+    if (event.isComposing) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+    } else if (list && matchesKeys(shortcut("pickItem").keys, event)) {
+      event.preventDefault();
+      pickItem(list, Number(event.key) - 1);
+    }
+  });
+
+  // Keys go in the capture phase, and are taken, so Escape closes the popover and nothing behind
+  // it, and a digit types nothing.
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: MouseEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", outside);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", outside);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [open]);
+
+  // Runs again once the models are in, so a popover opened while they load lands on its list.
+  const loaded = models !== null;
+  useEffect(() => {
+    if (!open || !list) return;
+    const items = LIST_ITEMS[list];
+    const current =
+      pop.current!.querySelector<HTMLElement>(`${items}[aria-pressed=true]`) ??
+      pop.current!.querySelector<HTMLElement>(items);
+    (current ?? pop.current!).focus();
+  }, [open, list, loaded]);
 
   return (
     <div className="picker" ref={root}>
@@ -159,9 +237,12 @@ export function Picker({
         aria-label="Agent and model"
         aria-haspopup="dialog"
         aria-expanded={open}
+        ref={button}
         onClick={() => {
           setEntering(!open && openedByPointer());
           setHeld(!open && models === null);
+          opener.current = null;
+          setList(null);
           setOpen(!open);
         }}
       >
@@ -181,6 +262,8 @@ export function Picker({
             .join(" ")}
           role="dialog"
           aria-label="Agent and model"
+          ref={pop}
+          tabIndex={-1}
         >
           <h4>Agent</h4>
           {agentLocked && <p className="note">Fixed after the first message.</p>}
@@ -209,6 +292,7 @@ export function Picker({
               key={model.id}
               className="opt"
               aria-pressed={model.id === choice?.model.id}
+              data-picker-list="model"
               onClick={() => pickModel(model)}
             >
               <span className="grow">

@@ -2332,3 +2332,114 @@ test("Esc in terminal mode stays with the agent's TUI, and grove stops nothing",
 
   expect(bridge.interrupted).toEqual([]);
 });
+
+test("Cmd-Shift-I opens the picker on the model list, where a digit picks that model", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex" });
+  composer().focus();
+
+  expect(press("pickModel", composer())).toBe(true);
+
+  const picker = screen.getByRole("dialog", { name: "Agent and model" });
+  expect(document.activeElement).toBe(option(picker, /^GPT-5.5Frontier/));
+
+  expect(press("pickItem", document.activeElement!, { key: "2" })).toBe(true);
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(bridge.modelsSet.at(-1)).toEqual({ session: "0", model: "gpt-5.5-mini", effort: "medium" });
+  expect(document.activeElement).toBe(composer());
+});
+
+test("Cmd-Shift-E opens the picker on the effort list, where a digit picks that effort", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex" });
+  composer().focus();
+
+  expect(press("pickEffort", composer())).toBe(true);
+
+  const efforts = within(screen.getByRole("dialog", { name: "Agent and model" })).getByRole("group", { name: "Effort" });
+  expect(document.activeElement).toBe(within(efforts).getByRole("button", { name: "medium" }));
+
+  expect(press("pickItem", document.activeElement!, { key: "3" })).toBe(true);
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(bridge.modelsSet.at(-1)).toEqual({ session: "0", model: "gpt-5.5", effort: "high" });
+  expect(document.activeElement).toBe(composer());
+});
+
+test("a digit types as usual while the picker is closed, or open after a click", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex" });
+  composer().focus();
+  const set = bridge.modelsSet.length;
+
+  expect(press("pickItem", composer(), { key: "2" })).toBe(false);
+  openPicker();
+  expect(press("pickItem", composer(), { key: "2" })).toBe(false);
+
+  expect(bridge.modelsSet).toHaveLength(set);
+  expect(screen.getByRole("dialog", { name: "Agent and model" })).toBeTruthy();
+});
+
+test("a digit past the end of the open list picks nothing and types nothing", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex" });
+  composer().focus();
+  const set = bridge.modelsSet.length;
+  press("pickModel", composer());
+
+  expect(press("pickItem", document.activeElement!, { key: "3" })).toBe(true);
+
+  expect(bridge.modelsSet).toHaveLength(set);
+  expect(screen.getByRole("dialog", { name: "Agent and model" })).toBeTruthy();
+});
+
+test("an open picker moves to the other list, and Esc gives focus back to the composer", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex" });
+  composer().focus();
+  press("pickModel", composer());
+
+  press("pickEffort", document.activeElement!);
+  const efforts = within(screen.getByRole("dialog", { name: "Agent and model" })).getByRole("group", { name: "Effort" });
+  expect(document.activeElement).toBe(within(efforts).getByRole("button", { name: "medium" }));
+  press("pickItem", document.activeElement!, { key: "1" });
+  expect(bridge.modelsSet.at(-1)).toEqual({ session: "0", model: "gpt-5.5", effort: "low" });
+
+  press("pickModel", composer());
+  press("stopTurn", document.activeElement!);
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(document.activeElement).toBe(composer());
+});
+
+test("the effort list of a model that takes no effort has nothing to pick", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  fireEvent.click(option(openPicker(), /^Haiku 5.5/));
+  composer().focus();
+  const set = bridge.modelsSet.length;
+
+  press("pickEffort", composer());
+  const picker = screen.getByRole("dialog", { name: "Agent and model" });
+  expect(document.activeElement).toBe(picker);
+  expect(press("pickItem", picker, { key: "1" })).toBe(true);
+
+  expect(bridge.modelsSet).toHaveLength(set);
+});
+
+test("a picker opened on the model list while the models load lands on it once they are in", async () => {
+  const bridge = await started();
+  let list = (_: typeof bridge.agentModels.Claude) => {};
+  vi.spyOn(bridge, "models").mockReturnValueOnce(new Promise((resolve) => (list = resolve)));
+  await shownPanel(bridge);
+  composer().focus();
+
+  press("pickModel", composer());
+  const picker = screen.getByRole("dialog", { name: "Agent and model" });
+  expect(document.activeElement).toBe(picker);
+
+  await act(async () => list(bridge.agentModels.Claude));
+
+  expect(document.activeElement).toBe(option(picker, /^Default/));
+});

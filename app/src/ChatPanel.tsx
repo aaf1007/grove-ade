@@ -33,7 +33,7 @@ import type {
 import { AgentMarkdown } from "./AgentMarkdown";
 import "./ChatPanel.css";
 import { takeCommands, useCommandMenu } from "./CommandMenu";
-import { AgentMark, type ModelChoice, Picker, useModelChoice } from "./Picker";
+import { AgentMark, type ModelChoice, Picker, type PickerHandle, type PickerList, useModelChoice } from "./Picker";
 import { type PanelShortcut, pressedShortcut } from "./shortcuts";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { TerminalPanel } from "./TerminalPanel";
@@ -200,6 +200,8 @@ export function ChatPanel({
   // Each says whether it took the key.
   const shortcutActions: Record<PanelShortcut["id"], () => boolean> = {
     stopTurn: () => chat.current?.stopTurn() ?? false,
+    pickModel: () => chat.current?.openPicker("model") ?? false,
+    pickEffort: () => chat.current?.openPicker("effort") ?? false,
   };
 
   // A held key repeats, and acts once.
@@ -573,6 +575,8 @@ type ChatMessage = AgentMessage | typeof RESUMED;
 interface ChatHandle {
   /** Interrupts the turn, as the stop button does. Does nothing while the button does not show. */
   stopTurn(): boolean;
+  /** Opens the picker on `list`. */
+  openPicker(list: PickerList): boolean;
 }
 
 /**
@@ -649,6 +653,7 @@ function ChatView({
   const resumedAt = useRef<number | null>(null);
   const list = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<PickerHandle>(null);
   const approvalCard = useRef<HTMLDivElement>(null);
   // Set when the user answers an approval with focus in its card, until focus moves to the next.
   const focusFollowsApproval = useRef(false);
@@ -852,6 +857,10 @@ function ChatView({
       if (working) interrupt();
       return working;
     },
+    openPicker(list) {
+      picker.current!.openOn(list);
+      return true;
+    },
   }));
 
   // A refused answer means the request has ended.
@@ -963,6 +972,7 @@ function ChatView({
           <div className="composer-row">
             <span className="spacer" />
             <Picker
+              ref={picker}
               agent={agent}
               agentLocked={agentLocked}
               models={models}
