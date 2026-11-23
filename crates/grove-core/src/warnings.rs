@@ -26,12 +26,7 @@ pub(crate) struct Warnings {
 impl Core {
     /// Warnings that still apply, oldest first. Dismissing a bar affects only its view.
     pub fn warnings(&self) -> Vec<ActiveWarning> {
-        self.warnings
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .active
-            .clone()
+        self.warnings.active()
     }
 }
 
@@ -41,6 +36,14 @@ impl Warnings {
             state: Mutex::default(),
             events,
         }
+    }
+
+    pub(crate) fn active(&self) -> Vec<ActiveWarning> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .active
+            .clone()
     }
 
     pub(crate) fn raise(&self, warning: Warning) {
@@ -90,5 +93,29 @@ impl Warnings {
             let entry = state.active.remove(index);
             let _ = self.events.send(CoreEvent::WarningCleared { id: entry.id });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hooks_warning_raised_twice_for_one_session_is_listed_once() {
+        let (events, mut sent) = broadcast::channel(8);
+        let warnings = Warnings::new(events);
+        let hooks = |session| Warning::CodexHooksNotTrusted {
+            session: SessionId(session),
+            worktree: "/w".into(),
+        };
+
+        warnings.raise(hooks(3));
+        warnings.raise(hooks(3));
+        warnings.raise(hooks(4));
+
+        let listed: Vec<_> = warnings.active().into_iter().map(|e| e.warning).collect();
+        assert_eq!(listed, [hooks(3), hooks(4)]);
+        let raised = std::iter::from_fn(|| sent.try_recv().ok()).count();
+        assert_eq!(raised, 2);
     }
 }

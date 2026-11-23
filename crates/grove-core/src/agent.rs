@@ -547,12 +547,13 @@ impl Agents {
         // Every session that ends changes what a restart brings back, shells and run sessions too.
         // Asked under the lock, so the save reads an agent session after it is marked ended.
         self.saves.request();
+        // Before the record is looked up: a removal can drop it once the session exits.
+        self.warnings.clear_hooks(exit.session);
         let Some(tracked) = live.get_mut(&exit.session) else {
             return;
         };
         // The token goes with the process that had it.
         tracked.token = None;
-        self.warnings.clear_hooks(exit.session);
         // `set_mode` ended it, and the session goes on in the other mode.
         if let Some(exited) = tracked.exited.take() {
             let _ = exited.send(());
@@ -1575,6 +1576,45 @@ mod tests {
         agents.on_exit(&exit, &events);
 
         assert_eq!(agents.authenticate("3", &presented), None);
+    }
+
+    #[test]
+    fn an_exit_clears_the_hooks_warning_of_a_session_whose_record_is_already_dropped() {
+        let home = tempfile::tempdir().unwrap();
+        let (events, _received) = broadcast::channel(8);
+        let agents = Agents::new(
+            &CoreConfig::new(home.path().to_path_buf()),
+            SaveRequests::default(),
+            Arc::new(crate::warnings::Warnings::new(events.clone())),
+        );
+        let hooks = |session| Warning::CodexHooksNotTrusted {
+            session,
+            worktree: home.path().to_path_buf(),
+        };
+        let (deleted, running) = (SessionId(3), SessionId(4));
+        for session in [deleted, running] {
+            let tracked = Tracked::new(Agent::Codex, home.path(), Mode::Terminal, (80, 24), None);
+            lock(&agents.live).insert(session, tracked);
+            agents.warnings.raise(hooks(session));
+        }
+        // Deleting a session drops its record once `SessionExited` is sent, which is before
+        // this exit is handled.
+        lock(&agents.live).remove(&deleted);
+
+        let exit = ProcessExit {
+            session: deleted,
+            code: None,
+            killed: true,
+        };
+        agents.on_exit(&exit, &events);
+
+        let left: Vec<_> = agents
+            .warnings
+            .active()
+            .into_iter()
+            .map(|e| e.warning)
+            .collect();
+        assert_eq!(left, [hooks(running)]);
     }
 
     #[test]
