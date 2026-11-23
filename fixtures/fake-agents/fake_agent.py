@@ -318,22 +318,34 @@ def read_recording(path):
     return lines
 
 
-def replay(lines, speed, slots, stdin):
+def replay(lines, speed, slots, stdin, log):
     """Sends the sidecar's recorded lines at their recorded times divided by
     speed, and waits for each of the core's recorded lines by its type. The
     clock restarts when a core line arrives, so waiting for the core never
-    makes later lines rush."""
+    makes later lines rush. Logs replay_times once it stops: the Unix time it
+    heard each core line or had sent each sidecar line, in the recording's
+    order. replay_send_starts holds the time before each completed sidecar
+    write, in send order. One record at the end keeps log I/O out of the replay."""
     start, base = time.monotonic(), 0
-    for line in lines:
-        message = line["message"]
-        if line["from"] == "core":
-            stdin.wait_message(message["type"])
-            start, base = time.monotonic(), line["t"]
-            continue
-        delay = start + (line["t"] - base) / speed - time.monotonic()
-        if delay > 0:
-            time.sleep(delay)
-        send(message, slots)
+    times = []
+    send_starts = []
+    try:
+        for line in lines:
+            message = line["message"]
+            if line["from"] == "core":
+                stdin.wait_message(message["type"])
+                times.append(time.time())
+                start, base = time.monotonic(), line["t"]
+                continue
+            delay = start + (line["t"] - base) / speed - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            before_send = time.time()
+            send(message, slots)
+            times.append(time.time())
+            send_starts.append(before_send)
+    finally:
+        log.write(replay_times=times, replay_send_starts=send_starts)
 
 
 def send(message, slots):
@@ -458,7 +470,7 @@ def play(steps, data, slots, stdin, log, fire, on_send=None, record=None, call=N
         elif "record" in step:
             record(fill(step["record"], slots))
         elif "replay" in step:
-            replay(read_recording(step["replay"]), step.get("speed", 1), slots, stdin)
+            replay(read_recording(step["replay"]), step.get("speed", 1), slots, stdin, log)
         elif "mcp_call" in step:
             call(step["mcp_call"], step["tool"], fill(step.get("arguments", {}), slots))
         elif "shell" in step:
