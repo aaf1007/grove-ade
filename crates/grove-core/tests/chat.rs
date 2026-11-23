@@ -1632,6 +1632,8 @@ struct Played {
     recorded: f64,
     /// The Unix time in seconds when the fake heard it, if the core sent it, or had sent it.
     at_fake: f64,
+    /// The Unix time just before a sidecar write. Core lines have no sidecar write.
+    before_send: Option<f64>,
     /// The message the sink should get for it.
     message: AgentMessage,
 }
@@ -1715,12 +1717,22 @@ fn replay(lines: &[Value], speed: f64) -> Replayed {
     s.wait_exit(session);
     thread::sleep(Duration::from_millis(50));
     frames.take();
-    let replay_times = s.wait_log("replay_times")["replay_times"].clone();
+    let log = s.wait_log("replay_times");
+    let mut send_starts = log["replay_send_starts"].as_array().unwrap().iter();
+    // The send starts cover only sidecar lines, including those the sink never sees.
+    let before_send: Vec<_> = lines
+        .iter()
+        .map(|line| {
+            (line["from"] == "sidecar").then(|| send_starts.next().unwrap().as_f64().unwrap())
+        })
+        .collect();
+    assert!(send_starts.next().is_none());
     let expected = expected
         .into_iter()
         .map(|(place, recorded, message)| Played {
             recorded,
-            at_fake: replay_times[place].as_f64().unwrap(),
+            at_fake: log["replay_times"][place].as_f64().unwrap(),
+            before_send: before_send[place],
             message,
         })
         .collect();
@@ -1805,59 +1817,113 @@ impl Replayed {
         assert_eq!(self.got.len(), self.expected.len(), "message count");
     }
 
-    /// Each message came on time. The fake and the core are timed apart, each against the
-    /// fake's own log of when it heard and sent every line, so the fake being slow on a busy
-    /// machine never counts as the core being late:
-    /// - the fake sent each line no sooner than its recorded time after the user's message
-    ///   divided by `speed`, and not much later;
-    /// - the core got each of the fake's lines to the sink, and the user's message to the sink
-    ///   and to the fake, without holding it.
     fn assert_on_time(&self, speed: f64) {
-        // What the core may take. Its flush window is 8 ms, and its reader thread, its flush
-        // task and the thread that stamps the frame each wait for a CPU. With every CPU busy
-        // building the workspace this took at most 21 ms.
-        const CORE_LATE: f64 = 0.25;
-        // What the fake may take. Python has to wake from a sleep to send a line, or to hear
-        // the user's message. A late fake only makes the replay slower than asked. With every
-        // CPU busy it was at most 80 ms late.
-        const FAKE_LATE: f64 = 0.5;
-        // The fake paces itself on one clock and logs on another.
-        const CLOCK_SKEW: f64 = 0.001;
-        // The recorded time of the turn's user message, and when the fake heard it.
         let (anchor, unix) = clock_anchor(|| (Instant::now(), SystemTime::now(), Instant::now()));
-        let mut turn = None;
-        for (i, (played, (_, at_sink))) in self.expected.iter().zip(&self.got).enumerate() {
-            let at_sink = unix - anchor.duration_since(*at_sink);
-            let sink_after_fake =
-                at_sink.duration_since(UNIX_EPOCH).unwrap().as_secs_f64() - played.at_fake;
-            if matches!(played.message, AgentMessage::User { .. }) {
-                assert!(
-                    sink_after_fake <= CORE_LATE,
-                    "the sink got user message {i} {sink_after_fake:.3} s after the fake heard it"
-                );
-                assert!(
-                    -sink_after_fake <= FAKE_LATE,
-                    "the fake heard user message {i} {:.3} s after the sink got it",
-                    -sink_after_fake
-                );
-                turn = Some((played.recorded, played.at_fake));
-                continue;
-            }
+        let arrivals = self
+            .expected
+            .iter()
+            .zip(&self.got)
+            .map(|(played, (_, at))| {
+                let wall = unix - anchor.duration_since(*at);
+                (
+                    played,
+                    wall.duration_since(UNIX_EPOCH).unwrap().as_secs_f64(),
+                )
+            });
+        assert_replay_timing(arrivals, speed);
+    }
+}
+
+/// Each message came on time, given the Unix time its frame reached the sink. The core and
+/// the fake are timed apart, against the fake's own log, so a slow fake on a busy machine
+/// never counts as the core being late, and a slow core never hides behind the fake.
+fn assert_replay_timing<'a>(arrivals: impl Iterator<Item = (&'a Played, f64)>, speed: f64) {
+    // The original 250 ms budget covers both directions of core delivery together.
+    // The fake has a separate 250 ms limit on finishing a scheduled write.
+    const LATE: f64 = 0.250;
+    // The fake paces itself on one clock and logs on another.
+    const CLOCK_SKEW: f64 = 0.001;
+    let mut turn = None;
+    for (i, (played, at_sink)) in arrivals.enumerate() {
+        let sink_after_fake = at_sink - played.at_fake;
+        if matches!(played.message, AgentMessage::User { .. }) {
             assert!(
-                sink_after_fake <= CORE_LATE,
-                "message {i} reached the sink {sink_after_fake:.3} s after the fake sent it"
+                sink_after_fake <= LATE,
+                "the sink got user message {i} {sink_after_fake:.3} s after the fake heard it"
             );
-            let Some((user_recorded, heard)) = turn else {
-                continue;
-            };
-            let due = (played.recorded - user_recorded) / speed;
-            let sent = played.at_fake - heard;
             assert!(
-                sent + CLOCK_SKEW >= due && sent <= due + FAKE_LATE,
-                "the fake sent message {i} {sent:.3} s after it heard the user's message, due at {due:.3} s"
+                -sink_after_fake <= LATE,
+                "the fake heard user message {i} {:.3} s after the sink got it",
+                -sink_after_fake
+            );
+            turn = Some((played.recorded, played.at_fake, (-sink_after_fake).max(0.0)));
+            continue;
+        }
+        // Start before the write: a pause before the fake logs completion cannot hide a slow core.
+        let before_send = played.before_send.unwrap();
+        let inbound = (at_sink - before_send).max(0.0);
+        let outbound = turn.map_or(0.0, |(_, _, outbound)| outbound);
+        assert!(
+            outbound + inbound <= LATE,
+            "core delivery for message {i} took {outbound:.3} s outbound plus {inbound:.3} s inbound"
+        );
+        if let Some((user_recorded, heard, _)) = turn {
+            let due = (played.recorded - user_recorded) / speed;
+            let began = before_send - heard;
+            let finished = played.at_fake - heard;
+            assert!(
+                began + CLOCK_SKEW >= due && finished <= due + LATE,
+                "fake write for message {i} began at {began:.3} s and finished at {finished:.3} s, due at {due:.3} s"
             );
         }
     }
+}
+
+// The fake immediately schedules a reply due 100 ms after receiving the user's message.
+fn check_turn_with_delays(outbound: f64, fake_lateness: f64, inbound: f64) {
+    let user = Played {
+        recorded: 0.0,
+        at_fake: outbound,
+        before_send: None,
+        message: user("go"),
+    };
+    let sent = outbound + 0.1 + fake_lateness;
+    let reply = Played {
+        recorded: 0.1,
+        at_fake: sent,
+        before_send: Some(sent),
+        message: started(),
+    };
+    assert_replay_timing([(&user, 0.0), (&reply, sent + inbound)].into_iter(), 1.0);
+}
+
+#[test]
+#[should_panic(expected = "the fake heard user message")]
+fn replay_rejects_a_350_ms_outbound_delay_even_when_the_fake_replies_on_time() {
+    check_turn_with_delays(0.350, 0.0, 0.0);
+}
+
+#[test]
+#[should_panic(expected = "core delivery")]
+fn replay_rejects_two_core_delays_that_together_exceed_250_ms() {
+    check_turn_with_delays(0.150, 0.0, 0.150);
+}
+
+#[test]
+#[should_panic(expected = "core delivery")]
+fn replay_rejects_a_late_arrival_even_if_the_fake_logged_completion_late() {
+    let reply = Played {
+        recorded: 0.1,
+        before_send: Some(0.1),
+        at_fake: 0.4,
+        message: started(),
+    };
+    assert_replay_timing([(&reply, 0.5)].into_iter(), 1.0);
+}
+
+#[test]
+fn replay_charges_a_late_fake_wakeup_to_the_fake() {
+    check_turn_with_delays(0.100, 0.200, 0.100);
 }
 
 #[test]
