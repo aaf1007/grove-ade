@@ -43,6 +43,8 @@ function start(
   sessionMessages: (sessionId: string, dir: string) => Promise<SessionMessage[]> = async () => [],
   /** stdin's lines, as main.ts reads them. The test's own `send` writes to the default. */
   lines?: AsyncIterable<string>,
+  /** The SDK's usage and context calls, in place of the defaults. undefined leaves one out. */
+  readings: Record<string, unknown> = {},
 ) {
   const sdk = new Inbox<SDKMessage>();
   const core = new Inbox<string>();
@@ -59,6 +61,10 @@ function start(
     accountInfo: vi.fn(async () => account),
     supportedModels: vi.fn(supportedModels),
     close: vi.fn(() => sdk.close()),
+    // By default the SDK never answers these two, so the other tests see no line from them.
+    [USAGE]: vi.fn(() => new Promise<unknown>(() => {})),
+    getContextUsage: vi.fn(() => new Promise<unknown>(() => {})),
+    ...readings,
   };
   const done = run({ ...launch, ...overrides }, {
     query: (p) => {
@@ -105,6 +111,8 @@ function start(
     },
   };
 }
+
+const USAGE = "usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET";
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -728,6 +736,177 @@ describe("commands from the core", () => {
     await s.done;
     expect(s.q.close).toHaveBeenCalled();
     expect(await result).toMatchObject({ behavior: "deny" });
+  });
+});
+
+const planUsage = {
+  subscription_type: "max",
+  rate_limits_available: true,
+  rate_limits: {
+    five_hour: { utilization: 41.6, resets_at: "2026-11-22T14:00:00.000Z" },
+    seven_day: { utilization: 18, resets_at: "2026-11-27T09:30:00.000Z" },
+    seven_day_opus: null,
+    seven_day_sonnet: { utilization: null, resets_at: null },
+    model_scoped: [{ display_name: "Fable", utilization: 7, resets_at: null }],
+    extra_usage: { is_enabled: true, monthly_limit: 50, used_credits: 12, utilization: 24 },
+  },
+};
+const planWindows = {
+  type: "usage",
+  reading: "windows",
+  windows: [
+    { name: "5-hour", percent_used: 42, resets_at_unix_ms: 1795356000000 },
+    { name: "Weekly", percent_used: 18, resets_at_unix_ms: 1795771800000 },
+    { name: "Weekly Fable", percent_used: 7, resets_at_unix_ms: null },
+  ],
+};
+const usageLines = (out: Record<string, unknown>[]) => out.filter((m) => m.type === "usage");
+
+/** Starts the sidecar with `usage` as the SDK's usage call. */
+function startWithUsage(usage: unknown) {
+  return start({}, ann, async () => models, async () => [], undefined, { [USAGE]: usage });
+}
+
+/** Plays one whole turn, from the core's message to the SDK's result. */
+async function playTurn(s: ReturnType<typeof start>, extra: object = {}) {
+  const ended = s.out.filter((m) => m.type === "turn_end").length;
+  s.send({ type: "user_message", text: "go" });
+  s.yields(result(extra));
+  await vi.waitFor(() => expect(s.out.filter((m) => m.type === "turn_end")).toHaveLength(ended + 1));
+}
+
+describe("the usage reading", () => {
+  it("is sent at the start: each window the plan has, with its percent and reset time", async () => {
+    const usage = vi.fn(async () => planUsage);
+    const s = startWithUsage(usage);
+
+    await vi.waitFor(() => expect(usageLines(s.out)).toEqual([planWindows]));
+    // The scan of local transcripts is for the usage dialog, not for the limits.
+    expect(usage).toHaveBeenCalledWith({ skipBehaviors: true });
+  });
+
+  it("is read again after each turn", async () => {
+    const usage = vi.fn(async () => planUsage);
+    const s = startWithUsage(usage);
+    await vi.waitFor(() => expect(usageLines(s.out)).toHaveLength(1));
+
+    await playTurn(s);
+
+    await vi.waitFor(() => expect(usageLines(s.out)).toEqual([planWindows, planWindows]));
+  });
+});
+
+describe("the usage reading", () => {
+  it("says no plan limits for an API key account, and is never read again", async () => {
+    const usage = vi.fn(async () => ({ subscription_type: null, rate_limits_available: false, rate_limits: null }));
+    const s = startWithUsage(usage);
+    await vi.waitFor(() => expect(usageLines(s.out)).toEqual([{ type: "usage", reading: "no_plan_limits" }]));
+
+    await playTurn(s);
+    await playTurn(s);
+    await settle();
+
+    expect(usage).toHaveBeenCalledTimes(1);
+    expect(usageLines(s.out)).toHaveLength(1);
+  });
+
+  it("is unsupported when the SDK has no usage call, and no turn fails for it", async () => {
+    const s = startWithUsage(undefined);
+    await vi.waitFor(() => expect(usageLines(s.out)).toEqual([{ type: "usage", reading: "unsupported" }]));
+
+    await playTurn(s);
+    await settle();
+
+    expect(s.out.at(-1)).toEqual({ type: "turn_end" });
+    expect(usageLines(s.out)).toHaveLength(1);
+  });
+
+  it("is unsupported when the call returns a shape the sidecar does not know, and is never read again", async () => {
+    const usage = vi.fn(async () => ({ limits: [{ window: "5h", used: 0.4 }] }));
+    const s = startWithUsage(usage);
+    await vi.waitFor(() => expect(usageLines(s.out)).toEqual([{ type: "usage", reading: "unsupported" }]));
+
+    await playTurn(s);
+    await settle();
+
+    expect(usage).toHaveBeenCalledTimes(1);
+  });
+
+  it("is failed when the call fails or the limits did not come, and is read again after the next turn", async () => {
+    const usage = vi
+      .fn<() => Promise<unknown>>()
+      .mockRejectedValueOnce(new Error("request timed out"))
+      .mockResolvedValueOnce({ subscription_type: "max", rate_limits_available: true, rate_limits: null })
+      .mockResolvedValueOnce(planUsage);
+    const s = startWithUsage(usage);
+    const failed = { type: "usage", reading: "failed" };
+    await vi.waitFor(() => expect(usageLines(s.out)).toEqual([failed]));
+
+    await playTurn(s);
+    await vi.waitFor(() => expect(usageLines(s.out)).toEqual([failed, failed]));
+    await playTurn(s);
+
+    await vi.waitFor(() => expect(usageLines(s.out)).toEqual([failed, failed, planWindows]));
+  });
+
+  it("never holds up a turn while a read has no answer", async () => {
+    const s = startWithUsage(() => new Promise(() => {}));
+
+    await playTurn(s);
+    await playTurn(s);
+
+    expect(usageLines(s.out)).toEqual([]);
+  });
+});
+
+const contextLines = (out: Record<string, unknown>[]) => out.filter((m) => m.type === "context");
+const modelUsage = {
+  "claude-opus-5-5": { inputTokens: 1_000, outputTokens: 2_000, cacheReadInputTokens: 90_000, cacheCreationInputTokens: 7_000 },
+  "claude-haiku-5-5": { inputTokens: 400, outputTokens: 600, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+};
+
+/** Starts the sidecar with `getContextUsage` as the SDK's context call. */
+function startWithContext(getContextUsage: unknown) {
+  return start({}, ann, async () => models, async () => [], undefined, { getContextUsage });
+}
+
+describe("the context reading", () => {
+  it("is sent after each turn: the session's tokens so far and how full the context window is", async () => {
+    const getContextUsage = vi.fn(async () => ({ totalTokens: 84_000, maxTokens: 180_000, rawMaxTokens: 200_000, percentage: 42 }));
+    const s = startWithContext(getContextUsage);
+
+    await playTurn(s, { modelUsage });
+
+    await vi.waitFor(() =>
+      expect(contextLines(s.out)).toEqual([
+        { type: "context", session_total_tokens: 101_000, context_window: { used_tokens: 84_000, size_tokens: 200_000 } },
+      ]),
+    );
+    // The summary answers from the last response, with no token-count calls.
+    expect(getContextUsage).toHaveBeenCalledWith({ detail: "summary" });
+  });
+
+  it("has no context window when the SDK cannot say, has no such call, or returns another shape", async () => {
+    const tokensOnly = [{ type: "context", session_total_tokens: 101_000, context_window: null }];
+    const failing = startWithContext(async () => {
+      throw new Error("not initialized");
+    });
+    const missing = startWithContext(undefined);
+    const changed = startWithContext(async () => ({ tokens: { used: 84_000 } }));
+
+    for (const s of [failing, missing, changed]) {
+      await playTurn(s, { modelUsage });
+      await vi.waitFor(() => expect(contextLines(s.out)).toEqual(tokensOnly));
+    }
+  });
+
+  it("is not sent for a result without the session's tokens", async () => {
+    const s = startWithContext(async () => ({ totalTokens: 84_000, rawMaxTokens: 200_000 }));
+
+    await playTurn(s);
+    await settle();
+
+    expect(contextLines(s.out)).toEqual([]);
   });
 });
 
