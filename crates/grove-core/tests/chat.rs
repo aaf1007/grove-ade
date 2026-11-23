@@ -1165,6 +1165,96 @@ fn removing_the_worktree_ends_its_chat_session() {
     );
 }
 
+/// Keeps the core from applying a process exit to its agent session for a second. The core
+/// reads every waiting connection before it applies an exit, and gives each of these two
+/// half a second to send a message that never comes.
+fn delay_agent_exits(socket: &Path) -> Vec<std::os::unix::net::UnixStream> {
+    (0..2)
+        .map(|_| std::os::unix::net::UnixStream::connect(socket).unwrap())
+        .collect()
+}
+
+impl Setup {
+    /// What the core has sent about how `session` ended since its `SessionExited`: each of
+    /// its agent states, and each change to the list of agent sessions.
+    fn ending_of(&mut self, session: SessionId) -> Vec<Ending> {
+        self.wait_exit(session);
+        let mut ending = Vec::new();
+        loop {
+            match self.events.try_recv() {
+                Ok(CoreEvent::AgentState {
+                    session: s,
+                    state,
+                    source,
+                }) if s == session => ending.push(Ending::State(state, source)),
+                Ok(CoreEvent::AgentSessionsChanged) => ending.push(Ending::ListChanged),
+                Ok(_) => {}
+                Err(TryRecvError::Empty) => return ending,
+                Err(e) => panic!("{e}"),
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Ending {
+    State(AgentState, StateSource),
+    ListChanged,
+}
+
+#[test]
+fn removing_the_worktree_ends_its_chat_session_once_when_the_exit_is_applied_late() {
+    let mut s = setup(then_wait(Vec::new()));
+    let repo = s.worktree.clone();
+    let session = s.spawn(None);
+    s.wait_log("file");
+    let _delay = delay_agent_exits(&s.cfg.socket);
+
+    block_on(s.core.remove_worktree(&repo, RemoveOpts::ForgetRepo)).unwrap();
+
+    // The session ends, which changes the list, and then its record goes, which changes it
+    // again.
+    assert_eq!(
+        s.ending_of(session),
+        [
+            Ending::State(AgentState::Exited, StateSource::Protocol),
+            Ending::ListChanged,
+            Ending::ListChanged,
+        ]
+    );
+}
+
+#[test]
+fn removing_the_worktree_keeps_how_a_chat_process_that_had_just_exited_ended() {
+    let mut s = setup(json!([{"wait_message": "user_message"}, {"exit": 3}]));
+    let repo = s.worktree.clone();
+    let session = s.spawn(None);
+    s.wait_log("file");
+    let _delay = delay_agent_exits(&s.cfg.socket);
+    // Read on a receiver of its own, so `ending_of` still finds the exit.
+    let mut exits = s.events.resubscribe();
+    s.core.send_message(session, "fail").unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !matches!(
+        exits.try_recv(),
+        Ok(CoreEvent::SessionExited { session: exited, .. }) if exited == session
+    ) {
+        assert!(Instant::now() < deadline, "the process did not exit");
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    block_on(s.core.remove_worktree(&repo, RemoveOpts::ForgetRepo)).unwrap();
+
+    assert_eq!(
+        s.ending_of(session),
+        [
+            Ending::State(AgentState::Failed, StateSource::Protocol),
+            Ending::ListChanged,
+            Ending::ListChanged,
+        ]
+    );
+}
+
 const APPROVAL: AgentState = AgentState::NeedsInput {
     kind: InputKind::Approval,
 };
