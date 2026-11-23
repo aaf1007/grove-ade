@@ -70,3 +70,8 @@
 .side-question input::placeholder {
   color: var(--muted);
 }
+
+/* The answer lines up with the question above it. */
+.side-question-answer .msg-agent {
+  padding: 0;
+}
