@@ -457,6 +457,96 @@ struct AccountChanged {
     account: Option<Account>,
 }
 
+/// Mirrors `UsageReading` in `app/src/bridge.ts`.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct UsageReading {
+    limits: PlanLimits,
+    read_at_unix_ms: u64,
+    latest_read_failed: bool,
+}
+
+/// Mirrors `PlanLimits` in `app/src/bridge.ts`. Its name goes in a `kind` field.
+#[derive(Serialize, Clone)]
+#[serde(tag = "kind")]
+enum PlanLimits {
+    NoPlanLimits,
+    Windows { windows: Vec<UsageWindow> },
+}
+
+/// Mirrors `UsageWindow` in `app/src/bridge.ts`.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct UsageWindow {
+    name: String,
+    percent_used: u8,
+    resets_at_unix_ms: Option<u64>,
+}
+
+impl From<grove_core::UsageReading> for UsageReading {
+    fn from(reading: grove_core::UsageReading) -> Self {
+        let window = |window: grove_core::UsageWindow| UsageWindow {
+            name: window.name,
+            percent_used: window.percent_used,
+            resets_at_unix_ms: window.resets_at_unix_ms,
+        };
+        Self {
+            limits: match reading.limits {
+                grove_core::PlanLimits::NoPlanLimits => PlanLimits::NoPlanLimits,
+                grove_core::PlanLimits::Windows(windows) => PlanLimits::Windows {
+                    windows: windows.into_iter().map(window).collect(),
+                },
+            },
+            read_at_unix_ms: reading.read_at_unix_ms,
+            latest_read_failed: reading.latest_read_failed,
+        }
+    }
+}
+
+/// An agent's usage reading, sent as the `usage-reading` event and listed by `usage_readings`.
+/// None when the agent cannot give one. Mirrors `UsageReadingChanged` in `app/src/bridge.ts`.
+#[derive(Serialize, Clone)]
+struct UsageReadingChanged {
+    agent: Agent,
+    reading: Option<UsageReading>,
+}
+
+/// Mirrors `ContextReading` in `app/src/bridge.ts`.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ContextReading {
+    session_total_tokens: u64,
+    context_window: Option<ContextWindow>,
+}
+
+/// Mirrors `ContextWindow` in `app/src/bridge.ts`.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ContextWindow {
+    used_tokens: u64,
+    size_tokens: u64,
+}
+
+impl From<grove_core::ContextReading> for ContextReading {
+    fn from(reading: grove_core::ContextReading) -> Self {
+        Self {
+            session_total_tokens: reading.session_total_tokens,
+            context_window: reading.context_window.map(|window| ContextWindow {
+                used_tokens: window.used_tokens,
+                size_tokens: window.size_tokens,
+            }),
+        }
+    }
+}
+
+/// A chat-mode session's context reading, sent as the `context-reading` event. Mirrors
+/// `ContextReadingChanged` in `app/src/bridge.ts`.
+#[derive(Serialize, Clone)]
+struct ContextReadingChanged {
+    session: String,
+    reading: ContextReading,
+}
+
 /// A chat-mode message. Mirrors `AgentMessage` in `app/src/bridge.ts`. Its name goes in a `type`
 /// field.
 #[derive(Serialize)]
@@ -2102,6 +2192,35 @@ fn accounts(accounts: State<'_, Accounts>) -> Vec<AccountChanged> {
         .clone()
 }
 
+/// Each agent's usage reading, for a UI that started listening after it was sent.
+#[tauri::command]
+fn usage_readings(grove: State<'_, Grove>) -> Result<Vec<UsageReadingChanged>, String> {
+    // Only quitting holds the write lock, so this never waits.
+    let core = grove.0.try_read().map_err(|_| QUITTING)?;
+    let core = core.as_ref().ok_or(QUITTING)?;
+    Ok([Agent::Claude, Agent::Codex]
+        .into_iter()
+        .filter_map(|agent| {
+            let reading = core.usage_reading(agent.into())?;
+            Some(UsageReadingChanged {
+                agent,
+                reading: Some(reading.into()),
+            })
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn context_reading(
+    grove: State<'_, Grove>,
+    sessions: State<'_, Sessions>,
+    session: String,
+) -> Result<Option<ContextReading>, String> {
+    with_session(&grove, &sessions, &session, |core, id| {
+        Ok(core.context_reading(id).map(Into::into))
+    })
+}
+
 // Keeps the agent's login for `accounts` in place of its last one, then sends it to the UI.
 fn report_account(app: &tauri::AppHandle, change: AccountChanged) {
     {
@@ -2271,8 +2390,9 @@ fn main() -> anyhow::Result<()> {
             #[cfg(target_os = "macos")]
             app.set_menu(menu(app.handle())?)?;
             // Only SessionExited, DiffChanged, AgentState, AgentSessionsChanged, each agent's
-            // account, the login shell's warning, the warning for a session a restart could not
-            // bring back, each worktree's setup, ProfilesChanged, RepoSettingsChanged,
+            // account and usage reading, each session's context reading, the login shell's
+            // warning, the warning for a session a restart could not bring back, each worktree's
+            // setup, ProfilesChanged, RepoSettingsChanged,
             // CommentsChanged and WorkspaceChanged reach the UI so far. Notify becomes a macOS
             // notification.
             let app = app.handle().clone();
@@ -2317,6 +2437,20 @@ fn main() -> anyhow::Result<()> {
                                 account: account.map(Into::into),
                             };
                             report_account(&app, change);
+                        }
+                        Ok(CoreEvent::UsageReading { agent, reading }) => {
+                            let change = UsageReadingChanged {
+                                agent: agent.into(),
+                                reading: reading.map(Into::into),
+                            };
+                            let _ = app.emit("usage-reading", change);
+                        }
+                        Ok(CoreEvent::ContextReading { session, reading }) => {
+                            let change = ContextReadingChanged {
+                                session: session.to_string(),
+                                reading: reading.into(),
+                            };
+                            let _ = app.emit("context-reading", change);
                         }
                         Ok(CoreEvent::Warning(_) | CoreEvent::WarningCleared { .. }) => {
                             let _ = app.emit("warnings-changed", ());
@@ -2395,6 +2529,9 @@ fn main() -> anyhow::Result<()> {
             warnings,
             retry_watcher,
             accounts,
+            // Usage and context readings (#19).
+            usage_readings,
+            context_reading,
             // Attention queue (#53).
             attention_queue,
             // Agent session records (#62).
@@ -3213,6 +3350,54 @@ mod tests {
             r#"{"agent":"Claude","account":{"email":"ann@example.com","organization":null,"plan":"max","apiKeySource":null}}"#
         );
         assert_eq!(json(change(None)), r#"{"agent":"Claude","account":null}"#);
+    }
+
+    #[test]
+    fn a_usage_reading_reaches_the_ui_as_bridge_ts_reads_it() {
+        let reading = |limits| grove_core::UsageReading {
+            limits,
+            read_at_unix_ms: 1_795_356_000_000,
+            latest_read_failed: true,
+        };
+        let windows = grove_core::PlanLimits::Windows(vec![grove_core::UsageWindow {
+            name: "5-hour".into(),
+            percent_used: 42,
+            resets_at_unix_ms: Some(1_795_360_000_000),
+        }]);
+        let change = |reading: Option<grove_core::UsageReading>| UsageReadingChanged {
+            agent: Agent::Codex,
+            reading: reading.map(Into::into),
+        };
+
+        assert_eq!(
+            json(change(Some(reading(windows)))),
+            r#"{"agent":"Codex","reading":{"limits":{"kind":"Windows","windows":[{"name":"5-hour","percentUsed":42,"resetsAtUnixMs":1795360000000}]},"readAtUnixMs":1795356000000,"latestReadFailed":true}}"#
+        );
+        assert_eq!(
+            json(change(Some(reading(grove_core::PlanLimits::NoPlanLimits)))),
+            r#"{"agent":"Codex","reading":{"limits":{"kind":"NoPlanLimits"},"readAtUnixMs":1795356000000,"latestReadFailed":true}}"#
+        );
+        assert_eq!(json(change(None)), r#"{"agent":"Codex","reading":null}"#);
+    }
+
+    #[test]
+    fn a_context_reading_reaches_the_ui_as_bridge_ts_reads_it() {
+        let reading = grove_core::ContextReading {
+            session_total_tokens: 101_000,
+            context_window: Some(grove_core::ContextWindow {
+                used_tokens: 84_000,
+                size_tokens: 200_000,
+            }),
+        };
+        let change = ContextReadingChanged {
+            session: "7".into(),
+            reading: reading.into(),
+        };
+
+        assert_eq!(
+            json(change),
+            r#"{"session":"7","reading":{"sessionTotalTokens":101000,"contextWindow":{"usedTokens":84000,"sizeTokens":200000}}}"#
+        );
     }
 
     #[test]
