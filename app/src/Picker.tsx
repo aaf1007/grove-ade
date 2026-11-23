@@ -1,9 +1,17 @@
 import { Asterisk, Hexagon } from "lucide-react";
-import { type Ref, useEffect, useEffectEvent, useImperativeHandle, useRef, useState } from "react";
+import {
+  type FocusEvent,
+  type KeyboardEvent,
+  type Ref,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 
 import type { Agent, Bridge, Model, SessionId } from "./bridge";
 import { openedByPointer } from "./motion";
-import { matchesKeys, shortcut } from "./shortcuts";
+import { isInputMethodKey, matchesKeys, shortcut } from "./shortcuts";
 import { AGENT_NAMES } from "./Sidebar";
 import { Segmented } from "./ui/Segmented";
 
@@ -105,6 +113,8 @@ export interface PickerHandle {
    * item. A digit 1 to 9 picks the item at that place in the list and closes the popover.
    */
   openOn(list: PickerList): void;
+  /** Closes the popover. Says whether it was open. */
+  close(): boolean;
 }
 
 // A selector for each list's buttons in the popover.
@@ -116,7 +126,8 @@ const LIST_ITEMS: Record<PickerList, string> = {
 /**
  * The button in the composer's footer, with the agent's mark, the model and its effort, and its popover: the agent, until `agentLocked`, then the model
  * and its effort. Picking an agent or a model closes it. Picking an effort leaves it open, unless
- * a digit picked it. Escape closes it.
+ * a digit picked it. The picker takes Escape and digits only while focus is in it, and the popover
+ * closes when focus leaves the picker for another place.
  */
 export function Picker({
   agent,
@@ -160,6 +171,10 @@ export function Picker({
       setList(wanted);
       setOpen(true);
     },
+    close: () => {
+      if (open) close();
+      return open;
+    },
   }));
 
   // The popover takes its focused item away with it, so focus goes back to the opener, or to the
@@ -196,30 +211,35 @@ export function Picker({
     onChoose({ model: choice.model, effort: picked });
   }
 
-  const onKey = useEffectEvent((event: KeyboardEvent) => {
-    if (event.isComposing) return;
+  // Only keys pressed with focus in the picker. It marks the ones it takes, so nothing behind it
+  // acts on them.
+  function onKeyDown(event: KeyboardEvent) {
+    if (!open || isInputMethodKey(event.nativeEvent)) return;
     if (event.key === "Escape") {
       event.preventDefault();
       close();
-    } else if (list && matchesKeys(shortcut("pickItem").keys, event)) {
+    } else if (list && matchesKeys(shortcut("pickItem").keys, event.nativeEvent)) {
       event.preventDefault();
       pickItem(list, Number(event.key) - 1);
     }
-  });
+  }
 
-  // The popover takes its keys in the capture phase, so Escape closes it and nothing behind it,
-  // and a digit types nothing.
+  // Focus that goes to another place leaves the popover behind, so it closes. Two moves are not
+  // that: focus that only drops, as when the window loses it, and focus that goes to something
+  // around the picker, where WebKit puts it on a click on the picker's own button.
+  function onBlur(event: FocusEvent) {
+    const next = event.relatedTarget;
+    if (!(next instanceof Node) || root.current!.contains(next) || next.contains(root.current)) return;
+    setOpen(false);
+  }
+
   useEffect(() => {
     if (!open) return;
     const outside = (event: MouseEvent) => {
       if (!root.current?.contains(event.target as Node)) setOpen(false);
     };
     document.addEventListener("mousedown", outside);
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("mousedown", outside);
-      document.removeEventListener("keydown", onKey, true);
-    };
+    return () => document.removeEventListener("mousedown", outside);
   }, [open]);
 
   // Runs again once the models are in, so a popover opened while they load lands on its list.
@@ -234,7 +254,7 @@ export function Picker({
   }, [open, list, loaded]);
 
   return (
-    <div className="picker" ref={root}>
+    <div className="picker" ref={root} onKeyDown={onKeyDown} onBlur={onBlur}>
       <button
         className="picker-btn"
         aria-label="Agent and model"

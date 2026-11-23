@@ -95,6 +95,14 @@ export function matchesKeys(keys: string, event: KeyboardEvent): boolean {
 }
 
 /**
+ * Whether an input method took `event` for its composition. WebKit can send the key that ends a
+ * composition with `isComposing` false, and then only key code 229 marks it.
+ */
+export function isInputMethodKey(event: KeyboardEvent): boolean {
+  return event.isComposing || event.keyCode === 229;
+}
+
+/**
  * The shortcut of the list that `event` presses where `when` holds. None once something took the
  * key, or while a dialog is open.
  */

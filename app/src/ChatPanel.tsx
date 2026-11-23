@@ -41,7 +41,7 @@ import {
   type PickerList,
   useModelChoice,
 } from "./Picker";
-import { type PanelShortcut, pressedShortcut } from "./shortcuts";
+import { isInputMethodKey, type PanelShortcut, pressedShortcut } from "./shortcuts";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { TerminalPanel } from "./TerminalPanel";
 import { DeclinedCall, relative, type ToolCall, ToolCalls } from "./ToolCalls";
@@ -169,6 +169,7 @@ export function ChatPanel({
   const reportMode = useEffectEvent((mode: Mode) => onMode?.(mode));
   // Null in terminal mode, where the agent's TUI takes the keys of the turn and the composer.
   const chat = useRef<ChatHandle>(null);
+  const panel = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (modeSwitch.mode !== null) reportMode(modeSwitch.mode);
@@ -204,9 +205,25 @@ export function ChatPanel({
     );
   }
 
+  // The composer takes focus when a switch to chat mode ends, as the TUI does in terminal mode,
+  // unless the user moved focus out of the panel while the switch ran.
+  const focusComposerAfterSwitch = useEffectEvent(() => {
+    const focused = document.activeElement;
+    const nowhere = focused === null || focused === document.body;
+    if (shown && (nowhere || panel.current!.contains(focused))) chat.current?.focusComposer();
+  });
+
+  useEffect(() => {
+    if (modeSwitch.switches > 0) focusComposerAfterSwitch();
+  }, [modeSwitch.switches]);
+
   // Each says whether it took the key.
   const shortcutActions: Record<PanelShortcut["id"], () => boolean> = {
-    stopTurn: () => chat.current?.stopTurn() ?? false,
+    // Esc closes the panel's open picker first.
+    stopTurn: () => {
+      const view = chat.current;
+      return view !== null && (view.closePicker() || view.stopTurn());
+    },
     pickModel: () => chat.current?.openPicker("model") ?? false,
     pickEffort: () => chat.current?.openPicker("effort") ?? false,
     switchMode: () => {
@@ -216,9 +233,9 @@ export function ChatPanel({
     },
   };
 
-  // A held key repeats, and acts once. A key an input method composes with is not a shortcut.
+  // A held key repeats, and acts once. A key an input method took is not a shortcut.
   function onShortcutKey(event: KeyboardEvent) {
-    if (event.repeat || event.nativeEvent.isComposing) return;
+    if (event.repeat || isInputMethodKey(event.nativeEvent)) return;
     const pressed = pressedShortcut(event.nativeEvent, "agentPanel");
     if (pressed && shortcutActions[pressed.id]()) event.preventDefault();
   }
@@ -251,6 +268,7 @@ export function ChatPanel({
 
   return (
     <section
+      ref={panel}
       className="chat-panel"
       aria-label={`Panel ${session}`}
       hidden={!shown}
@@ -589,6 +607,9 @@ interface ChatHandle {
   stopTurn(): boolean;
   /** Opens the picker on `list`. */
   openPicker(list: PickerList): boolean;
+  /** Closes the picker's popover, if it is open. */
+  closePicker(): boolean;
+  focusComposer(): void;
 }
 
 /**
@@ -760,13 +781,6 @@ function ChatView({
     (approvalCard.current ?? composer.current!).focus();
   }, [focusRequest, shown, historyLoaded]);
 
-  // The view a mode switch opens takes focus, as the TUI does in terminal mode.
-  const focusAfterSwitch = useEffectEvent(() => {
-    if (resumed && shown) composer.current!.focus();
-  });
-
-  useEffect(() => focusAfterSwitch(), []);
-
   // The composer grows with the draft up to its CSS max-height, then scrolls. A hidden panel
   // has no size, so it measures again once shown, and again when its width changes the wrapping.
   useLayoutEffect(() => {
@@ -880,6 +894,8 @@ function ChatView({
       picker.current!.openOn(list);
       return true;
     },
+    closePicker: () => picker.current!.close(),
+    focusComposer: () => composer.current!.focus(),
   }));
 
   // A refused answer means the request has ended.
