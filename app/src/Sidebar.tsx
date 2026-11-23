@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Ellipsis,
   FolderGit2,
+  Loader,
   PanelLeft,
   Plus,
   Search,
@@ -28,7 +29,7 @@ import type {
 import { Actions, Dialog } from "./Dialog";
 import { useSetting } from "./settings";
 import { keyHint, shortcut } from "./shortcuts";
-import { stateWord } from "./ui/AgentState";
+import { sameState, stateWord } from "./ui/AgentState";
 import { IconButton } from "./ui/IconButton";
 import { Menu, type MenuHandle, type MenuItem } from "./ui/Menu";
 import { Segmented } from "./ui/Segmented";
@@ -209,6 +210,25 @@ export function Sidebar({
   const onSessionsChanged = useEffectEvent(refresh);
   useEffect(() => bridge.onAgentSessionsChanged(onSessionsChanged), [bridge]);
 
+  // A new state comes without a list, and only the list has the time it was entered. So a state the
+  // list does not have yet lists the sessions again.
+  const relistSessions = useEffectEvent(refresh);
+  // Allow one reconciliation per event snapshot, even if the next list still disagrees.
+  const relistedFor = useRef<typeof agentStates | null>(null);
+  useEffect(() => {
+    if (relistedFor.current === agentStates) return;
+    const behind = sessions.some((record) => {
+      const heard = agentStates[record.session];
+      return heard !== undefined && (record.state === undefined || !sameState(heard, record));
+    });
+    if (behind) {
+      relistedFor.current = agentStates;
+      relistSessions();
+    }
+  }, [agentStates, sessions]);
+
+  const now = useNow();
+
   // An ended session resumes first: until then the core cannot give its conversation.
   async function selectSession(record: AgentSessionRecord) {
     if (record.ended) {
@@ -316,12 +336,17 @@ export function Sidebar({
   // A session's row, then under it the subagent sessions it spawned that `shown` has.
   function sessionItem(record: AgentSessionRecord, shown: AgentSessionRecord[], byPath: Map<string, Worktree>) {
     const subagents = shown.filter((other) => other.parent === record.session);
+    const listedState = record.state === undefined ? undefined : record;
+    const heard = agentStates[record.session];
+    // The time the state was entered shows only once the core lists that same state.
+    const since = heard === undefined || (listedState !== undefined && sameState(heard, listedState));
     return (
       <li key={record.session}>
         <SessionRow
           record={record}
           worktree={byPath.get(record.worktree)!}
-          state={agentStates[record.session] ?? (record.state === undefined ? undefined : record)}
+          state={heard ?? listedState}
+          age={since ? ageOf(now - record.sinceUnixMs) : ""}
           current={shownAgents.includes(record.session)}
           onClick={() => void selectSession(record)}
           onDelete={() => setDialog({ kind: "deleteSession", session: record })}
@@ -664,14 +689,16 @@ function AppearanceMenu({
 }
 
 /**
- * An agent session's row: its title, its branch and, when it runs in a worktree of its own, the
- * worktree badge. Then on the right its menu and its status dot. An ended one is dimmed. The dot's
- * word describes the row's button.
+ * An agent session's row, one line: its state's mark, its title, the worktree badge when it runs in a
+ * worktree of its own, and its age. Its menu takes the age's place on hover or focus. An ended one is
+ * dimmed and has no mark. Its name and its tooltip say the state in words, and the tooltip names the
+ * branch.
  */
 function SessionRow({
   record,
   worktree,
   state,
+  age,
   current,
   onClick,
   onDelete,
@@ -679,23 +706,36 @@ function SessionRow({
   record: AgentSessionRecord;
   worktree: Worktree;
   state: State | undefined;
+  /** How long it has been in its state, as "6m", or "" when that is not known yet. */
+  age: string;
   /** Its panel shows. */
   current: boolean;
   onClick(): void;
   onDelete(): void;
 }) {
-  const dot = useId();
+  const word = state && stateWord(state);
   const classes = ["session-item", current && "selected", record.ended && "dimmed"].filter(Boolean).join(" ");
+  const mark = record.ended || !state ? null : MARKS[state.state];
+  const where = [word, worktree.branch ?? worktree.displayName].filter(Boolean).join(" · ");
   return (
     <div className={classes}>
-      <button className="session-row" aria-current={current} aria-describedby={dot} onClick={onClick}>
+      <button
+        className="session-row"
+        aria-current={current}
+        aria-label={word ? `${record.title}, ${word}` : record.title}
+        title={`${record.title}\n${where}`}
+        onClick={onClick}
+      >
+        <span aria-hidden="true" className={mark ? `session-mark mark-${mark}` : "session-mark"}>
+          {mark === "spinner" && <Loader />}
+        </span>
         <span className="session-title">{record.title}</span>
-        <span className="session-branch">{worktree.branch ?? worktree.displayName}</span>
         {!worktree.isMain && (
           <span role="img" aria-label="Worktree" title="Runs in a worktree of its own" className="session-badge">
             <FolderGit2 aria-hidden="true" />
           </span>
         )}
+        <span className="session-age">{age}</span>
       </button>
       <Menu
         label={`Actions for ${record.title}`}
@@ -703,9 +743,40 @@ function SessionRow({
         align="end"
         items={[{ key: "delete", label: "Delete session", onSelect: onDelete }]}
       />
-      <StatusDot id={dot} state={state} />
     </div>
   );
+}
+
+/** The mark each state shows before a session's title. Idle and Exited show none. */
+const MARKS: Record<State["state"], "spinner" | "accent" | "red" | null> = {
+  Working: "spinner",
+  NeedsInput: "accent",
+  Done: "accent",
+  Failed: "red",
+  Idle: null,
+  Exited: null,
+};
+
+/** How often the ages on the rows move on. */
+const AGE_TICK_MS = 60_000;
+
+/** The time now, moved on every `AGE_TICK_MS`. */
+function useNow(): number {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), AGE_TICK_MS);
+    return () => clearInterval(timer);
+  }, []);
+  return now;
+}
+
+/** A time span as "now" under a minute, then whole minutes, hours or days: "6m", "2h", "3d". */
+function ageOf(spanMs: number): string {
+  const minutes = Math.floor(spanMs / 60_000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
 }
 
 /**
@@ -759,9 +830,8 @@ function DeleteSessionDialog({
 }
 
 /**
- * A worktree with no agent session, dimmed: its name, which fades out when cut, then on the right
- * its menu and its status dot, which shows only while its setup script runs. The dot's word
- * describes the row's button.
+ * A worktree with no agent session, dimmed: its name, cut with an ellipsis, then on the right its
+ * menu and, while its setup script runs, the Setup running dot, which describes the row's button.
  */
 function WorktreeRow({
   worktree,
@@ -780,29 +850,26 @@ function WorktreeRow({
   const dot = useId();
   return (
     <div className={selected ? "wt-row dimmed selected" : "wt-row dimmed"}>
-      <button className="wt-name" aria-current={selected} aria-describedby={dot} onClick={onClick}>
+      <button
+        className="wt-name"
+        aria-current={selected}
+        aria-describedby={setupRunning ? dot : undefined}
+        onClick={onClick}
+      >
         <span className="wt-title">
           {worktree.displayName}
           {worktree.isMain && " (main worktree)"}
         </span>
       </button>
       <WorktreeMenu worktree={worktree} setupRunning={setupRunning} onPick={onPick} />
-      <StatusDot id={dot} state={undefined} word={setupRunning ? "Setup running" : undefined} />
+      {setupRunning && <SetupDot id={dot} />}
     </div>
   );
 }
 
-/**
- * A 7px dot in the color of the most urgent state, named by the state's word. Idle and Exited
- * show none. A running setup script shows as Working, named `word`.
- */
-function StatusDot({ id, state, word }: { id?: string; state: State | undefined; word?: string }) {
-  const shown = word ? "Working" : state && stateWord(state);
-  if (!shown || shown === "Idle" || shown === "Exited") return null;
-  const name = word ?? shown;
-  return (
-    <span id={id} role="img" aria-label={name} title={name} className={`status-dot status-${shown.toLowerCase()}`} />
-  );
+/** A worktree row's 7px Working dot while its setup script runs, named "Setup running". */
+function SetupDot({ id }: { id: string }) {
+  return <span id={id} role="img" aria-label="Setup running" title="Setup running" className="status-dot status-working" />;
 }
 
 /**
