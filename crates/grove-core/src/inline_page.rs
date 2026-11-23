@@ -3,8 +3,9 @@
 //! in the session's folder, so the page comes back whenever the conversation does.
 
 use std::collections::HashSet;
-use std::fs;
-use std::io::{self, ErrorKind};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -117,38 +118,71 @@ fn new_id() -> Result<String> {
 }
 
 /// The text of the `.html` file at `path`, which must be absolute and, symlinks and `..`
-/// followed, inside `worktree`.
+/// followed, an `.html` file inside `worktree`.
 fn read_page(worktree: &Path, path: &Path) -> Result<String> {
-    let refused = |reason| CoreError::NotAPage {
-        path: path.to_path_buf(),
-        reason,
-    };
     if !path.is_absolute() {
-        return Err(refused("it is not an absolute path"));
+        return Err(not_a_page(path, "it is not an absolute path"));
     }
-    let is_html = path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("html"));
-    if !is_html {
-        return Err(refused("it is not an .html file"));
+    if !is_html(path) {
+        return Err(not_a_page(path, NOT_HTML));
     }
     let root = fs::canonicalize(worktree).map_err(CoreError::io("resolve", worktree))?;
     let real = fs::canonicalize(path).map_err(CoreError::io("resolve", path))?;
     if !real.starts_with(&root) {
         return Err(CoreError::OutsideWorktree(path.to_path_buf()));
     }
-    let metadata = fs::metadata(&real).map_err(CoreError::io("read", &real))?;
-    if !metadata.is_file() {
-        return Err(refused("it is not a file"));
+    // A link named as a page may lead to a file that is not one.
+    if !is_html(&real) {
+        return Err(not_a_page(path, NOT_HTML));
     }
-    // Checked before it is read, so a huge file is never read whole.
+    read_checked(path, &real)
+}
+
+const NOT_HTML: &str = "it is not an .html file";
+
+fn is_html(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("html"))
+}
+
+fn not_a_page(path: &Path, reason: &'static str) -> CoreError {
+    CoreError::NotAPage {
+        path: path.to_path_buf(),
+        reason,
+    }
+}
+
+/// The text of the file at `real`, the path `given` resolved to and was checked as. The agent
+/// can change the worktree between that check and this read, so the file is opened once and
+/// everything after is asked of that one handle: a link put in its place is not followed, a pipe
+/// is never waited on, and a file that grows is not read past what a page may hold.
+fn read_checked(given: &Path, real: &Path) -> Result<String> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(real)
+        .map_err(CoreError::io("open", real))?;
+    let metadata = file.metadata().map_err(CoreError::io("read", real))?;
+    if !metadata.is_file() {
+        return Err(not_a_page(given, "it is not a file"));
+    }
+    // Checked before it is read, so a huge file is never read at all.
     if metadata.len() > MAX_PAGE_BYTES as u64 {
         return Err(too_large(metadata.len()));
     }
-    fs::read_to_string(&real).map_err(|e| match e.kind() {
-        ErrorKind::InvalidData => refused("it is not UTF-8 text"),
-        _ => CoreError::io("read", &real)(e),
-    })
+    let bytes = read_at_most_a_page(&mut file).map_err(CoreError::io("read", real))?;
+    if bytes.len() > MAX_PAGE_BYTES {
+        return Err(too_large(bytes.len() as u64));
+    }
+    String::from_utf8(bytes).map_err(|_| not_a_page(given, "it is not UTF-8 text"))
+}
+
+/// What `file` holds, up to one byte more than a page may: enough to tell it holds too much.
+fn read_at_most_a_page(file: &mut File) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    file.take(MAX_PAGE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn save(session_folder: &Path, id: &str, page: &SavedPage) -> Result<()> {
@@ -232,6 +266,36 @@ mod tests {
         assert!(ids("page-0123456789ABCDEF").is_empty());
         assert!(ids("page-../../../../token").is_empty());
         assert!(ids("page-0123456789abcdé").is_empty());
+    }
+
+    // The path is checked before it is opened, and a link can take a file's place in between.
+    #[test]
+    fn a_link_that_took_the_files_place_after_the_check_is_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("secret.html");
+        fs::write(&secret, "<p>secret</p>").unwrap();
+        let link = dir.path().join("page.html");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+        assert!(matches!(
+            read_checked(&link, &link),
+            Err(CoreError::Io { .. })
+        ));
+        assert_eq!(read_checked(&secret, &secret).unwrap(), "<p>secret</p>");
+    }
+
+    #[test]
+    fn a_file_that_grew_past_the_limit_after_the_check_is_not_read_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("page.html");
+        fs::write(&file, "a".repeat(MAX_PAGE_BYTES + 5)).unwrap();
+        let mut opened = fs::File::open(&file).unwrap();
+
+        // As much as a page may hold, and one byte more to show it holds too much.
+        assert_eq!(
+            read_at_most_a_page(&mut opened).unwrap().len(),
+            MAX_PAGE_BYTES + 1
+        );
     }
 
     #[test]

@@ -381,6 +381,17 @@ fn a_path_that_is_not_an_html_file_inside_the_worktree_is_refused() {
     symlink(&outside, s.worktree.join("link.html")).unwrap();
     // A link in the worktree to a folder outside it.
     symlink(s.dir.path(), s.worktree.join("up")).unwrap();
+    // A link named as a page to a file in the worktree that is not one.
+    symlink(s.worktree.join("notes.txt"), s.worktree.join("alias.html")).unwrap();
+    // A pipe nothing writes to: reading it would never end.
+    let pipe = s.worktree.join("pipe.html");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .unwrap()
+            .success()
+    );
     let repo = s.worktree.display();
     let not_inside = "is not a path inside the worktree";
 
@@ -398,7 +409,15 @@ fn a_path_that_is_not_an_html_file_inside_the_worktree_is_refused() {
             "cannot be shown: it is not an .html file",
         ),
         (
+            format!("{repo}/alias.html"),
+            "cannot be shown: it is not an .html file",
+        ),
+        (
             format!("{repo}/folder.html"),
+            "cannot be shown: it is not a file",
+        ),
+        (
+            format!("{repo}/pipe.html"),
             "cannot be shown: it is not a file",
         ),
     ];
@@ -421,6 +440,25 @@ fn a_path_that_is_not_an_html_file_inside_the_worktree_is_refused() {
         matches!(pages(&messages)[..], [AgentMessage::InlinePage { id, .. }] if *id == page),
         "{messages:?}"
     );
+}
+
+#[test]
+fn deleting_the_session_deletes_its_pages() {
+    let s = setup();
+    let agent = s.agent(Mode::Chat);
+    agent.conversation().until_the_call();
+    let page = agent.shown(json!({"title": "Chart", "html": CHART}));
+    let folder = s
+        .dir
+        .path()
+        .join("home/sessions")
+        .join(agent.session.to_string());
+    let saved = folder.join("pages").join(format!("{page}.json"));
+    assert!(saved.is_file(), "{}", saved.display());
+
+    block_on(s.core.delete_agent_session(agent.session)).unwrap();
+
+    assert!(!folder.exists(), "{}", folder.display());
 }
 
 #[test]
