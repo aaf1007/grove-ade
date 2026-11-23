@@ -22,7 +22,7 @@ side by side. Standard library only. Run from anywhere in the repo:
   headless.py stop <run>                 stop the core this run started, keep the evidence
 
 `call` takes key=text for a string and key:=value for JSON, as in `session:=0`. Commands:
-ping, add_repo path,
+ping, add_repo path, forget_repo path,
 worktrees, create_worktree repo branch, spawn_agent worktree agent=claude|codex
 mode=chat|terminal [prompt], spawn_shell worktree, follow session, send session text, answer session request
 reply=allow_once|allow_session|deny|[[answers]], interrupt session, set_model session model
