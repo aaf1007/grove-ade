@@ -76,15 +76,18 @@ export interface SidebarHandle {
 }
 
 /** What a worktree's menu does. */
-type WorktreeAction = "start" | "base" | "forget" | "delete";
+type WorktreeAction = "start" | WorktreeDialogAction;
+
+/** The worktree actions that open a dialog. A session row's menu has them too. */
+type WorktreeDialogAction = "base" | "forget" | "delete";
 
 /**
- * The dialog the sidebar shows: a new worktree for a repo, a worktree's menu action, or Delete
- * session.
+ * The dialog the sidebar shows: a new worktree for a repo, a worktree action from a menu, or
+ * Delete session.
  */
 type OpenDialog =
   | { kind: "new"; repo: Worktree }
-  | { kind: Exclude<WorktreeAction, "start">; worktree: Worktree }
+  | { kind: WorktreeDialogAction; worktree: Worktree }
   | { kind: "deleteSession"; session: AgentSessionRecord };
 
 /**
@@ -92,7 +95,7 @@ type OpenDialog =
  * subagent session under the session that spawned it. Below them, dimmed, the project's worktrees
  * that have no session. Adds repos, selects a session or a worktree, and deletes a session. Each
  * project's + opens New session for that project. The menu of a worktree with no session starts Claude Code in it, changes its base branch, forgets it
- * or deletes it.
+ * or deletes it. The menu of a session in a worktree does the last three for that worktree.
  *
  * Above the list: New session, Search, Needs you and Profiles. Below it: each agent's account and
  * the appearance menu.
@@ -347,16 +350,18 @@ export function Sidebar({
     const heard = agentStates[record.session];
     // The time the state was entered shows only once the core lists that same state.
     const since = heard === undefined || (listedState !== undefined && sameState(heard, listedState));
+    const worktree = byPath.get(record.worktree)!;
     return (
       <li key={record.session}>
         <SessionRow
           record={record}
-          worktree={byPath.get(record.worktree)!}
+          worktree={worktree}
           state={heard ?? listedState}
           age={since ? ageOf(now - record.sinceUnixMs) : ""}
           current={shownAgents.includes(record.session)}
           onClick={() => void selectSession(record)}
           onDelete={() => setDialog({ kind: "deleteSession", session: record })}
+          onWorktreeAction={(kind) => setDialog({ kind, worktree })}
         />
         {subagents.length > 0 && (
           <ul className="agent-sessions">{subagents.map((subagent) => sessionItem(subagent, shown, byPath))}</ul>
@@ -525,6 +530,7 @@ export function Sidebar({
         <ForgetDialog
           bridge={bridge}
           worktree={dialog.worktree}
+          sessionsInWorktree={sessionsIn(sessions, dialog.worktree)}
           onForgotten={() => removed(dialog.worktree)}
           onCancel={() => setDialog(null)}
         />
@@ -542,6 +548,7 @@ export function Sidebar({
         <DeleteDialog
           bridge={bridge}
           worktree={dialog.worktree}
+          sessionsInWorktree={sessionsIn(sessions, dialog.worktree)}
           onDeleting={(running) => onDeleting(dialog.worktree, running)}
           onDeleted={(outcome) => removed(dialog.worktree, outcome)}
           onCancel={() => setDialog(null)}
@@ -592,6 +599,11 @@ function matches(worktree: Worktree, query: string): boolean {
 /** Whether Search's `query` finds the session, by its title or its worktree, ignoring case. */
 function sessionMatches(record: AgentSessionRecord, worktree: Worktree, query: string): boolean {
   return matches(worktree, query) || record.title.toLowerCase().includes(query.trim().toLowerCase());
+}
+
+/** How many agent sessions the core lists in `worktree`, ended ones too. They go when it does. */
+function sessionsIn(records: AgentSessionRecord[], worktree: Worktree): number {
+  return records.filter((record) => record.worktree === worktree.path).length;
 }
 
 /** `session`, then every subagent session below it, as the core deletes them. */
@@ -699,7 +711,8 @@ function AppearanceMenu({
  * An agent session's row, one line: its state's mark, its title, the worktree badge when it runs in a
  * worktree of its own, and its age. Its menu takes the age's place on hover or focus. An ended one is
  * dimmed and has no mark. Its name and its tooltip say the state in words, and the tooltip names the
- * branch.
+ * branch. Its menu deletes the session and, in a worktree of its own, has that worktree's actions
+ * in a group named for the worktree. The local checkout's are not offered here.
  */
 function SessionRow({
   record,
@@ -709,6 +722,7 @@ function SessionRow({
   current,
   onClick,
   onDelete,
+  onWorktreeAction,
 }: {
   record: AgentSessionRecord;
   worktree: Worktree;
@@ -719,6 +733,8 @@ function SessionRow({
   current: boolean;
   onClick(): void;
   onDelete(): void;
+  /** An action on the worktree it runs in was picked. */
+  onWorktreeAction(action: WorktreeDialogAction): void;
 }) {
   const word = state && stateWord(state);
   const classes = ["session-item", current && "selected", record.ended && "dimmed"].filter(Boolean).join(" ");
@@ -748,11 +764,28 @@ function SessionRow({
         label={`Actions for ${record.title}`}
         icon={Ellipsis}
         align="end"
-        items={[{ key: "delete", label: "Delete session", onSelect: onDelete }]}
+        items={[
+          { key: "deleteSession", label: "Delete session", onSelect: onDelete },
+          ...(worktree.isMain
+            ? []
+            : SESSION_ROW_WORKTREE_ACTIONS.map(([action, label]) => ({
+                key: action,
+                label,
+                group: `Worktree ${worktree.displayName}`,
+                onSelect: () => onWorktreeAction(action),
+              }))),
+        ]}
       />
     </div>
   );
 }
+
+/** A session row's actions on its worktree. Each says "worktree", since the row is a session's. */
+const SESSION_ROW_WORKTREE_ACTIONS: [WorktreeDialogAction, string][] = [
+  ["base", "Change base branch"],
+  ["forget", "Forget worktree"],
+  ["delete", "Delete worktree"],
+];
 
 /** The mark each state shows before a session's title. Idle and Exited show none. */
 const MARKS: Record<State["state"], "spinner" | "accent" | "red" | null> = {

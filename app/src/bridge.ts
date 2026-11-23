@@ -433,6 +433,8 @@ export interface Workspace {
   selected: PanelKind | null;
   /** Whether the terminal panel is open at the bottom of the panel area. */
   terminal: boolean;
+  /** What the Diff panel compares against. `Head` until the user picks the whole branch. */
+  diffBase: DiffBase;
 }
 
 /**
@@ -453,8 +455,11 @@ export interface Bridge {
   pickFolder(): Promise<string | null>;
   /** Every tracked worktree, repo by repo in the order they were added, main worktree first. */
   listWorktrees(): Promise<Worktree[]>;
-  /** The worktree's diff against `base`, file by file in path order. */
-  diff(worktree: string, base: DiffBase): Promise<FileDiff[]>;
+  /**
+   * The worktree's diff against `base`, file by file in path order. null when its folder is not a
+   * git repo, which has no diff.
+   */
+  diff(worktree: string, base: DiffBase): Promise<FileDiff[] | null>;
   fileVersions(worktree: string, base: DiffBase, file: FileDiff): Promise<FileVersions>;
   /** Calls `listener` with a worktree's path when its diff may have changed. Returns the unsubscribe. */
   onDiffChanged(listener: (worktree: string) => void): () => void;

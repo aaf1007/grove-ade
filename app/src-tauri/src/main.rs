@@ -194,10 +194,19 @@ impl From<grove_core::BranchOutcome> for BranchOutcome {
 }
 
 /// Mirrors `DiffBase` in `app/src/bridge.ts`.
-#[derive(Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 enum Base {
     Head,
     MergeBase,
+}
+
+impl From<DiffBase> for Base {
+    fn from(base: DiffBase) -> Self {
+        match base {
+            DiffBase::Head => Base::Head,
+            DiffBase::MergeBase => Base::MergeBase,
+        }
+    }
 }
 
 impl From<Base> for DiffBase {
@@ -1109,11 +1118,13 @@ struct AgentPanel {
 
 /// One agent session's layout. Mirrors `Workspace` in `app/src/bridge.ts`.
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Workspace {
     chat: Vec<AgentPanel>,
     panels: Vec<PanelKind>,
     selected: Option<PanelKind>,
     terminal: bool,
+    diff_base: Base,
 }
 
 impl Workspace {
@@ -1132,6 +1143,7 @@ impl Workspace {
             panels: workspace.panels.into_iter().map(Into::into).collect(),
             selected: workspace.selected.map(Into::into),
             terminal: workspace.terminal,
+            diff_base: workspace.diff_base.into(),
         }
     }
 
@@ -1153,6 +1165,7 @@ impl Workspace {
             panels: self.panels.into_iter().map(Into::into).collect(),
             selected: self.selected.map(Into::into),
             terminal: self.terminal,
+            diff_base: self.diff_base.into(),
         })
     }
 }
@@ -1706,19 +1719,29 @@ async fn list_worktrees(grove: State<'_, Grove>) -> Result<Vec<Worktree>, String
         .collect())
 }
 
+/// The worktree's diff against `base`. None when its folder is not a git repo, which has no
+/// diff.
 #[tauri::command]
 async fn diff(
     grove: State<'_, Grove>,
     worktree: PathBuf,
     base: Base,
-) -> Result<Vec<FileDiff>, String> {
+) -> Result<Option<Vec<FileDiff>>, String> {
     let core = grove.0.read().await;
     let core = core.as_ref().ok_or(QUITTING)?;
-    let files = core
-        .diff(&worktree, base.into())
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(files.into_iter().map(Into::into).collect())
+    files_or_no_diff(core.diff(&worktree, base.into()).await)
+}
+
+/// The core says a folder that is not a git repo has no diff with `NotARepo`. The UI reads that
+/// as no diff, not as a failure.
+fn files_or_no_diff(
+    diff: Result<Vec<grove_core::FileDiff>, CoreError>,
+) -> Result<Option<Vec<FileDiff>>, String> {
+    match diff {
+        Ok(files) => Ok(Some(files.into_iter().map(Into::into).collect())),
+        Err(CoreError::NotARepo { .. }) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 #[tauri::command]
@@ -3070,16 +3093,44 @@ mod tests {
             panels: vec![grove_core::PanelKind::Files, grove_core::PanelKind::Logs],
             selected: Some(grove_core::PanelKind::Logs),
             terminal: true,
+            diff_base: DiffBase::MergeBase,
         };
 
         let sent = json(Workspace::from_core(core.clone(), &sessions));
 
         assert_eq!(
             sent,
-            r#"{"chat":[{"agent":"Codex","session":"4","shown":false}],"panels":["Files","Logs"],"selected":"Logs","terminal":true}"#
+            r#"{"chat":[{"agent":"Codex","session":"4","shown":false}],"panels":["Files","Logs"],"selected":"Logs","terminal":true,"diffBase":"MergeBase"}"#
         );
         let back: Workspace = serde_json::from_str(&sent).unwrap();
         assert_eq!(back.into_core(&sessions), Ok(core));
+    }
+
+    // Issue #68. A plain folder has no diff, which is no error.
+    #[test]
+    fn a_place_that_is_not_a_git_repo_reaches_the_ui_as_no_diff_and_other_failures_as_errors() {
+        let file = grove_core::FileDiff {
+            status: FileStatus::Added,
+            old_path: "new.rs".into(),
+            new_path: "new.rs".into(),
+            binary: false,
+            hunks: Vec::new(),
+        };
+        let not_a_repo = CoreError::NotARepo {
+            path: "/plain".into(),
+            reason: "could not find repository".into(),
+        };
+        let unknown = CoreError::UnknownWorktree("/gone".into());
+
+        assert_eq!(
+            json(files_or_no_diff(Ok(vec![file])).unwrap()),
+            r#"[{"status":"Added","oldPath":"new.rs","newPath":"new.rs","binary":false,"added":0,"removed":0}]"#
+        );
+        assert_eq!(json(files_or_no_diff(Err(not_a_repo)).unwrap()), "null");
+        assert_eq!(
+            files_or_no_diff(Err(unknown)).err(),
+            Some("grove does not track a worktree at /gone".to_string())
+        );
     }
 
     #[test]
@@ -3121,7 +3172,7 @@ mod tests {
     #[test]
     fn a_workspace_naming_a_session_grove_never_started_is_refused() {
         let sessions = Sessions(Mutex::default());
-        let from_ui = r#"{"chat":[{"agent":"Claude","session":"7","shown":true}],"panels":[],"selected":null,"terminal":false}"#;
+        let from_ui = r#"{"chat":[{"agent":"Claude","session":"7","shown":true}],"panels":[],"selected":null,"terminal":false,"diffBase":"Head"}"#;
 
         let workspace: Workspace = serde_json::from_str(from_ui).unwrap();
 

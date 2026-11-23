@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::agent::Member;
 use crate::panel_request::Refused;
 use crate::remove::repo_of;
-use crate::{Agent, Core, CoreError, CoreEvent, Layout, PanelKind, Result, SessionId};
+use crate::{Agent, Core, CoreError, CoreEvent, DiffBase, Layout, PanelKind, Result, SessionId};
 
 /// One agent session's layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +26,8 @@ pub struct Workspace {
     /// Whether the terminal panel is open at the bottom of the panel area. The shell in it
     /// belongs to the session's place, so sessions in one place share it.
     pub terminal: bool,
+    /// What the Diff panel compares against. `Head` until the user picks the whole branch.
+    pub diff_base: DiffBase,
 }
 
 /// An agent panel in the chat area.
@@ -38,7 +40,7 @@ pub struct AgentPanel {
 }
 
 /// A workspace as agent sessions read and write it through grove-mcp: only grove's own panels,
-/// and no field grove does not know.
+/// and no field grove does not know. It names no diff base, which is the user's choice.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorkspaceJson {
@@ -75,10 +77,11 @@ impl From<Workspace> for WorkspaceJson {
     }
 }
 
-impl From<WorkspaceJson> for Workspace {
-    fn from(workspace: WorkspaceJson) -> Self {
+impl WorkspaceJson {
+    // As a workspace whose Diff panel stays on `diff_base`.
+    fn with_diff_base(self, diff_base: DiffBase) -> Workspace {
         Workspace {
-            chat: workspace
+            chat: self
                 .chat
                 .into_iter()
                 .map(|panel| AgentPanel {
@@ -87,9 +90,10 @@ impl From<WorkspaceJson> for Workspace {
                     shown: panel.shown,
                 })
                 .collect(),
-            panels: workspace.panels,
-            selected: workspace.selected,
-            terminal: workspace.terminal,
+            panels: self.panels,
+            selected: self.selected,
+            terminal: self.terminal,
+            diff_base,
         }
     }
 }
@@ -119,8 +123,8 @@ impl Saved {
 
 impl Workspace {
     /// `layout` with what it leaves unset from grove's own: the Files and Diff tabs and the
-    /// terminal open. The first tab is selected. It has no agent panel: a layout's `chat` only
-    /// names the agent a new session starts with.
+    /// terminal open. The first tab is selected, and the Diff panel opens on `Head`. It has no
+    /// agent panel: a layout's `chat` only names the agent a new session starts with.
     pub(crate) fn from_layout(layout: Layout) -> Workspace {
         let panels = layout
             .panels
@@ -130,6 +134,7 @@ impl Workspace {
             selected: panels.first().copied(),
             panels,
             terminal: layout.terminal.unwrap_or(true),
+            diff_base: DiffBase::Head,
         }
     }
 
@@ -194,12 +199,12 @@ impl Core {
 
     /// Saves `workspace` as the one `session` shows in and sends one `WorkspaceChanged` with
     /// `by`. `by` is the agent session that changed it, None for the user. Undo restores the
-    /// workspace from before the last change an agent made. An agent's change that cannot be
-    /// saved is taken back, with no `WorkspaceChanged`. Refused when the selected tab is
-    /// not one of the tabs, or when an agent panel names a session twice or one that is neither
-    /// the workspace's own session nor a subagent below it. A running session `workspace` has
-    /// no panel for, such as a subagent started since the caller read it, keeps its panel,
-    /// shown after the last one.
+    /// workspace from before the last change an agent made, with the diff base as it is now. An
+    /// agent's change that cannot be saved is taken back, with no `WorkspaceChanged`. Refused
+    /// when the selected tab is not one of the tabs, or when an agent panel names a session
+    /// twice or one that is neither the workspace's own session nor a subagent below it. A
+    /// running session `workspace` has no panel for, such as a subagent started since the
+    /// caller read it, keeps its panel, shown after the last one.
     pub async fn set_workspace(
         &self,
         session: SessionId,
@@ -217,10 +222,11 @@ impl Core {
     }
 
     /// Restores the workspace `session` shows in from before the last change an agent made to
-    /// it, even if the user changed it since, and sends `WorkspaceChanged` with no `by`. It can
-    /// be undone once. A running session the restored workspace has no panel for, such as a
-    /// subagent started since, keeps its panel, shown after the last one. A panel whose session
-    /// was deleted since is left out.
+    /// it, even if the user changed it since, and sends `WorkspaceChanged` with no `by`. The
+    /// diff base stays as it is, since no agent change moves it. It can be undone once. A
+    /// running session the restored workspace has no panel for, such as a subagent started
+    /// since, keeps its panel, shown after the last one. A panel whose session was deleted
+    /// since is left out.
     pub async fn undo_workspace(&self, session: SessionId) -> Result<()> {
         let owner = self
             .agents
@@ -230,6 +236,7 @@ impl Core {
                 let member =
                     |panel: &AgentPanel| members.iter().any(|m| m.session == panel.session);
                 restored.chat.retain(member);
+                restored.diff_base = saved.workspace.diff_base;
                 saved.workspace = restored.with_running_panels_of(&saved.workspace, members);
                 Ok::<_, CoreError>(owner)
             })??;
@@ -313,10 +320,10 @@ impl Core {
     ) -> std::result::Result<(), Refused> {
         let workspace: WorkspaceJson =
             serde_json::from_value(workspace).map_err(|e| Refused::BadWorkspace(e.to_string()))?;
-        let workspace = Workspace::from(workspace);
         let (owner, change) = self
             .agents
             .with_workspace(caller, |owner, members, saved| {
+                let workspace = workspace.with_diff_base(saved.workspace.diff_base);
                 let now = saved.workspace.listed(members);
                 check_sessions(&now, &workspace, members).map_err(Refused::BadWorkspace)?;
                 check_workspace(&workspace, members)?;

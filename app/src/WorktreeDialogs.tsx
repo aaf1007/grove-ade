@@ -225,10 +225,18 @@ export function ChangeBaseDialog({ bridge, worktree, onSaved, onCancel }: {
   );
 }
 
+/** "sessions" when the worktree has none listed, else how many: "1 session", "3 sessions". */
+function counted(sessionsInWorktree: number): string {
+  if (sessionsInWorktree === 0) return "sessions";
+  return sessionsInWorktree === 1 ? "1 session" : `${sessionsInWorktree} sessions`;
+}
+
 /** Stops tracking a worktree. Its folder and branch stay on disk. */
-export function ForgetDialog({ bridge, worktree, onForgotten, onCancel }: {
+export function ForgetDialog({ bridge, worktree, sessionsInWorktree, onForgotten, onCancel }: {
   bridge: Bridge;
   worktree: Worktree;
+  /** How many agent sessions go with the worktree. The dialog names the number. */
+  sessionsInWorktree: number;
   onForgotten(): void;
   onCancel(): void;
 }) {
@@ -251,8 +259,8 @@ export function ForgetDialog({ bridge, worktree, onForgotten, onCancel }: {
     <Dialog label="Forget worktree" onSubmit={forget} onCancel={onCancel}>
       <div className="form">
         <p>
-          grove stops tracking {worktree.displayName} and ends its sessions. Its folder and branch stay on
-          disk.
+          grove stops tracking {worktree.displayName} and ends its {counted(sessionsInWorktree)}. Its folder
+          and branch stay on disk.
         </p>
         {error && <p role="alert" className="error">{error}</p>}
       </div>
@@ -265,9 +273,11 @@ export function ForgetDialog({ bridge, worktree, onForgotten, onCancel }: {
  * Deletes a worktree. The core's check decides what the dialog asks: the worktree's name typed
  * when deleting loses work, and a box to delete the branch too when it is merged.
  */
-export function DeleteDialog({ bridge, worktree, onDeleting, onDeleted, onCancel }: {
+export function DeleteDialog({ bridge, worktree, sessionsInWorktree, onDeleting, onDeleted, onCancel }: {
   bridge: Bridge;
   worktree: Worktree;
+  /** How many agent sessions go with the worktree. The dialog names the number. */
+  sessionsInWorktree: number;
   /** The delete started or ended. It keeps running after a Cancel. */
   onDeleting(running: boolean): void;
   onDeleted(outcome: BranchOutcome): void;
@@ -312,7 +322,9 @@ export function DeleteDialog({ bridge, worktree, onDeleting, onDeleted, onCancel
   return (
     <Dialog label="Delete worktree" onSubmit={remove} onCancel={onCancel}>
       <div className="form">
-        <p>grove ends the sessions of {worktree.displayName} and removes its folder.</p>
+        <p>
+          grove ends the {counted(sessionsInWorktree)} of {worktree.displayName} and removes its folder.
+        </p>
         {!check && !error && <p className="sub">Checking for unsaved work…</p>}
         {losesWork && (
           <div className="field">

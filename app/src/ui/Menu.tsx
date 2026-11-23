@@ -24,7 +24,20 @@ export interface MenuItem {
   checked?: boolean;
   /** A key that picks it while the menu is open, wherever focus is. */
   shortcut?: string;
+  /** The group it sits in with the items next to it that name the same one. Its name shows over them. */
+  group?: string;
   onSelect(): void;
+}
+
+/** The items in runs that share a group, in order. */
+function byGroup(items: MenuItem[]): { group: string | undefined; items: MenuItem[] }[] {
+  const runs: { group: string | undefined; items: MenuItem[] }[] = [];
+  for (const item of items) {
+    const last = runs.at(-1);
+    if (last && last.group === item.group) last.items.push(item);
+    else runs.push({ group: item.group, items: [item] });
+  }
+  return runs;
 }
 
 /** What the menu's owner can ask of it. */
@@ -37,6 +50,7 @@ export interface MenuHandle {
  * An icon button that opens a list of actions under it. With `trigger`, a full-width button holding
  * it opens the list instead. Opening focuses the first item, Up and Down move through the items,
  * Escape, Tab or a click outside closes it, and an item's shortcut picks it. Focus goes back to the button when the menu closes from the keyboard or a pick.
+ * Items that name a group sit together under a rule and the group's name.
  */
 export function Menu({
   label,
@@ -167,28 +181,40 @@ export function Menu({
           aria-label={label}
         >
           {heading && <div className="ui-menu-heading">{heading}</div>}
-          {items.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              className="ui-menu-item"
-              tabIndex={-1}
-              role={item.checked === undefined ? "menuitem" : "menuitemcheckbox"}
-              aria-checked={item.checked}
-              aria-label={item.label}
-              aria-keyshortcuts={item.shortcut}
-              onClick={() => pick(item)}
-            >
-              {item.checked !== undefined && (
-                <span className="ui-menu-check">{item.checked && <Check aria-hidden="true" />}</span>
-              )}
-              <span className="ui-menu-label">
-                {item.label}
-                {item.hint && <span className="ui-menu-hint">{item.hint}</span>}
-              </span>
-              {item.shortcut && <kbd>{item.shortcut}</kbd>}
-            </button>
-          ))}
+          {byGroup(items).map(({ group, items: run }) => {
+            const buttons = run.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                className="ui-menu-item"
+                tabIndex={-1}
+                role={item.checked === undefined ? "menuitem" : "menuitemcheckbox"}
+                aria-checked={item.checked}
+                aria-label={item.label}
+                aria-keyshortcuts={item.shortcut}
+                onClick={() => pick(item)}
+              >
+                {item.checked !== undefined && (
+                  <span className="ui-menu-check">{item.checked && <Check aria-hidden="true" />}</span>
+                )}
+                <span className="ui-menu-label">
+                  {item.label}
+                  {item.hint && <span className="ui-menu-hint">{item.hint}</span>}
+                </span>
+                {item.shortcut && <kbd>{item.shortcut}</kbd>}
+              </button>
+            ));
+            if (group === undefined) return buttons;
+            return (
+              <div key={run[0].key} className="ui-menu-group" role="group" aria-label={group}>
+                {/* A screen reader says the group's name, so it skips this copy. */}
+                <div className="ui-menu-heading" aria-hidden="true">
+                  {group}
+                </div>
+                {buttons}
+              </div>
+            );
+          })}
         </div>
       )}
     </span>

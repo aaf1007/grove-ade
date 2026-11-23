@@ -18,9 +18,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use grove_core::{
     Agent, AgentMessage, AgentPanel, AgentSessionInfo, AgentSpec, AgentState, CommentId, Core,
-    CoreConfig, CoreError, CoreEvent, Mode, ModelChoice, NewReviewComment, NewWorktree, PanelKind,
-    ProfileSettings, RemoveOpts, RepoSettings, ReviewComment, RunSession, RunSpec, SessionId,
-    SessionInfo, SessionKind, TurnOutcome, Warning, Workspace,
+    CoreConfig, CoreError, CoreEvent, DiffBase, Mode, ModelChoice, NewReviewComment, NewWorktree,
+    PanelKind, ProfileSettings, RemoveOpts, RepoSettings, ReviewComment, RunSession, RunSpec,
+    SessionId, SessionInfo, SessionKind, TurnOutcome, Warning, Workspace,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -570,6 +570,7 @@ fn a_claude_chat_session_that_never_got_a_message_comes_back_fresh_in_its_panel(
         panels: vec![PanelKind::Diff],
         selected: Some(PanelKind::Diff),
         terminal: false,
+        diff_base: DiffBase::Head,
     };
     block_on(s.core().set_workspace(claude, workspace.clone(), None)).unwrap();
     wait_launches(&s.claude_chat, 1);
@@ -1248,12 +1249,14 @@ fn each_workspace_comes_back_with_its_panels_on_the_restored_sessions() {
         panels: vec![PanelKind::Diff, PanelKind::Logs],
         selected: Some(PanelKind::Logs),
         terminal: false,
+        diff_base: DiffBase::Head,
     };
     let of_codex = Workspace {
         chat: vec![panel(Agent::Codex, codex, true)],
         panels: vec![PanelKind::Browser],
         selected: None,
         terminal: true,
+        diff_base: DiffBase::Head,
     };
     block_on(s.core().set_workspace(claude, of_claude.clone(), None)).unwrap();
     block_on(s.core().set_workspace(codex, of_codex.clone(), None)).unwrap();
@@ -1265,6 +1268,38 @@ fn each_workspace_comes_back_with_its_panels_on_the_restored_sessions() {
     assert!(![claude, codex, helper, ended].contains(&shell));
     assert_eq!(s.core().workspace(claude).unwrap(), of_claude);
     assert_eq!(s.core().workspace(codex).unwrap(), of_codex);
+}
+
+// Issue #68. The Diff panel shows uncommitted changes until the user picks the whole branch.
+#[test]
+fn a_new_diff_panel_opens_on_head_and_each_sessions_choice_of_base_comes_back() {
+    let _serial = serial();
+    let mut s = setup(Scenarios::default());
+    let on_whole_branch = s.spawn(Agent::Claude, Mode::Chat);
+    // In the same place, with a choice of its own.
+    let on_uncommitted = s.spawn(Agent::Codex, Mode::Chat);
+    let starting = s.core().starting_workspace(&s.worktree).unwrap();
+    assert_eq!(starting.diff_base, DiffBase::Head);
+    let opened = s.core().workspace(on_whole_branch).unwrap();
+    assert_eq!(opened.diff_base, DiffBase::Head);
+    let chosen = Workspace {
+        diff_base: DiffBase::MergeBase,
+        ..opened
+    };
+    block_on(
+        s.core()
+            .set_workspace(on_whole_branch, chosen.clone(), None),
+    )
+    .unwrap();
+
+    s.restart();
+
+    assert_eq!(s.core().workspace(on_whole_branch).unwrap(), chosen);
+    let other = s.core().workspace(on_uncommitted).unwrap();
+    assert_eq!(other.diff_base, DiffBase::Head);
+    // A session started now opens on uncommitted changes, whatever the others chose.
+    let new = s.spawn(Agent::Claude, Mode::Chat);
+    assert_eq!(s.core().workspace(new).unwrap().diff_base, DiffBase::Head);
 }
 
 #[test]
@@ -1511,6 +1546,7 @@ fn resuming_an_ended_session_starts_it_again_under_the_same_id_with_the_layout_i
         panels: vec![PanelKind::Logs, PanelKind::Diff],
         selected: Some(PanelKind::Diff),
         terminal: false,
+        diff_base: DiffBase::Head,
     };
     block_on(s.core().set_workspace(claude, layout.clone(), None)).unwrap();
     s.end(claude);
@@ -1711,7 +1747,7 @@ fn a_version_8_state_file_loads_with_every_session_listed() {
     // what later versions write: no title, created time, ended flag or workspace.
     let path = s.cfg.home.join("state.json");
     let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(state["version"], json!(10));
+    assert_eq!(state["version"], json!(11));
     let id = |session: SessionId| session.to_string().parse::<u64>().unwrap();
     state["repos"][0]["main_worktree"]["sessions"] = json!([
         {"kind": "agent", "id": id(with_history), "agent": "claude", "mode": "chat",
@@ -1919,6 +1955,7 @@ fn a_state_file_from_before_restore_starts_with_no_sessions_or_comments() {
             panels: vec![PanelKind::Files, PanelKind::Diff],
             selected: Some(PanelKind::Files),
             terminal: true,
+            diff_base: DiffBase::Head,
         }
     );
 }
@@ -1986,11 +2023,19 @@ fn a_session_saved_before_grove_kept_models_comes_back_with_no_choice() {
     // session, and nothing a later version added.
     let path = s.cfg.home.join("state.json");
     let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(state["version"], json!(10));
+    assert_eq!(state["version"], json!(11));
     let worktree = &mut state["repos"][0]["main_worktree"];
     let record = worktree["sessions"][0].as_object_mut().unwrap();
     assert!(record.contains_key("model"), "{record:?}");
-    let workspace = record.remove("workspace").unwrap();
+    let mut workspace = record.remove("workspace").unwrap();
+    // Version 11 added the diff base.
+    assert!(
+        workspace
+            .as_object_mut()
+            .unwrap()
+            .remove("diff_base")
+            .is_some()
+    );
     // Version 7 added the model, and version 9 the title, the created time and the ended flag.
     record.retain(|field, _| {
         !["model", "title", "created_unix_ms", "ended"].contains(&field.as_str())
