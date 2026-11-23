@@ -215,12 +215,11 @@ impl Setup {
 
     fn spawn(&self, mode: Mode) -> SessionId {
         let spec = AgentSpec {
-            agent: self.agent,
+            agent: Some(self.agent),
             mode,
             prompt: None,
             cols: 120,
             rows: 40,
-            panel: None,
         };
         self.core.spawn_agent(&self.worktree, spec).unwrap()
     }
@@ -670,12 +669,11 @@ fn set_mode_is_refused_while_a_terminal_session_is_working_or_needs_input() {
     ];
     let mut s = setup(Agent::Codex, Vec::new(), tui);
     let spec = AgentSpec {
-        agent: Agent::Codex,
+        agent: Some(Agent::Codex),
         mode: Mode::Terminal,
         prompt: None,
         cols: 120,
         rows: 40,
-        panel: None,
     };
     let session = s.core.spawn_agent(&s.worktree, spec).unwrap();
 

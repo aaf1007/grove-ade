@@ -20,7 +20,7 @@ test("the gallery shows every component, every agent state, and switches between
   await addGallerySessions(bridge);
   await act(async () => render(<Gallery bridge={bridge} />));
 
-  for (const name of ["Button", "IconButton", "AgentState", "Segmented", "PanelTabs", "Menu", "Card", "AgentMarkdown"]) {
+  for (const name of ["Button", "IconButton", "AgentState", "Segmented", "PanelTabs", "Menu", "Card", "AgentMarkdown", "DetailsCard"]) {
     expect(screen.getByRole("region", { name })).toBeTruthy();
   }
   const states = screen.getByRole("region", { name: "AgentState" });
@@ -28,6 +28,12 @@ test("the gallery shows every component, every agent state, and switches between
     expect(within(states).getAllByText(word)).toHaveLength(1);
   }
   expect(document.documentElement.dataset.theme).toBe("dark");
+  // One details card per agent: Claude's plan windows, and Codex's last good reading with its age.
+  const cards = await within(screen.getByRole("region", { name: "DetailsCard" })).findAllByRole("region", { name: "Details" });
+  expect(cards).toHaveLength(2);
+  expect(within(cards[0]).getByRole("listitem", { name: "Usage limits" }).textContent).toContain("5-hour");
+  expect(within(cards[0]).getByRole("listitem", { name: "Context window" }).textContent).toContain("42%");
+  expect(within(cards[1]).getByRole("listitem", { name: "Usage limits" }).textContent).toContain("last read 12 min ago");
   // The sidebar lists the gallery's sessions, the ended one dimmed.
   const ended = await screen.findByText("Spike the port router", { selector: ".session-title" });
   expect(ended.closest(".session-item")!.classList.contains("dimmed")).toBe(true);

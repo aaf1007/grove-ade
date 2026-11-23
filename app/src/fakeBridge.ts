@@ -6,6 +6,8 @@ import type {
   AgentStateChanged,
   BatchComment,
   Bridge,
+  ContextReading,
+  ContextReadingChanged,
   DeleteCheck,
   DiffBase,
   DockIcon,
@@ -25,6 +27,7 @@ import type {
   SetupChanged,
   SetupState,
   TextProblem,
+  UsageReadingChanged,
   Warning,
   WarningSent,
   Workspace,
@@ -88,6 +91,10 @@ export interface FakeBridge extends Bridge {
   watcherRetries: string[];
   /** Reports an agent's login, as its chat-mode transport does. A listener that comes later still gets the latest. */
   accountChanged(change: AccountChanged): void;
+  /** Reports an agent's usage reading, as the core does. A listener that comes later still gets the latest. */
+  usageReadingChanged(change: UsageReadingChanged): void;
+  /** Reports a session's context reading, as the core does after a turn. `contextReading` returns the latest. */
+  contextReadingChanged(change: ContextReadingChanged): void;
   /**
    * Adds the messages to a chat-mode session's conversation, as its agent sends them. If a panel
    * subscribed, they go to it as one frame, as the core's batcher sends them. A `Commands` message
@@ -169,12 +176,17 @@ export interface FakeBridge extends Bridge {
 
   // Workspaces (#122).
   /** Every `setWorkspace` call the fake core took, in order. */
-  workspacesSet: { worktree: string; workspace: Workspace }[];
+  workspacesSet: { session: SessionId; workspace: Workspace }[];
   /**
-   * Starts an agent session that no workspace names, as a subagent of `parent` starts, or one from
-   * before the core placed sessions in panels.
+   * Sets what a new agent session in the worktree starts from, as its profile's layout does: its
+   * tabs, selected tab and terminal, and `agent`, the first agent the layout names.
    */
-  spawnAgentWithoutPanel(worktree: string, agent: Agent, parent?: SessionId): SessionId;
+  setStartingWorkspace(worktree: string, workspace: Workspace, agent?: Agent): void;
+  /**
+   * Starts a subagent session of `parent` in the worktree, as `parent` does through `grove-mcp`.
+   * Its panel shows in the workspace of the session at the top of its parents.
+   */
+  spawnSubagent(worktree: string, agent: Agent, parent: SessionId): SessionId;
   /**
    * Holds back each `workspace-changed` from now on, as a busy window gets it late. Returns what
    * sends the held ones, in order, and stops holding.
@@ -182,16 +194,16 @@ export interface FakeBridge extends Bridge {
   holdWorkspaceChanges(): () => void;
   // The agent change notice (#4).
   /**
-   * Saves the worktree's workspace as the agent session `by` does through `grove-mcp`: the one from
-   * before stays for Undo, and `agent-change` comes before `workspace-changed`, as in the core.
+   * Saves the workspace the agent session `by` shows in, as it does through `grove-mcp`: the one
+   * from before stays for Undo, and `agent-change` comes before `workspace-changed`, as in the core.
    */
-  agentChangesWorkspace(worktree: string, by: SessionId, workspace: Workspace): void;
+  agentChangesWorkspace(by: SessionId, workspace: Workspace): void;
   /** Changes a profile as the agent session `by` does through `grove-mcp`. */
   agentChangesProfile(by: SessionId): void;
-  /** Every `undoWorkspace` call the fake core took, in order. */
-  undone: string[];
-  /** Every `saveWorkspaceToProfile` call the fake core took, in order. */
-  savedToProfile: string[];
+  /** The session whose workspace each `undoWorkspace` call restored, in order. */
+  undone: SessionId[];
+  /** The session whose workspace each `saveWorkspaceToProfile` call wrote, in order. */
+  savedToProfile: SessionId[];
 
   // Worktree management (#52).
   /** Changes what the fake core finds in the worktree. A worktree starts clean and unmerged. */
@@ -247,9 +259,9 @@ export interface FakeBridge extends Bridge {
   exit(session: SessionId): void;
 }
 
-/** The layout a worktree starts with when its profile sets none, as in the core. */
-export const DEFAULT_WORKSPACE: Workspace = {
-  chat: [{ agent: "Claude", session: null, shown: true }],
+/** The workspace a new agent session starts from when its profile sets no layout, as in the core. */
+export const STARTING_WORKSPACE: Workspace = {
+  chat: [],
   panels: ["Files", "Diff"],
   selected: "Files",
   terminal: true,
@@ -322,6 +334,10 @@ export function fakeBridge(
   const watcherRetries: string[] = [];
   const accounts = new Map<Agent, AccountChanged>();
   const accountListeners = new Set<(change: AccountChanged) => void>();
+  const usageReadings = new Map<Agent, UsageReadingChanged>();
+  const usageReadingListeners = new Set<(change: UsageReadingChanged) => void>();
+  const contextReadings = new Map<SessionId, ContextReading>();
+  const contextReadingListeners = new Set<(change: ContextReadingChanged) => void>();
   const opened: FakeBridge["opened"] = [];
   const revealed: string[] = [];
   const openedLinks: string[] = [];
@@ -377,11 +393,17 @@ export function fakeBridge(
   // Files panel (#124).
   const readFiles: FakeBridge["readFiles"] = [];
   const writtenFiles: FakeBridge["writtenFiles"] = [];
-  // Workspaces (#122): the saved ones, by worktree path.
-  const workspaces = new Map<string, Workspace>();
+  // Workspaces (#122): each listed agent session's own, by session.
+  const workspaces = new Map<SessionId, Workspace>();
+  // What a new agent session starts from, and the agent it runs when none is named, by worktree
+  // path, where a test set them.
+  const startingWorkspaces = new Map<string, Workspace>();
+  const startingAgents = new Map<string, Agent>();
+  const startingWorkspaceOf = (worktree: string) =>
+    structuredClone(startingWorkspaces.get(worktree) ?? STARTING_WORKSPACE);
   const workspacesSet: FakeBridge["workspacesSet"] = [];
-  // The agent change notice (#4): each worktree's workspace from before an agent changed it.
-  const beforeAgentChange = new Map<string, Workspace>();
+  // The agent change notice (#4): a session's workspace from before an agent changed it.
+  const beforeAgentChange = new Map<SessionId, Workspace>();
   const agentChangeListeners = new Set<(change: AgentChange) => void>();
   const undone: string[] = [];
   const savedToProfile: string[] = [];
@@ -420,8 +442,8 @@ export function fakeBridge(
   const comments = new Map<string, ReviewComment[]>();
   let nextComment = 0;
   const commentListeners = new Set<(worktree: string) => void>();
-  const workspaceListeners = new Set<(worktree: string) => void>();
-  // The worktrees of the held `workspace-changed` events, in order. null while none are held.
+  const workspaceListeners = new Set<(session: SessionId) => void>();
+  // The sessions of the held `workspace-changed` events, in order. null while none are held.
   let heldWorkspaceChanges: string[] | null = null;
   // What lets each held `setMode` go on, in order. null while none are held.
   let heldModeSwitches: (() => void)[] | null = null;
@@ -557,8 +579,45 @@ export function fakeBridge(
     created.set(session, Date.now());
     sinces.set(session, Date.now());
     parents.set(session, parent);
+    workspaces.set(session, { ...startingWorkspaceOf(worktree), chat: [{ agent, session, shown: true }] });
     sessionsChanged();
+    // As in the core: a subagent session shows in the workspace of its top parent.
+    if (parent !== null) showAgentPanel(session);
     return session;
+  }
+
+  // As the core: the session whose workspace `session` shows in, the last one up its parents that
+  // is still listed.
+  function topParent(session: SessionId): SessionId {
+    if (!parents.has(session)) throw `session ${session} is not an agent session`;
+    let top = session;
+    for (let above = parents.get(top); above != null && parents.has(above); above = parents.get(top)) top = above;
+    return top;
+  }
+
+  const agentOf = (session: SessionId) => spawnedAgents.find((s) => s.session === session)!.agent;
+
+  // As the core: the session's panel shows in the workspace it shows in, in the place it had or
+  // after the last one.
+  function showAgentPanel(session: SessionId) {
+    const owner = topParent(session);
+    const saved = workspaces.get(owner)!;
+    const had = saved.chat.find((panel) => panel.session === session);
+    if (had) had.shown = true;
+    else saved.chat.push({ agent: agentOf(session), session, shown: true });
+    workspaceChanged(owner);
+  }
+
+  // As the core: the agent panels of sessions that are no longer listed go from every workspace,
+  // and each session whose workspace lost one hears of it.
+  function dropPanelsOfUnlisted() {
+    for (const session of [...workspaces.keys()]) if (!parents.has(session)) workspaces.delete(session);
+    for (const [owner, saved] of workspaces) {
+      const kept = saved.chat.filter((panel) => parents.has(panel.session));
+      if (kept.length === saved.chat.length) continue;
+      saved.chat = kept;
+      workspaceChanged(owner);
+    }
   }
 
   // As the core: `session`, then every subagent session below it.
@@ -573,42 +632,42 @@ export function fakeBridge(
     return found;
   }
 
-  // As in the core: a panel `workspace` lists has no session yet, or one running in the worktree,
-  // a session between its two processes in a mode switch too.
-  function listed(worktree: string, session: SessionId | null) {
-    if (session === null) return true;
-    return (running.has(session) || switching.has(session)) && agentWorktrees.get(session) === worktree;
-  }
-
-  // As in the core: a panel whose session no longer runs in the worktree is left out.
-  function workspaceOf(worktree: string): Workspace {
-    const saved = structuredClone(workspaces.get(worktree) ?? DEFAULT_WORKSPACE);
-    saved.chat = saved.chat.filter((panel) => listed(worktree, panel.session));
+  // As in the core: the workspace `session` shows in, with only the panels of the session it
+  // belongs to and of the subagent sessions below it.
+  function workspaceOf(session: SessionId): Workspace {
+    const owner = topParent(session);
+    const members = withSubagents(owner);
+    const saved = structuredClone(workspaces.get(owner)!);
+    saved.chat = saved.chat.filter((panel) => members.includes(panel.session));
     return saved;
   }
 
-  function workspaceChanged(worktree: string) {
-    if (heldWorkspaceChanges) heldWorkspaceChanges.push(worktree);
-    else workspaceListeners.forEach((listener) => listener(worktree));
+  function workspaceChanged(session: SessionId) {
+    if (heldWorkspaceChanges) heldWorkspaceChanges.push(session);
+    else workspaceListeners.forEach((listener) => listener(session));
   }
 
-  // As the core's `spawn_agent`: the session goes in panel `panel`, counted as `workspace` lists
-  // them, when it has none, or else in a new shown panel after the last one. The other panels stay,
-  // those of ended sessions too, and the workspace is saved.
-  function spawnAgentInPanel(worktree: string, agent: Agent, panel: number | null): SessionId {
+  // As the core's `spawn_agent`: with no agent, the first one the profile's layout names, or else
+  // Claude Code.
+  // Why the profile named `name` is not valid, as the core says it. null when it is valid.
+  function profileNotValid(name: string): string | null {
+    const problem = profileProblem(profileTexts.get(name) ?? "");
+    if (!problem) return null;
+    return `the profile /home/.grovecode/profiles/${profileFileName(name)} is not valid at line ${problem.line}: ${problem.message}`;
+  }
+
+  // As the core: a new session's layout comes from its project's profile, so the starting
+  // workspace and a start are refused while that profile's file is not valid.
+  function checkStartingLayout(worktree: string) {
     checkTracked(worktree);
-    if (panel !== null && panel >= workspaceOf(worktree).chat.length) {
-      throw "the workspace is not valid: its agent panel is past the last one";
-    }
-    const saved = structuredClone(workspaces.get(worktree) ?? DEFAULT_WORKSPACE);
-    const target = panel === null ? undefined : saved.chat.filter((p) => listed(worktree, p.session))[panel];
-    const session = startAgentSession(worktree, agent);
-    const placed = { agent, session, shown: true };
-    if (target?.session === null) saved.chat[saved.chat.indexOf(target)] = placed;
-    else saved.chat.push(placed);
-    workspaces.set(worktree, saved);
-    workspaceChanged(worktree);
-    return session;
+    const profile = repoProfiles.get(mainOf(tracked.find((w) => w.path === worktree)!).path);
+    const notValid = profile && profileTexts.has(profile) ? profileNotValid(profile) : null;
+    if (notValid) throw notValid;
+  }
+
+  function spawnAgent(worktree: string, agent: Agent | null): SessionId {
+    checkStartingLayout(worktree);
+    return startAgentSession(worktree, agent ?? startingAgents.get(worktree) ?? "Claude");
   }
 
   function setupOf(worktree: string): SetupState | null {
@@ -638,8 +697,10 @@ export function fakeBridge(
       if (agentWorktrees.get(session) === worktree) parents.delete(session);
     }
     sessionsChanged();
+    dropPanelsOfUnlisted();
+    startingWorkspaces.delete(worktree);
+    startingAgents.delete(worktree);
     tracked.splice(tracked.findIndex((w) => w.path === worktree), 1);
-    workspaces.delete(worktree);
     stoppedRuns.splice(0, stoppedRuns.length, ...stoppedRuns.filter((s) => s.worktree !== worktree));
   }
 
@@ -809,8 +870,8 @@ export function fakeBridge(
       exitListeners.add(listener);
       return () => exitListeners.delete(listener);
     },
-    async spawnAgent(worktree, agent, panel) {
-      return spawnAgentInPanel(worktree, agent, panel);
+    async spawnAgent(worktree, agent) {
+      return spawnAgent(worktree, agent);
     },
     async sessions(worktree) {
       checkTracked(worktree);
@@ -917,6 +978,18 @@ export function fakeBridge(
       accounts.forEach(listener);
       return () => accountListeners.delete(listener);
     },
+    onUsageReading(listener) {
+      usageReadingListeners.add(listener);
+      usageReadings.forEach(listener);
+      return () => usageReadingListeners.delete(listener);
+    },
+    async contextReading(session) {
+      return contextReadings.get(session) ?? null;
+    },
+    onContextReading(listener) {
+      contextReadingListeners.add(listener);
+      return () => contextReadingListeners.delete(listener);
+    },
     async write(session, bytes) {
       check(session);
       writes.push({ session, bytes });
@@ -967,6 +1040,14 @@ export function fakeBridge(
     accountChanged(change) {
       accounts.set(change.agent, change);
       accountListeners.forEach((listener) => listener(change));
+    },
+    usageReadingChanged(change) {
+      usageReadings.set(change.agent, change);
+      usageReadingListeners.forEach((listener) => listener(change));
+    },
+    contextReadingChanged(change) {
+      contextReadings.set(change.session, change.reading);
+      contextReadingListeners.forEach((listener) => listener(change));
     },
     messages: (session, ...messages) => addMessages(session, messages.map(withTime)),
     sideMessages(session, ...messages) {
@@ -1053,19 +1134,33 @@ export function fakeBridge(
         .map((change) => ({ session: change.session, worktree: agentWorktrees.get(change.session)! }));
     },
 
-    // Workspaces (#122). As in the core: a panel whose session no longer runs in the worktree is left out.
-    async workspace(worktree) {
-      checkTracked(worktree);
-      return workspaceOf(worktree);
+    // Workspaces (#122). As in the core.
+    async workspace(session) {
+      return workspaceOf(session);
     },
-    async setWorkspace(worktree, workspace) {
-      checkTracked(worktree);
+    async startingWorkspace(worktree) {
+      checkStartingLayout(worktree);
+      return startingWorkspaceOf(worktree);
+    },
+    setStartingWorkspace(worktree, workspace, agent = "Claude") {
+      startingWorkspaces.set(worktree, { ...structuredClone(workspace), chat: [] });
+      startingAgents.set(worktree, agent);
+    },
+    async setWorkspace(session, workspace) {
+      const owner = topParent(session);
+      const members = withSubagents(owner);
       if (workspace.selected !== null && !workspace.panels.includes(workspace.selected)) {
         throw "invalid workspace: its selected tab is not one of its tabs";
       }
-      workspaces.set(worktree, structuredClone(workspace));
-      workspacesSet.push({ worktree, workspace: structuredClone(workspace) });
-      workspaceChanged(worktree);
+      if (workspace.chat.some((panel) => !members.includes(panel.session))) {
+        throw "invalid workspace: an agent panel names a session that is not part of it";
+      }
+      if (new Set(workspace.chat.map((panel) => panel.session)).size !== workspace.chat.length) {
+        throw "invalid workspace: two agent panels name the same session";
+      }
+      workspaces.set(owner, structuredClone(workspace));
+      workspacesSet.push({ session: owner, workspace: structuredClone(workspace) });
+      workspaceChanged(owner);
     },
     onWorkspaceChanged(listener) {
       workspaceListeners.add(listener);
@@ -1077,37 +1172,38 @@ export function fakeBridge(
       agentChangeListeners.add(listener);
       return () => agentChangeListeners.delete(listener);
     },
-    agentChangesWorkspace(worktree, by, workspace) {
-      checkTracked(worktree);
-      beforeAgentChange.set(worktree, structuredClone(workspaces.get(worktree) ?? DEFAULT_WORKSPACE));
-      workspaces.set(worktree, structuredClone(workspace));
-      agentChangeListeners.forEach((listener) => listener({ kind: "Workspace", worktree, by }));
-      workspaceChanged(worktree);
+    agentChangesWorkspace(by, workspace) {
+      const session = topParent(by);
+      beforeAgentChange.set(session, structuredClone(workspaces.get(session)!));
+      workspaces.set(session, structuredClone(workspace));
+      agentChangeListeners.forEach((listener) => listener({ kind: "Workspace", session, by }));
+      workspaceChanged(session);
     },
     agentChangesProfile(by) {
       agentChangeListeners.forEach((listener) => listener({ kind: "Profiles", by }));
       profilesChanged();
     },
-    async undoWorkspace(worktree) {
-      checkTracked(worktree);
-      const before = beforeAgentChange.get(worktree);
-      if (!before) throw `no agent change to the workspace of ${worktree} is left to undo`;
-      beforeAgentChange.delete(worktree);
-      workspaces.set(worktree, before);
-      undone.push(worktree);
-      workspaceChanged(worktree);
+    async undoWorkspace(session) {
+      const owner = topParent(session);
+      const before = beforeAgentChange.get(owner);
+      if (!before) throw `no agent change to the workspace of agent session ${owner} is left to undo`;
+      beforeAgentChange.delete(owner);
+      workspaces.set(owner, before);
+      undone.push(owner);
+      workspaceChanged(owner);
     },
-    async saveWorkspaceToProfile(worktree) {
-      checkTracked(worktree);
+    async saveWorkspaceToProfile(session) {
+      const owner = topParent(session);
+      const worktree = agentWorktrees.get(owner)!;
       const at = tracked.findIndex((w) => w.path === worktree);
       const repo = tracked.slice(0, at + 1).filter((w) => w.isMain).pop()!.path;
       if (!repoProfiles.get(repo)) throw `the repo at ${repo} uses no profile`;
-      savedToProfile.push(worktree);
+      savedToProfile.push(owner);
       profilesChanged();
     },
     undone,
     savedToProfile,
-    spawnAgentWithoutPanel: startAgentSession,
+    spawnSubagent: startAgentSession,
     holdWorkspaceChanges() {
       heldWorkspaceChanges = [];
       return () => {
@@ -1179,11 +1275,9 @@ export function fakeBridge(
       return { outcome: "Deleted", name: branch };
     },
     async profileNames() {
-      for (const [name, text] of profileTexts) {
-        const problem = profileProblem(text);
-        if (problem) {
-          throw `the profile /home/.grovecode/profiles/${profileFileName(name)} is not valid at line ${problem.line}: ${problem.message}`;
-        }
+      for (const name of profileTexts.keys()) {
+        const notValid = profileNotValid(name);
+        if (notValid) throw notValid;
       }
       return profiles.map((p) => p.name).sort();
     },
@@ -1298,7 +1392,7 @@ export function fakeBridge(
     },
     clickNotification: (clicked) => notificationListeners.forEach((listener) => listener(clicked)),
     quitCount: () => quits,
-    async spawnAgentAfterSetup(worktree, agent, panel) {
+    async spawnAgentAfterSetup(worktree, agent) {
       if (setupOf(worktree)?.state === "Running") {
         await new Promise<void>((resolve) => setupWaiters.set(worktree, [...(setupWaiters.get(worktree) ?? []), resolve]));
       }
@@ -1307,7 +1401,7 @@ export function fakeBridge(
         const ended = setup.code === null ? "was stopped by a signal" : `exited with code ${setup.code}`;
         throw `the setup script in ${worktree} ${ended}, so no agent session started`;
       }
-      return spawnAgentInPanel(worktree, agent, panel);
+      return spawnAgent(worktree, agent);
     },
     onSetup(listener) {
       setupListeners.add(listener);
@@ -1436,12 +1530,8 @@ export function fakeBridge(
         }
         parents.delete(each);
       }
-      // As the core: their panels go, and each worktree that lost one hears of it.
-      const gone = (panel: Workspace["chat"][number]) => panel.session !== null && deleting.includes(panel.session);
-      const lostAPanel = [...workspaces].filter(([, saved]) => saved.chat.some(gone));
-      for (const [, saved] of lostAPanel) saved.chat = saved.chat.filter((panel) => !gone(panel));
       sessionsChanged();
-      lostAPanel.forEach(([worktree]) => workspaceChanged(worktree));
+      dropPanelsOfUnlisted();
     },
     async resumeAgentSession(session) {
       if (!parents.has(session)) throw `session ${session} is not an agent session`;
@@ -1455,16 +1545,8 @@ export function fakeBridge(
       running.add(session);
       const last = agentStates.get(session);
       changeState({ session, state: "Idle", source: last?.source ?? "Protocol" });
-      // It shows in the panel it had, or in a new one after the last.
-      const worktree = agentWorktrees.get(session)!;
-      const agent = spawnedAgents.find((s) => s.session === session)!.agent;
-      const saved = structuredClone(workspaces.get(worktree) ?? DEFAULT_WORKSPACE);
-      const had = saved.chat.find((p) => p.session === session);
-      if (had) had.shown = true;
-      else saved.chat.push({ agent, session, shown: true });
-      workspaces.set(worktree, saved);
       sessionsChanged();
-      workspaceChanged(worktree);
+      showAgentPanel(session);
     },
   };
 }

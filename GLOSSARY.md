@@ -35,12 +35,14 @@ Use these terms exactly. If a new concept appears, add it here in the same PR.
 | Chat area | The middle region of the window, holding the selected agent session's panel and the panels of the subagent sessions it spawned. |
 | Panel area | The right region of the window: panels as tabs, with an optional terminal panel at its bottom. |
 | Editor | Monaco tabs in the Files panel for reading and editing a worktree's files. Its file model is kept apart from the panel, so a language server can attach later. |
-| Workspace | One agent session's layout: its agent panels, the panels open in the panel area and its terminal. Starts from the profile's layout. |
+| Workspace | One agent session's layout: its agent panels, the panels open in the panel area and whether the terminal is open. Starts from the profile's layout and is saved with the session. A subagent session shows in the workspace of its top parent. |
 | Subagent panel | An agent panel holding an agent session that another agent session spawned through `grove-mcp`. Its parent is recorded. |
 | Log panel | A panel in the panel area that shows the output of a command an agent session ran through grove-mcp. The user cannot type into it. Only that agent session can read, wait on or close it. |
 | Command panel | A panel in the panel area that runs a command an agent session started through grove-mcp, as a terminal the user can type into. Only that agent session can read, wait on or close it. |
 | Snapshot | A PTY session's terminal when a panel attaches: size, screen, scrollback, cursor and modes, as bytes the panel replays before live output. |
 | Agent state | One of `Working`, `NeedsInput`, `Failed`, `Done`, `Idle`, `Exited`. `NeedsInput` has a kind: `Approval` or `Question`. `Failed`: the turn or the process ended on an error. `Done`: the turn ended and the user has not looked at the panel since. `Idle`: nothing is waiting on the user. `Exited`: the process ended cleanly or grove stopped it. |
+| Usage reading | An agent's plan limits as its chat-mode transport last read them: limit windows, each with a name, a percent used and a reset time, or no plan limits for an API key account. One per agent. grove never calls a provider itself. |
+| Context reading | A chat-mode agent session's total tokens and how full its context window is, reported after each turn. |
 | State source | Where an agent state came from: `Protocol` in chat mode; `Hook` or `Heuristic` in terminal mode, where Hook beats Heuristic. |
 | Attention queue | Agent sessions waiting on the user, ranked Approval, Question, `Failed`, `Done`, oldest first within each. One key jumps to the head. |
 | Diff base | What a diff compares against: `Head` (all uncommitted changes, staged or not, plus untracked files) or `MergeBase` (everything since the branch left its base branch, committed or not). The Diff panel opens on `Head`. |

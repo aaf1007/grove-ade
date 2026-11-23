@@ -159,12 +159,11 @@ impl Setup {
 
     pub fn spawn_parent_in(&self, agent: Agent, mode: Mode) -> SessionId {
         let spec = AgentSpec {
-            agent,
+            agent: Some(agent),
             mode,
             prompt: None,
             cols: 100,
             rows: 30,
-            panel: None,
         };
         self.core.spawn_agent(&self.worktree, spec).unwrap()
     }

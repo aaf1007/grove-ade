@@ -569,6 +569,33 @@ class FakeCodexTest(unittest.TestCase):
         self.assertEqual([s["name"] for s in before], ["review", "off"])
         self.assertEqual([s["name"] for s in after], ["plan"])
 
+    def test_app_server_reads_its_rate_limits_from_the_file_one_reply_per_request(self):
+        path = os.path.join(self.dir, "rate-limits.json")
+        limits = {"rateLimits": {"primary": {"usedPercent": 42, "windowDurationMins": 300, "resetsAt": 1763560921},
+                                 "secondary": None}}
+        with open(path, "w") as f:
+            json.dump([limits, {"error": "the usage service is down"}], f)
+        server = self.chat([], env={"FAKE_CODEX_RATE_LIMITS": path})
+        server.handshake()
+
+        first = server.request("account/rateLimits/read", {})
+        second = server.request("account/rateLimits/read", {})
+        third = server.request("account/rateLimits/read", {})
+
+        self.assertEqual(first["result"], limits)
+        self.assertEqual(second["error"]["message"], "the usage service is down")
+        # The last reply repeats.
+        self.assertEqual(third["error"]["message"], "the usage service is down")
+
+    def test_app_server_refuses_to_read_rate_limits_without_a_file(self):
+        server = self.chat([])
+        server.handshake()
+
+        read = server.request("account/rateLimits/read", {})
+
+        self.assertIn("message", read["error"])
+        self.assertNotIn("result", read)
+
     def test_app_server_lists_its_models_and_runs_each_turn_with_the_model_and_effort_it_was_given(self):
         says = {"send": {"method": "item/agentMessage/delta",
                          "params": {"threadId": "{{thread_id}}", "turnId": "{{turn_id}}", "itemId": "m1",

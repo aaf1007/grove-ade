@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import type { SlashCommand, AgentState as State, Workspace } from "../bridge";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { ChatPanel } from "../ChatPanel";
+import { DetailsCard } from "../DetailsCard";
 import type { FakeBridge, FakeWorktree } from "../fakeBridge";
 import { PanelTabs } from "../PanelTabs";
 import { Sidebar } from "../Sidebar";
@@ -106,7 +107,8 @@ export async function addGallerySessions(bridge: FakeBridge) {
   for (const [at, state] of STATES.entries()) {
     const worktree = state.state === "Idle" ? MAIN : FEATURE;
     const parent = state.state === "NeedsInput" && state.kind === "Question" ? first : undefined;
-    const session = bridge.spawnAgentWithoutPanel(worktree, at % 3 === 2 ? "Codex" : "Claude", parent);
+    const agent = at % 3 === 2 ? "Codex" : "Claude";
+    const session = parent ? bridge.spawnSubagent(worktree, agent, parent) : await bridge.spawnAgent(worktree, agent);
     first ??= session;
     await bridge.sendMessage(session, TITLES[at]);
     bridge.agentStateChanged({ session, ...state, source: "Protocol" });
@@ -123,6 +125,7 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
   const [mode, setMode] = useState<"Chat" | "Terminal">("Chat");
   const [workspace, setWorkspace] = useState(WORKSPACE);
   const [pane, setPane] = useState<string | null>(null);
+  const [codex, setCodex] = useState<string | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -131,7 +134,7 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
   // A real agent session on the fake bridge, for the pane head.
   useEffect(() => {
     let current = true;
-    bridge.spawnAgent(FEATURE, "Claude", null).then((session) => {
+    bridge.spawnAgent(FEATURE, "Claude").then((session) => {
       if (!current) return;
       bridge.agentStateChanged({ session, state: "Working", source: "Protocol" });
       // A / in its composer opens the command menu.
@@ -144,6 +147,43 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
       current = false;
     };
   }, [bridge]);
+
+  // The readings the details cards show: Claude's plan windows and context, and for Codex a last
+  // good reading from before a failed read, with no context window.
+  useEffect(() => {
+    if (!pane) return;
+    let current = true;
+    const now = Date.now();
+    const minutes = 60_000;
+    const windows = (fiveHour: number, weekly: number) => ({
+      kind: "Windows" as const,
+      windows: [
+        { name: "5-hour", percentUsed: fiveHour, resetsAtUnixMs: now + 135 * minutes },
+        { name: "Weekly", percentUsed: weekly, resetsAtUnixMs: now + 4 * 24 * 60 * minutes },
+      ],
+    });
+    bridge.usageReadingChanged({
+      agent: "Claude",
+      reading: { limits: windows(42, 18), readAtUnixMs: now, latestReadFailed: false },
+    });
+    bridge.usageReadingChanged({
+      agent: "Codex",
+      reading: { limits: windows(71, 36), readAtUnixMs: now - 12 * minutes, latestReadFailed: true },
+    });
+    bridge.contextReadingChanged({
+      session: pane,
+      reading: { sessionTotalTokens: 1_240_000, contextWindow: { usedTokens: 84_000, sizeTokens: 200_000 } },
+    });
+    bridge.spawnAgent(FEATURE, "Codex").then((session) => {
+      if (!current) return;
+      bridge.agentStateChanged({ session, state: "Done", source: "Protocol" });
+      bridge.contextReadingChanged({ session, reading: { sessionTotalTokens: 30_500, contextWindow: null } });
+      setCodex(session);
+    });
+    return () => {
+      current = false;
+    };
+  }, [bridge, pane]);
 
   return (
     <main className="gallery">
@@ -331,6 +371,36 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
         </div>
       </Section>
 
+      <Section title="DetailsCard">
+        <Row>
+          {[
+            { session: pane, agent: "Claude" as const, state: "Working" as const },
+            { session: codex, agent: "Codex" as const, state: "Done" as const },
+          ].map(
+            ({ session, agent, state }) =>
+              session && (
+                <div key={agent} className="gallery-details">
+                  <DetailsCard
+                    bridge={bridge}
+                    worktree={FEATURE}
+                    runs={[]}
+                    session={{
+                      session,
+                      agent,
+                      model: null,
+                      mode: "Chat",
+                      state: { session, state, source: "Protocol" },
+                    }}
+                    onStartRun={() => {}}
+                    onOpenDiff={() => {}}
+                    onOpenProfile={() => {}}
+                  />
+                </div>
+              ),
+          )}
+        </Row>
+      </Section>
+
       <Section title="On the fake bridge">
         <div className="gallery-in-app">
           <Sidebar
@@ -366,7 +436,6 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
               state={{ session: pane, state: "Working", source: "Protocol" }}
               focusRequest={0}
               onOpenDiff={() => {}}
-              onSplit={() => {}}
               onHide={() => {}}
             />
           )}

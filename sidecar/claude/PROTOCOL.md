@@ -178,6 +178,44 @@ changes. `account` is null when nobody is logged in. Every field may be null or 
 
 The core sends it on as `CoreEvent::Account`. grove never sees or stores credentials.
 
+### `usage`
+
+One read of the account's plan limits, through the SDK's
+`usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET` call. The sidecar reads at the start
+and after each `result`. It never calls a provider's HTTP API and never sees a credential.
+
+```json
+{"type":"usage","reading":"windows","windows":[{"name":"5-hour","percent_used":42,"resets_at_unix_ms":1763568000000},{"name":"Weekly","percent_used":18,"resets_at_unix_ms":null}]}
+```
+
+| `reading` | Meaning |
+|---|---|
+| `windows` | The plan's limit windows are in `windows`. `percent_used` is a whole number from 0 to 100. `resets_at_unix_ms` is null when the SDK gives no reset time. |
+| `no_plan_limits` | The account has no plan limits, as with an API key. The sidecar reads no more. |
+| `failed` | The read failed, or it held no window. The core keeps the last good reading and marks it. The sidecar reads again after the next turn. |
+| `unsupported` | The SDK has no such call, or its reply has a shape the sidecar does not know. The core drops the reading. The sidecar reads no more. |
+
+The window names are `5-hour`, `Weekly`, `Weekly Opus`, `Weekly Sonnet`, and `Weekly <model>` for
+each other model the SDK lists. Extra usage in dollars is left out.
+
+A read never holds up a turn and never fails one. Only the newest read started counts: an older
+one that answers late is dropped. The core sends the reading on as `CoreEvent::UsageReading`.
+
+### `context`
+
+The session's tokens and context use, sent after each `result`.
+
+```json
+{"type":"context","session_total_tokens":1200000,"context_window":{"used_tokens":84000,"size_tokens":200000}}
+```
+
+| Field | Meaning |
+|---|---|
+| `session_total_tokens` | Every token the conversation has used so far: input, output, cache read and cache creation, summed over the models in the result's `modelUsage`. |
+| `context_window` | From the SDK's `getContextUsage`: `used_tokens` are in the window now, `size_tokens` is what it holds. Null when the call is missing, fails, or has a shape the sidecar does not know. |
+
+The core sends it on as `CoreEvent::ContextReading`.
+
 ### `models`
 
 The models the user can pick, from the SDK's `supportedModels()`. Sent once the sidecar knows

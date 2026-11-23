@@ -1,4 +1,14 @@
-import { ArrowUp, Columns2, GitBranch, Shield, SlidersHorizontal, Square, X } from "lucide-react";
+import {
+  ArrowUp,
+  ChevronDown,
+  ChevronRight,
+  GitBranch,
+  Shield,
+  SlidersHorizontal,
+  Square,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import {
   type Dispatch,
   type KeyboardEvent,
@@ -84,6 +94,7 @@ export function ChatPanel({
   sessionName,
   showHeader = true,
   worktree,
+  workspaceSession = session,
   shown,
   order,
   state,
@@ -93,7 +104,6 @@ export function ChatPanel({
   onBlur,
   onOpenDiff,
   onChangeAgent,
-  onSplit,
   onHide,
   onMode,
   onModelChoice,
@@ -107,6 +117,11 @@ export function ChatPanel({
   /** Whether the panel draws its header. With one agent panel shown, the title bar holds it instead. */
   showHeader?: boolean;
   worktree: string;
+  /**
+   * The agent session whose workspace the panel shows in: its own, or for a subagent session the
+   * one at the top of its parents.
+   */
+  workspaceSession?: SessionId;
   shown: boolean;
   /** Where the panel sits among the agent panels shown beside it. */
   order?: number;
@@ -127,8 +142,6 @@ export function ChatPanel({
   onOpenDiff(path?: string): void;
   /** Called when the user picks another agent before the first message. Settles once it has. */
   onChangeAgent?: (agent: Agent) => Promise<void>;
-  /** Starts another agent session in a panel beside this one. No button without it. */
-  onSplit?: () => void;
   /** Hides the panel. Its session keeps running. No button without it. */
   onHide?: () => void;
   /** Called with the session's mode once known, and after each switch. */
@@ -155,7 +168,7 @@ export function ChatPanel({
   const blocked = switchBlocked(state, modeSwitch, name);
   const { branch, profile } = useWorktreePlace(bridge, worktree);
   // Here, above the views, so a notice nobody answered stays through a mode switch.
-  const change = useAgentChange(bridge, session, worktree);
+  const change = useAgentChange(bridge, session, workspaceSession);
   const notice = change.notice && (
     <AgentChangeNotice
       agent={agent}
@@ -296,14 +309,6 @@ export function ChatPanel({
           <b>{sessionName ?? name}</b>
           {state && <AgentState state={state} source={state.source} />}
           <span className="spacer" />
-          {onSplit && (
-            <IconButton
-              icon={Columns2}
-              label="Split"
-              title="Start another agent session beside this one"
-              onClick={onSplit}
-            />
-          )}
           {onHide && (
             <IconButton
               icon={X}
@@ -435,14 +440,14 @@ function useWorktreePlace(bridge: Bridge, worktree: string) {
 type ChangeNotice = { kind: "Workspace"; change: string } | { kind: "Profiles" };
 
 /**
- * The latest change this panel's agent session made to its worktree's workspace or to a profile,
- * until the user answers it or a newer change replaces it.
+ * The latest change this panel's agent session made to the workspace it shows in, which belongs to
+ * agent session `owner`, or to a profile, until the user answers it or a newer change replaces it.
  */
-function useAgentChange(bridge: Bridge, session: SessionId, worktree: string) {
+function useAgentChange(bridge: Bridge, session: SessionId, owner: SessionId) {
   const [shown, setShown] = useState<{ notice: ChangeNotice; of: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const of = `${session} ${worktree}`;
+  const of = `${session} ${owner}`;
 
   useEffect(() => {
     let current = true;
@@ -451,12 +456,12 @@ function useAgentChange(bridge: Bridge, session: SessionId, worktree: string) {
     let before: { workspace: Workspace | null } | null = null;
     let fetches = 0;
     function show(notice: ChangeNotice) {
-      setShown({ notice, of: `${session} ${worktree}` });
+      setShown({ notice, of: `${session} ${owner}` });
       setError(null);
     }
     function fetch() {
       const at = ++fetches;
-      bridge.workspace(worktree).then(
+      bridge.workspace(owner).then(
         (workspace) => {
           if (!current || at !== fetches) return;
           if (before) show({ kind: "Workspace", change: describeChange(before.workspace, workspace) });
@@ -467,19 +472,19 @@ function useAgentChange(bridge: Bridge, session: SessionId, worktree: string) {
       );
     }
     fetch();
-    const stopWorkspace = bridge.onWorkspaceChanged((changed) => changed === worktree && fetch());
+    const stopWorkspace = bridge.onWorkspaceChanged((changed) => changed === owner && fetch());
     // The core sends a change's `agent-change` before its `workspace-changed`.
     const stopAgent = bridge.onAgentChange((change: AgentChange) => {
       if (change.by !== session) return;
       if (change.kind === "Profiles") show({ kind: "Profiles" });
-      else if (change.worktree === worktree) before = { workspace: known };
+      else if (change.session === owner) before = { workspace: known };
     });
     return () => {
       current = false;
       stopWorkspace();
       stopAgent();
     };
-  }, [bridge, session, worktree]);
+  }, [bridge, session, owner]);
 
   function answer(call: () => Promise<void>) {
     setBusy(true);
@@ -495,9 +500,9 @@ function useAgentChange(bridge: Bridge, session: SessionId, worktree: string) {
     notice: shown?.of === of ? shown.notice : null,
     busy,
     error,
-    undo: () => answer(() => bridge.undoWorkspace(worktree)),
+    undo: () => answer(() => bridge.undoWorkspace(owner)),
     keep: () => setShown(null),
-    save: () => answer(() => bridge.saveWorkspaceToProfile(worktree)),
+    save: () => answer(() => bridge.saveWorkspaceToProfile(owner)),
   };
 }
 
@@ -1542,7 +1547,8 @@ function Approval({
 
 /**
  * A pending approval, as a card above the composer: what the agent wants to do, and the choices.
- * While the card has focus, Y approves and N declines. It answers once.
+ * What it wants scrolls in the card's body, so the choices stay in view however much the agent
+ * sends. While the card has focus, Y approves and N declines. It answers once.
  */
 function ApprovalCard({
   item,
@@ -1558,7 +1564,8 @@ function ApprovalCard({
   ref: Ref<HTMLDivElement>;
 }) {
   const [sending, setSending] = useState(false);
-  const { action, target, why } = askedFor(item, worktree);
+  const [fullInputShown, setFullInputShown] = useState(false);
+  const { action, target, grants, why, fullInput } = askedFor(item, worktree);
 
   function answer(reply: Reply) {
     if (sending) return;
@@ -1584,18 +1591,47 @@ function ApprovalCard({
       tabIndex={-1}
       onKeyDown={onKeyDown}
     >
-      <div className="approval-head">
-        <Shield aria-hidden="true" />
-        <span>
-          {agentName} wants to {action}
-        </span>
+      <div className="approval-body">
+        <div className="approval-head">
+          <Shield aria-hidden="true" />
+          <span>
+            {agentName} wants to {action}
+          </span>
+        </div>
+        {target && (
+          <pre className="approval-target">
+            <code>{target}</code>
+          </pre>
+        )}
+        {grants.length > 0 && (
+          <ul className="approval-grants">
+            {grants.map((grant, at) => (
+              <li key={at}>
+                <TriangleAlert aria-hidden="true" />
+                <span>{grant}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {why && <p className="approval-why">{why}</p>}
+        {fullInput && (
+          <Button
+            variant="ghost"
+            size="xs"
+            className="approval-show-input"
+            icon={fullInputShown ? ChevronDown : ChevronRight}
+            aria-expanded={fullInputShown}
+            onClick={() => setFullInputShown(!fullInputShown)}
+          >
+            {fullInputShown ? "Hide full input" : "Show full input"}
+          </Button>
+        )}
+        {fullInput && fullInputShown && (
+          <pre className="approval-full-input">
+            <code>{fullInput}</code>
+          </pre>
+        )}
       </div>
-      {target && (
-        <pre className="approval-target">
-          <code>{target}</code>
-        </pre>
-      )}
-      {why && <p className="approval-why">{why}</p>}
       <div className="approval-actions">
         <Button variant="ghost" size="sm" disabled={sending} onClick={() => answer({ type: "Deny", message: null })}>
           Decline
@@ -1622,46 +1658,90 @@ const APPROVAL_KEYS: Record<string, Reply> = {
 interface AskedFor {
   action: string;
   target: string | null;
+  /** What approving allows beyond the target, each in plain words. */
+  grants: ReactNode[];
   why: string | null;
+  /** The whole input, when it has a field the card shows nowhere else. */
+  fullInput: string | null;
 }
+
+/** The fields of a Codex approval that say which request it is, and when. They grant nothing. */
+const REQUEST_IDS = ["threadId", "turnId", "itemId", "approvalId", "startedAtMs"];
 
 /**
  * What an approval asks for: the action as the card's headline says it, the command or files it
- * acts on, and why, when the agent says. Requested permissions, and the input of a tool the panel
- * does not know, show whole, since approving grants all of it.
+ * acts on, what approving allows beyond those, and why, when the agent says. Requested
+ * permissions, and the input of a tool the panel does not know, show whole, since approving
+ * grants all of it. A known tool's input opens whole when it has a field the card does not show.
  */
 function askedFor(item: ApprovalItem, worktree: string): AskedFor {
   const asked = (item.asked ?? {}) as Record<string, unknown>;
   const call = (item.call.input ?? {}) as Record<string, unknown>;
-  const text = (name: string) =>
-    [asked[name], call[name]].find((value): value is string => typeof value === "string" && value !== "") ?? null;
-  // Claude Code says what a command is for as its description, Codex as its reason.
-  const why = text("description") ?? text("reason");
+  // The fields of the request that the card shows.
+  const shown = new Set(REQUEST_IDS);
+  const filled = (value: unknown): value is string => typeof value === "string" && value !== "";
+  const text = (name: string) => {
+    if (filled(asked[name])) shown.add(name);
+    return [asked[name], call[name]].find(filled) ?? null;
+  };
+  const grants: ReactNode[] = [];
+  const known = (action: string, target: string | null): AskedFor => {
+    // Claude Code says what a command is for as its description, Codex as its reason.
+    const why = text("description") ?? text("reason");
+    const unshown = Object.keys(asked).some((name) => asked[name] !== null && !shown.has(name));
+    return { action, target, grants, why, fullInput: unshown ? whole(asked) : null };
+  };
   switch (item.call.tool) {
     case "Bash":
-    case "commandExecution":
-      return { action: "run a command", target: text("command"), why };
+    case "commandExecution": {
+      // Only a plain false is the sandbox on. Any other value warns, and an odd one stays unshown.
+      const sandboxOff = asked.dangerouslyDisableSandbox ?? false;
+      if (sandboxOff === true) shown.add("dangerouslyDisableSandbox");
+      if (sandboxOff !== false) grants.push("Runs outside the sandbox");
+      const network = (asked.networkApprovalContext ?? {}) as Record<string, unknown>;
+      if (filled(network.host)) {
+        const { host, protocol } = network;
+        const named = filled(protocol) ? ["host", "protocol"] : ["host"];
+        if (Object.keys(network).every((name) => named.includes(name))) shown.add("networkApprovalContext");
+        grants.push(
+          <>
+            Allows network access to <code>{host}</code>
+            {filled(protocol) && ` over ${protocol}`}
+          </>,
+        );
+      }
+      return known("run a command", text("command"));
+    }
     case "Write":
     case "Edit":
     case "MultiEdit":
     case "NotebookEdit": {
       const path = text("file_path") ?? text("notebook_path");
       if (!path) break;
-      const action = item.call.tool === "Write" ? "write a file" : "edit a file";
-      return { action, target: relative(path, worktree), why };
+      return known(item.call.tool === "Write" ? "write a file" : "edit a file", relative(path, worktree));
     }
     case "fileChange": {
+      const root = text("grantRoot");
+      if (root) {
+        grants.push(
+          <>
+            Allows writes anywhere under <code>{root}</code> for the rest of this session
+          </>,
+        );
+      }
       const changes = Array.isArray(call.changes) ? (call.changes as { path?: unknown }[]) : [];
       const paths = changes.map((change) => change?.path).filter((path): path is string => typeof path === "string");
-      if (paths.length === 0) return { action: "edit files", target: null, why };
+      if (paths.length === 0) return known("edit files", null);
       const action = paths.length === 1 ? "edit a file" : `edit ${paths.length} files`;
-      return { action, target: paths.map((path) => relative(path, worktree)).join("\n"), why };
+      return known(action, paths.map((path) => relative(path, worktree)).join("\n"));
     }
     // Codex asks for wider sandbox access.
     case "permissions":
-      return { action: "change its permissions", target: whole(asked.permissions), why };
+      shown.add("permissions");
+      return known("change its permissions", whole(asked.permissions));
   }
-  return { action: `use ${item.call.tool}`, target: whole(item.asked), why };
+  const why = text("description") ?? text("reason");
+  return { action: `use ${item.call.tool}`, target: whole(item.asked), grants, why, fullInput: null };
 }
 
 /** `value` as indented JSON. null when it has nothing to show. */

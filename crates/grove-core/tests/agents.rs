@@ -187,12 +187,11 @@ impl Drop for Setup {
 impl Setup {
     fn spawn(&self, prompt: Option<&str>) -> SessionId {
         let spec = AgentSpec {
-            agent: self.agent,
+            agent: Some(self.agent),
             mode: Mode::Terminal,
             prompt: prompt.map(str::to_owned),
             cols: 120,
             rows: 40,
-            panel: None,
         };
         self.core.spawn_agent(&self.worktree, spec).unwrap()
     }
@@ -937,12 +936,11 @@ fn a_token_file_that_is_a_symlink_is_not_followed_and_the_launch_fails() {
     std::os::unix::fs::symlink(&elsewhere, folder.join("token")).unwrap();
 
     let spec = AgentSpec {
-        agent: Agent::Claude,
+        agent: Some(Agent::Claude),
         mode: Mode::Terminal,
         prompt: None,
         cols: 80,
         rows: 24,
-        panel: None,
     };
     let started = s.core.spawn_agent(&s.worktree, spec);
 

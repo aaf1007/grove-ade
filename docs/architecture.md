@@ -74,7 +74,7 @@ impl Core {
     pub fn port(&self, s: SessionId) -> Option<u16>; // a running run session's declared port
 
     // agent sessions in chat mode
-    pub fn spawn_agent(&self, wt: WorktreeId, spec: AgentSpec) -> Result<SessionId>; // agent, model, effort, mode, panel; puts it in agent panel spec.panel (counted as workspace returns them; a new shown panel after the last when None or taken), saves the workspace, sends WorkspaceChanged with by None
+    pub fn spawn_agent(&self, wt: WorktreeId, spec: AgentSpec) -> Result<SessionId>; // agent, model, effort, mode; with no agent, the first one the profile's layout names; the new session gets a workspace of its own that starts from the profile's layout; refused with BadProfile, starting nothing, while the project's profile file is not valid
     pub async fn spawn_agent_after_setup(&self, wt: &Path, spec: AgentSpec) -> Result<SessionId>; // waits for setup; SetupFailed if it failed
     pub fn subscribe(&self, s: SessionId, sink: MessageSink) -> Result<Vec<AgentMessage>>; // history, then live
     pub fn send_message(&self, s: SessionId, text: &str) -> Result<()>;
@@ -90,7 +90,7 @@ impl Core {
     // agent session records
     pub fn agent_sessions(&self) -> Vec<AgentSessionInfo>; // every agent session of every tracked worktree, ended ones too: worktree, agent, mode, parent, title, created time, ended, agent state and since when
     pub async fn delete_agent_session(&self, s: SessionId) -> Result<()>; // ends it and the subagent sessions below it, drops their records, agent panels and folders in ~/.grovecode/sessions/
-    pub fn resume_agent_session(&self, s: SessionId) -> Result<()>; // an ended session: a new process under the same session id that resumes its conversation, in the agent panel it had, or in a new one after the last when the workspace no longer has that panel
+    pub fn resume_agent_session(&self, s: SessionId) -> Result<()>; // an ended session: a new process under the same session id that resumes its conversation, shown in the agent panel it had, or in a new one after the last when its workspace no longer has that panel
 
     // files
     pub async fn list_files(&self, wt: WorktreeId) -> Result<Vec<FileEntry>>; // respects .gitignore
@@ -109,8 +109,11 @@ impl Core {
     pub fn repo_overrides_text(&self, repo: &Path) -> Result<String>;
     pub async fn set_repo_overrides_text(&self, repo: &Path, text: &str) -> Result<()>; // keeps the profile; comments are not kept
     pub fn suggest_profile(&self, repo: &Path) -> Option<Suggestion>; // the profile and the marker file found
-    pub fn workspace(&self, wt: WorktreeId) -> Workspace; // starts from the profile's layout
-    pub fn set_workspace(&self, wt: WorktreeId, w: Workspace, by: Option<SessionId>) -> Result<()>; // by: the agent session that changed it
+    pub fn starting_workspace(&self, wt: WorktreeId) -> Result<Workspace>; // the profile's layout, with no agent panel: what a new agent session in the worktree starts from; BadProfile while the profile file is not valid
+    pub fn workspace(&self, s: SessionId) -> Result<Workspace>; // the agent session's own, or its top parent's for a subagent session
+    pub async fn set_workspace(&self, s: SessionId, w: Workspace, by: Option<SessionId>) -> Result<()>; // by: the agent session that changed it. A running session w has no panel for keeps its panel
+    pub async fn undo_workspace(&self, s: SessionId) -> Result<()>; // back to before the last change an agent session made
+    pub async fn save_workspace_to_profile(&self, s: SessionId) -> Result<()>; // its agent, tabs and terminal into its repo's profile
 
     // diff + review
     pub async fn diff(&self, wt: WorktreeId, base: DiffBase) -> Result<Vec<FileDiff>>;
@@ -125,6 +128,8 @@ impl Core {
     // status
     pub fn agent_state(&self, s: SessionId) -> AgentState;
     pub fn attention_queue(&self) -> Vec<SessionId>;
+    pub fn usage_reading(&self, agent: Agent) -> Option<UsageReading>; // the agent's plan limits as of its last good read; None before the first read or when the agent cannot read them
+    pub fn context_reading(&self, s: SessionId) -> Option<ContextReading>; // a chat-mode session's tokens and context use after its last turn; None before the first turn end or outside chat mode
 }
 
 // Small state events only. PTY output and agent messages never ride this bus.
@@ -136,13 +141,15 @@ pub enum CoreEvent {
     CommentsChanged { worktree: PathBuf },
     PanelRequested { parent: Option<SessionId>, panel: PanelSpec },
     PanelClosed { panel: SessionId }, // its agent session closed it, or its worktree was removed
-    WorkspaceChanged { worktree: WorktreeId, by: Option<SessionId> }, // by Some: show the notice with Undo; None for the user, an undo, spawn_agent placing a session, resume_agent_session showing its panel again, or delete_agent_session dropping one
+    WorkspaceChanged { session: SessionId, by: Option<SessionId> }, // session: the agent session the workspace belongs to; by Some: show the notice with Undo; None for the user, an undo, a subagent session starting in it, resume_agent_session showing a panel again, or a deleted session or removed worktree dropping one
     ProfilesChanged { by: Option<SessionId> }, // by Some: show the notice with Undo
     RepoSettingsChanged { repo: PathBuf, by: Option<SessionId> }, // a repo's profile pick or overrides changed
     Setup { worktree: PathBuf, setup: Setup }, // a worktree's setup started or ended
     Warning(Warning),
     WarningCleared { id: usize },
     Account { agent: AgentKind, account: Option<AccountInfo> }, // plan or API key as each agent reports it
+    UsageReading { agent: Agent, reading: Option<UsageReading> }, // an agent's plan limits were read; None: the agent cannot read them, so the UI hides the row
+    ContextReading { session: SessionId, reading: ContextReading }, // a chat-mode session's tokens and context use, once per turn end
 }
 ```
 - `AgentMessage` covers user and agent text (streamed as deltas), turn starts and ends (an end carries its error, if any), tool calls and results, file changes, approval and question requests, review batches, messages that never reached the agent, notices and errors. It also carries the agent's command list (`Commands`), which is never part of the conversation: the core keeps only the latest list, `subscribe` returns it after the history, and a new list goes out as a frame. Each subscribed agent panel gets its own `MessageSink`, batched like PTY output: at most one frame per 8 ms per session.
@@ -192,6 +199,9 @@ ADR 0013 and 0015 decided this section. Details marked "M4" are settled by the M
 - Messages not delivered: the core keeps each message sent until the agent starts a turn on it. If the process ends first, the conversation gets a `NotDelivered` entry for it, and a review batch's comments go back to `Open`.
 - Switching mode: `set_mode` is refused while the session is `Working` or `NeedsInput`, or with `MessagePending` while a sent message has no turn started yet. A send that comes during the switch fails with `SwitchingMode`. It ends the current process and resumes the same conversation in the other mode with the resume id. Chat mode shows the history from the agent's own record: the turns in Codex's `thread/resume` reply, the same ones `thread/read` returns, and for Claude the sidecar's `history`, which it reads with the Agent SDK's `getSessionMessages`. `set_mode` returns once the history is in.
 - Account: each transport reports who is logged in and on which plan, or that an API key is in use. grove shows it and never stores credentials.
+- Usage reading: an agent's plan limits, one reading per agent. Each limit window has a name, a percent used and a reset time. An account with no plan limits, as with an API key, reads as `NoPlanLimits` and is not read again. The reading comes only through the agent's own interface: the Claude sidecar's `usage` line, read at the start and after each turn, and Codex's `account/rateLimits/read`, asked after `account/read` for a `chatgpt` account and after each `turn/completed`. grove never calls a provider itself. A failed read keeps the last good reading with its time and marks it `latest_read_failed`. It never blocks or fails a turn. The error of a failed Claude read goes to the session's `sidecar.log`, and that of a failed Codex read to its `app-server.log`. With no good reading before it, a failed read shows nothing. When the agent has no such call, or answers in a shape grove does not know, the reading is dropped and the row is off.
+- Context reading: a chat-mode session's total tokens and how full its context window is, sent once after each turn. Claude: the sidecar's `context` line. Codex: the latest `thread/tokenUsage/updated` of the turn, sent at `turn/completed`. It is not saved: after a restart or a mode switch the row is off until the next turn ends. Terminal mode has no reading (issue #20).
+- Each reading is one small event per turn end, so the core sends both on the `CoreEvent` bus. The details card shows them in two rows, Usage limits and Context window.
 
 Protocol events map to agent states (source `Protocol`) the same way for both agents:
 
@@ -289,13 +299,18 @@ In chat mode, agent state comes only from the protocol (see Chat mode). The step
 3. grove spawns subagents itself as real agent sessions. Each opens as an agent panel in chat mode beside its parent, and the user can watch it, type into it, or switch it to terminal mode. The core keeps each subagent's parent: `sessions` lists it and a restart brings it back. Subagents nest at most three levels below a session the user started. A deeper request is refused. Depth counts through sessions that have ended, so it holds after a restart. A session has at most 8 live subagents, those it started that have not ended (`CoreConfig.max_live_subagents_per_parent`). A request for one more is refused until one ends.
 4. A log or command panel runs its command with the user's shell in the agent session's worktree, as a session whose id is the panel's id. A log panel shows output only; the user can type into a command panel. Only the agent session that opened a panel can read, wait on or close it. A session holds at most 8 panels at once, one whose command exited included, until it closes them. Closing a panel, or removing its worktree, kills its processes and sends PanelClosed. It does not come back after a restart.
 5. Workspace and profile changes use only grove's built-in panels. A workspace change sends `WorkspaceChanged` with the agent session that made it. A profile change through `profile_set` sends `ProfilesChanged` with the agent session that made it, and the UI reloads. For each agent change the UI shows a notice with Undo, Keep and Save to profile (ADR 0016).
-   `workspace_set` takes the whole workspace. It is refused if it drops the panel of an agent session running in the worktree or names a session that does not run there. `profile_set` takes the settings to change, in the profile file's schema; each one replaces the profile's. Both act only on the calling session's worktree and its repo's profile.
+   `workspace_get` and `workspace_set` act on the calling session's workspace. For a subagent session that is the workspace of its top parent, the one the user sees it in. `workspace_set` takes the whole workspace. It is refused if it drops the panel of an agent session running in it, or names a session that is neither the workspace's own nor a subagent session below it. `profile_set` takes the settings to change, in the profile file's schema; each one replaces the profile's. It acts only on the profile of the calling session's repo.
 6. The `grovecode` CLI exposes the same commands for agents that prefer shell.
 
 ## Workspace and profiles
 - The window has three regions: the sidebar, the chat area and the panel area. Each can be resized and collapsed.
-- A workspace is one worktree's layout: which agent panels the chat area shows (several side by side, all in that worktree), which panels the panel area has open as tabs (Files, Diff, Browser, Logs, Profile), and whether a terminal panel sits at its bottom.
-- A new worktree's workspace starts from its profile's layout. grove saves each workspace in its state, so it comes back after a restart.
+- A workspace is one agent session's layout: which agent panels the chat area shows (its own and those of the subagent sessions below it, side by side), which panels the panel area has open as tabs (Files, Diff, Browser, Logs, Profile), and whether the terminal panel is open at its bottom.
+- A new agent session's workspace starts from its profile's layout. The layout's `chat` list names the agent a new session runs: the first one, and the rest are ignored. grove saves each workspace in its session's record, so it comes back after a restart and goes when the session is deleted or its worktree is removed.
+- A subagent session shows in the workspace of its top parent: its panel is added there when it starts, and its `workspace_get` and `workspace_set` act on that workspace.
+- A running session keeps its panel: a save that has none for it, such as one from before a subagent started, keeps it, shown after the last one. Undo does the same, and leaves out the panel of a session deleted since.
+- When a worktree is removed, a subagent session that runs elsewhere stays. It shows in the workspace of the top parent it has left, or in its own when none is left, with the panel it had.
+- Files, Diff and review comments belong to the worktree. So does the shell: sessions in the same place share one, and each session keeps only whether its terminal is open.
+- A place with no agent session selected shows the starting workspace. A change to it stays in the window, since only a session's workspace is saved.
 - A profile is a TOML file in `~/.grovecode/profiles/` (ADR 0016) with:
   - the default agent, model, effort and permission mode
   - the layout
@@ -346,7 +361,7 @@ These apply to terminal panels, which include agent sessions in terminal mode.
 - Target: 8 streaming sessions without UI stalls, in chat mode or terminal mode.
 - The Claude sidecar and `codex app-server` run as child processes. Their stdio is read on std threads and forwarded through channels, like PTY output.
 - Scrollback: 5,000 lines per xterm.js panel, 1,000 lines in the headless parser. Checked against the M4 performance run.
-- State persisted to a JSON file under `~/.grovecode/` for MVP (worktrees, sessions to restore, comments), written atomically (temp file, then rename) with a schema version. Schema version 2 adds per-repo run sessions and launch args; once profiles land they move into the repo's overrides of its profile (repo settings). Version 5 adds each worktree's sessions to restore and review comments, and the session in each agent panel. Version 6 adds the parent of each subagent. Version 9 keeps each agent session until the user deletes it, with its title, its created time and whether its process had ended. Revisit SQLite if it grows.
+- State persisted to a JSON file under `~/.grovecode/` for MVP (worktrees, sessions to restore, comments), written atomically (temp file, then rename) with a schema version. Schema version 2 adds per-repo run sessions and launch args; once profiles land they move into the repo's overrides of its profile (repo settings). Version 5 adds each worktree's sessions to restore and review comments, and the session in each agent panel. Version 6 adds the parent of each subagent. Version 9 keeps each agent session until the user deletes it, with its title, its created time and whether its process had ended. Version 10 moves each workspace from its worktree into its agent session's record. On migration every agent session of a worktree, ended ones too, gets a copy of that worktree's tabs, selected tab and terminal with its own agent panel, shown. A subagent's panel also goes to the workspace of its top parent, shown or hidden as it was. A workspace with no session is dropped. Revisit SQLite if it grows.
 - Changes that no call waits to save, such as a session ending or a comment moving, ask a background task to save. It writes on a blocking thread, off the tokio workers. Quitting saves once more before it ends the sessions and saves nothing after, so the sessions it ends still restore. After a crash, the last save restores.
 - Names (ADR 0011): the home folder, the CLI command, and the app bundle id use `grovecode`. Everything else says grove.
 - Login shell environment: at startup the core runs `$SHELL -ilc` once to print `env -0` between two marker lines, with a 5 second timeout, and uses that environment for every PTY. The shell starts from a clean base (`env -i` plus `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, and a minimal `PATH`), so variables from whatever launched grove (for example `CLAUDECODE` from a Claude Code terminal) never reach PTYs. grove then sets `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=grove`, and `LANG` when it is missing. If the read fails, grove uses the minimal environment and shows a warning. A Dock launch otherwise gets a minimal `PATH` and cannot find `claude` or `codex`.

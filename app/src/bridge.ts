@@ -239,6 +239,48 @@ export interface AccountChanged {
   account: Account | null;
 }
 
+/** One window of an agent's plan limits, such as the 5-hour one. */
+export interface UsageWindow {
+  /** The name to show, such as "5-hour" or "Weekly". */
+  name: string;
+  /** How much of the window is used, 0 to 100. */
+  percentUsed: number;
+  /** When the window starts over. null when the agent does not say. */
+  resetsAtUnixMs: number | null;
+}
+
+/** What an agent's account is limited by: nothing, as with an API key, or its plan's windows. */
+export type PlanLimits = { kind: "NoPlanLimits" } | { kind: "Windows"; windows: UsageWindow[] };
+
+/** An agent's plan limits as of its last good read. */
+export interface UsageReading {
+  limits: PlanLimits;
+  /** When the agent gave `limits`. */
+  readAtUnixMs: number;
+  /** A later read failed, so `limits` may be out of date. */
+  latestReadFailed: boolean;
+}
+
+/** An agent's usage reading, as `UsageReadingChanged` in `app/src-tauri/src/main.rs` sends it. null when the agent cannot give one. */
+export interface UsageReadingChanged {
+  agent: Agent;
+  reading: UsageReading | null;
+}
+
+/** A chat-mode session's tokens and context use, as its agent reported them after its last turn. */
+export interface ContextReading {
+  /** Every token the conversation has used so far, input and output. */
+  sessionTotalTokens: number;
+  /** How full the context window is. null when the agent does not say. */
+  contextWindow: { usedTokens: number; sizeTokens: number } | null;
+}
+
+/** A session's context reading, as `ContextReadingChanged` in `app/src-tauri/src/main.rs` sends it. */
+export interface ContextReadingChanged {
+  session: SessionId;
+  reading: ContextReading;
+}
+
 /** How a turn ended. A failed turn has the agent's own name for the error, such as "rate_limit". */
 export type TurnOutcome =
   | { outcome: "Completed" | "Interrupted" }
@@ -373,15 +415,17 @@ export type PanelKind = "Files" | "Diff" | "Browser" | "Logs" | "Profile";
 /** An agent panel in the chat area, as `AgentPanel` in `app/src-tauri/src/main.rs` sends and reads it. */
 export interface AgentPanel {
   agent: Agent;
-  /** null until the UI starts its agent session. */
-  session: SessionId | null;
+  session: SessionId;
   /** A hidden panel's session keeps running. */
   shown: boolean;
 }
 
-/** One worktree's layout, as `Workspace` in `app/src-tauri/src/main.rs` sends and reads it. */
+/** One agent session's layout, as `Workspace` in `app/src-tauri/src/main.rs` sends and reads it. */
 export interface Workspace {
-  /** The agent panels in the chat area, in order. */
+  /**
+   * The agent panels in the chat area, in order: the session the workspace belongs to, and the
+   * subagent sessions below it. Empty in a starting workspace.
+   */
   chat: AgentPanel[];
   /** The panel area's tabs, in order. */
   panels: PanelKind[];
@@ -398,7 +442,8 @@ export interface Workspace {
 /** A Dock icon grove bundles: the app icon's style, in its light or dark version (#55). */
 export type DockIcon = "mono-dark" | "mono-light" | "blue-dark" | "blue-light";
 
-export type AgentChange = { kind: "Workspace"; worktree: string; by: SessionId } | { kind: "Profiles"; by: SessionId };
+/** In a workspace change, `session` is the agent session the workspace belongs to. */
+export type AgentChange = { kind: "Workspace"; session: SessionId; by: SessionId } | { kind: "Profiles"; by: SessionId };
 
 /** Everything the UI asks of the core. The app uses `tauriBridge`; tests use `fakeBridge`. */
 export interface Bridge {
@@ -432,12 +477,11 @@ export interface Bridge {
   /** Calls `listener` with a session's id when its process ends. Returns the unsubscribe. */
   onSessionExited(listener: (session: SessionId) => void): () => void;
   /**
-   * Starts an agent session in chat mode in the worktree, in agent panel `panel` of its workspace
-   * (an index into `chat`), and saves the workspace. With null, or a panel that has a session, it
-   * goes in a new shown panel after the last one. A panel past the last one fails and starts
-   * nothing.
+   * Starts an agent session in chat mode in the worktree, with a workspace of its own that starts
+   * from the profile's layout. With null, it runs the first agent the profile's layout names, or
+   * else Claude Code.
    */
-  spawnAgent(worktree: string, agent: Agent, panel: number | null): Promise<SessionId>;
+  spawnAgent(worktree: string, agent: Agent | null): Promise<SessionId>;
   /**
    * The worktree's agent, shell and run sessions, oldest first: those running, such as the ones a
    * restart brought back, and the run sessions that were running when grove quit, now stopped.
@@ -490,6 +534,18 @@ export interface Bridge {
    * too. Returns the unsubscribe.
    */
   onAccount(listener: (change: AccountChanged) => void): () => void;
+  /**
+   * Calls `listener` with each agent's usage reading as it changes, the latest before the call
+   * too. Returns the unsubscribe.
+   */
+  onUsageReading(listener: (change: UsageReadingChanged) => void): () => void;
+  /**
+   * The agent session's context reading. null before its first turn ends, and for a session that
+   * is not in chat mode.
+   */
+  contextReading(session: SessionId): Promise<ContextReading | null>;
+  /** Calls `listener` each time a session reports a context reading, after a turn. Returns the unsubscribe. */
+  onContextReading(listener: (change: ContextReadingChanged) => void): () => void;
   /** Calls `listener` each time an agent session's state changes. Returns the unsubscribe. */
   onAgentState(listener: (change: AgentStateChanged) => void): () => void;
   /** Every agent session of every tracked worktree, ended ones too. */
@@ -553,27 +609,36 @@ export interface Bridge {
 
   // Workspaces (#122).
   /**
-   * The worktree's workspace: the saved one, or its profile's layout. A panel whose session no
-   * longer runs is left out.
+   * The workspace the agent session shows in: its own, or for a subagent session the one of the
+   * session at the top of its parents.
    */
-  workspace(worktree: string): Promise<Workspace>;
-  /** Saves the worktree's workspace. Fails when its selected tab is not one of its tabs. */
-  setWorkspace(worktree: string, workspace: Workspace): Promise<void>;
-  /** Calls `listener` with a worktree's path when its workspace changes. Returns the unsubscribe. */
-  onWorkspaceChanged(listener: (worktree: string) => void): () => void;
+  workspace(session: SessionId): Promise<Workspace>;
+  /** The workspace a new agent session in the worktree starts from, with no agent panel yet. */
+  startingWorkspace(worktree: string): Promise<Workspace>;
+  /**
+   * Saves the workspace the agent session shows in. Fails when its selected tab is not one of its
+   * tabs, or an agent panel names a session that is not part of it.
+   */
+  setWorkspace(session: SessionId, workspace: Workspace): Promise<void>;
+  /**
+   * Calls `listener` with the agent session a workspace belongs to when that workspace changes.
+   * Returns the unsubscribe.
+   */
+  onWorkspaceChanged(listener: (session: SessionId) => void): () => void;
   // The agent change notice (#4).
   /** Calls `listener` with each change an agent session made. Returns the unsubscribe. */
   onAgentChange(listener: (change: AgentChange) => void): () => void;
   /**
-   * Restores the worktree's workspace from before the last change an agent session made to it,
-   * keeping a panel for each session placed since. Fails when there is nothing to undo.
+   * Restores the workspace the agent session shows in from before the last change an agent session
+   * made to it, keeping a panel for each session placed since. Fails when there is nothing to undo.
    */
-  undoWorkspace(worktree: string): Promise<void>;
+  undoWorkspace(session: SessionId): Promise<void>;
   /**
-   * Writes the worktree's shown agent panels, its tabs and its terminal into its repo's profile.
-   * The selected tab and hidden panels are left out. Fails when the repo uses no profile.
+   * Writes the agent, the tabs and the terminal of the workspace the agent session shows in into
+   * its repo's profile. The selected tab and subagent panels are left out. Fails when the repo
+   * uses no profile.
    */
-  saveWorkspaceToProfile(worktree: string): Promise<void>;
+  saveWorkspaceToProfile(session: SessionId): Promise<void>;
 
   // Worktree management (#52).
   /** Adds a worktree to the repo whose main worktree is at `repo`, with `git worktree add`. */
@@ -638,7 +703,7 @@ export interface Bridge {
    * As `spawnAgent`, once the worktree's setup script succeeds, or at once when none runs. Fails,
    * starting nothing, when setup failed.
    */
-  spawnAgentAfterSetup(worktree: string, agent: Agent, panel: number | null): Promise<SessionId>;
+  spawnAgentAfterSetup(worktree: string, agent: Agent | null): Promise<SessionId>;
   /** Calls `listener` when a worktree's setup script starts or ends. Returns the unsubscribe. */
   onSetup(listener: (change: SetupChanged) => void): () => void;
   // Terminal mode (#127).
@@ -693,7 +758,7 @@ export const tauriBridge: Bridge = {
     const unlisten = listen<SessionId>("session-exited", (event) => listener(event.payload));
     return () => void unlisten.then((stop) => stop());
   },
-  spawnAgent: (worktree, agent, panel) => invoke("spawn_agent", { worktree, agent, panel }),
+  spawnAgent: (worktree, agent) => invoke("spawn_agent", { worktree, agent }),
   sessions: (worktree) => invoke("sessions", { worktree }),
   async subscribe(session, onMessages) {
     // Each subscribe has its own channel, so frames still on their way from an earlier one stay apart.
@@ -713,6 +778,13 @@ export const tauriBridge: Bridge = {
   modelChoice: (session) => invoke("model_choice", { session }),
   // An agent reports its login once, when a session starts, which can be before a reload.
   onAccount: (listener) => listenAndList("account", "accounts", listener),
+  // Read when a session starts and after each turn, which can be before a reload.
+  onUsageReading: (listener) => listenAndList("usage-reading", "usage_readings", listener),
+  contextReading: (session) => invoke("context_reading", { session }),
+  onContextReading(listener) {
+    const unlisten = listen<ContextReadingChanged>("context-reading", (event) => listener(event.payload));
+    return () => void unlisten.then((stop) => stop());
+  },
   onAgentState(listener) {
     const unlisten = listen<AgentStateChanged>("agent-state", (event) => listener(event.payload));
     return () => void unlisten.then((stop) => stop());
@@ -774,8 +846,9 @@ export const tauriBridge: Bridge = {
   attentionQueue: () => invoke("attention_queue"),
 
   // Workspaces (#122).
-  workspace: (worktree) => invoke("workspace", { worktree }),
-  setWorkspace: (worktree, workspace) => invoke("set_workspace", { worktree, workspace }),
+  workspace: (session) => invoke("workspace", { session }),
+  startingWorkspace: (worktree) => invoke("starting_workspace", { worktree }),
+  setWorkspace: (session, workspace) => invoke("set_workspace", { session, workspace }),
   onWorkspaceChanged(listener) {
     const unlisten = listen<string>("workspace-changed", (event) => listener(event.payload));
     return () => void unlisten.then((stop) => stop());
@@ -785,8 +858,8 @@ export const tauriBridge: Bridge = {
     const unlisten = listen<AgentChange>("agent-change", (event) => listener(event.payload));
     return () => void unlisten.then((stop) => stop());
   },
-  undoWorkspace: (worktree) => invoke("undo_workspace", { worktree }),
-  saveWorkspaceToProfile: (worktree) => invoke("save_workspace_to_profile", { worktree }),
+  undoWorkspace: (session) => invoke("undo_workspace", { session }),
+  saveWorkspaceToProfile: (session) => invoke("save_workspace_to_profile", { session }),
 
   // Worktree management (#52).
   createWorktree: (repo, worktree) => invoke("create_worktree", { repo, worktree }),
@@ -830,8 +903,7 @@ export const tauriBridge: Bridge = {
       void unlisten.then((stop) => stop());
     };
   },
-  spawnAgentAfterSetup: (worktree, agent, panel) =>
-    invoke("spawn_agent_after_setup", { worktree, agent, panel }),
+  spawnAgentAfterSetup: (worktree, agent) => invoke("spawn_agent_after_setup", { worktree, agent }),
   onSetup(listener) {
     const unlisten = listen<SetupChanged>("setup", (event) => listener(event.payload));
     return () => void unlisten.then((stop) => stop());

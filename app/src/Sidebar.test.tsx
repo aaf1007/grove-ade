@@ -131,9 +131,9 @@ function sessionRowsShown() {
 test("session rows come from the core's list under their project, with the state, title, branch and a worktree badge", async () => {
   const bridge = fakeBridge({ "/code/grove": groveRepo });
   await bridge.addRepo("/code/grove");
-  const local = await bridge.spawnAgent("/code/grove", "Claude", null);
+  const local = await bridge.spawnAgent("/code/grove", "Claude");
   await bridge.sendMessage(local, "\n  fix the login bug \nthen test");
-  const inWorktree = await bridge.spawnAgent(feature, "Codex", null);
+  const inWorktree = await bridge.spawnAgent(feature, "Codex");
   bridge.agentStateChanged({ session: inWorktree, state: "NeedsInput", kind: "Approval", source: "Hook" });
 
   // Neither worktree was opened, and the sidebar has no state for either session.
@@ -177,7 +177,7 @@ function dot(row: HTMLElement) {
 async function oneSession() {
   const bridge = fakeBridge({ "/code/grove": groveRepo });
   await bridge.addRepo("/code/grove");
-  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const session = await bridge.spawnAgent(feature, "Claude");
   return { bridge, session };
 }
 
@@ -232,7 +232,7 @@ test("selecting a running session focuses it, and its row is marked while its pa
 
 test("sessions sharing a worktree each get a row, in the order they started", async () => {
   const { bridge, session } = await oneSession();
-  const second = await bridge.spawnAgent(feature, "Codex", null);
+  const second = await bridge.spawnAgent(feature, "Codex");
   await bridge.sendMessage(second, "review the diff");
 
   render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
@@ -299,8 +299,8 @@ test("an ended session that cannot resume says why, and is not focused", async (
 
 test("a subagent session sits under the session that spawned it, in another worktree too", async () => {
   const { bridge, session } = await oneSession();
-  const subagent = bridge.spawnAgentWithoutPanel("/code/grove-wt/spike", "Claude", session);
-  const nested = bridge.spawnAgentWithoutPanel(feature, "Codex", subagent);
+  const subagent = bridge.spawnSubagent("/code/grove-wt/spike", "Claude", session);
+  const nested = bridge.spawnSubagent(feature, "Codex", subagent);
   await bridge.sendMessage(subagent, "write the tests");
   await bridge.sendMessage(nested, "check the tests");
 
@@ -356,8 +356,8 @@ test("Delete session asks first, then deletes the session, and its row goes", as
 
 test("Delete session says its subagent sessions are deleted too, and deletes them", async () => {
   const { bridge, session } = await oneSession();
-  const subagent = bridge.spawnAgentWithoutPanel(feature, "Claude", session);
-  const nested = bridge.spawnAgentWithoutPanel(feature, "Claude", subagent);
+  const subagent = bridge.spawnSubagent(feature, "Claude", session);
+  const nested = bridge.spawnSubagent(feature, "Claude", subagent);
   const deleted: string[][] = [];
   render(
     <Sidebar
@@ -435,7 +435,7 @@ test("the core saying the sessions changed lists them again", async () => {
   await screen.findByRole("region", { name: "grove" });
   expect(sessionRows()).toEqual([]);
 
-  await act(async () => void (await bridge.spawnAgent(feature, "Claude", null)));
+  await act(async () => void (await bridge.spawnAgent(feature, "Claude")));
 
   await vi.waitFor(() => expect(sessionRows()).toHaveLength(1));
 });
@@ -493,7 +493,7 @@ test("a long worktree name is cut with an ellipsis, and the setup dot is never s
 
 test("Tab moves from a session's row to its menu, then to its subagent session's row", async () => {
   const { bridge, session } = await oneSession();
-  bridge.spawnAgentWithoutPanel(feature, "Codex", session);
+  bridge.spawnSubagent(feature, "Codex", session);
   render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
   await vi.waitFor(() => expect(sessionRows()).toHaveLength(2));
   const item = sessionRows()[0].closest("li")!;
@@ -726,7 +726,7 @@ test("the spinner turns, and stops for reduced motion; the dots are the accent a
 test("project headers are small muted labels, and a subagent session sits one step in with no tree line", async () => {
   withStyles();
   const { bridge, session } = await oneSession();
-  bridge.spawnAgentWithoutPanel(feature, "Codex", session);
+  bridge.spawnSubagent(feature, "Codex", session);
   render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
   await vi.waitFor(() => expect(sessionRows()).toHaveLength(2));
 
@@ -752,7 +752,7 @@ test("folding a project hides its sessions and keeps the Needs you count", async
 test("every row is a button in the Tab order, and nothing hides its focus ring", async () => {
   withStyles();
   const { bridge, session } = await oneSession();
-  bridge.spawnAgentWithoutPanel(feature, "Codex", session);
+  bridge.spawnSubagent(feature, "Codex", session);
   render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
   await vi.waitFor(() => expect(sessionRows()).toHaveLength(2));
   const tree = document.querySelector(".sidebar-tree")!;
@@ -813,9 +813,9 @@ test("Search hides rows whose display name and branch do not match, and clearing
 
 test("Search finds a session by its title or its worktree's branch", async () => {
   const bridge = await twoRepos();
-  const login = await bridge.spawnAgent("/code/grove", "Claude", null);
+  const login = await bridge.spawnAgent("/code/grove", "Claude");
   await bridge.sendMessage(login, "fix the login bug");
-  await bridge.spawnAgent("/code/site-wt/fix-12", "Claude", null);
+  await bridge.spawnAgent("/code/site-wt/fix-12", "Claude");
   render(<Sidebar bridge={bridge} selected={null} onSelect={() => {}} {...noAgents} />);
   await vi.waitFor(() => expect(sessionRows()).toHaveLength(2));
 

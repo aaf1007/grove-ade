@@ -1,5 +1,6 @@
-//! Workspace and profile tools: an agent session reads and changes its own worktree's workspace
-//! and its repo's profile through grove-mcp, and each change names it.
+//! Workspace and profile tools: an agent session reads and changes its own workspace and its
+//! repo's profile through grove-mcp, and each change names it. A subagent session reads and
+//! changes the workspace of its top parent.
 
 mod common;
 
@@ -67,7 +68,7 @@ fn other_repo(s: &Setup) -> PathBuf {
 fn an_agent_opens_logs_and_the_change_names_it_until_undone() {
     let mut s = setup(json!([{"wait_input": "\r"}]));
     let (session, mut client) = agent_with_client(&s, Agent::Claude);
-    let before = s.core.workspace(&s.worktree).unwrap();
+    let before = s.core.workspace(session).unwrap();
     let mut workspace = workspace_of(&mut client);
     assert_eq!(workspace, as_json(&before));
     workspace["panels"]
@@ -81,11 +82,11 @@ fn an_agent_opens_logs_and_the_change_names_it_until_undone() {
 
     assert!(!is_error, "{text}");
     assert_eq!(text, "Changed the workspace.");
-    let CoreEvent::WorkspaceChanged { worktree, by } = s.next_change() else {
+    let CoreEvent::WorkspaceChanged { session: owner, by } = s.next_change() else {
         panic!("not a workspace change");
     };
-    assert_eq!((worktree, by), (s.worktree.clone(), Some(session)));
-    let after = s.core.workspace(&s.worktree).unwrap();
+    assert_eq!((owner, by), (session, Some(session)));
+    let after = s.core.workspace(session).unwrap();
     assert_eq!(
         after.panels,
         [PanelKind::Files, PanelKind::Diff, PanelKind::Logs]
@@ -93,8 +94,8 @@ fn an_agent_opens_logs_and_the_change_names_it_until_undone() {
     assert_eq!(after.selected, Some(PanelKind::Logs));
     assert_eq!(workspace_of(&mut client), workspace);
 
-    block_on(s.core.undo_workspace(&s.worktree)).unwrap();
-    assert_eq!(s.core.workspace(&s.worktree).unwrap(), before);
+    block_on(s.core.undo_workspace(session)).unwrap();
+    assert_eq!(s.core.workspace(session).unwrap(), before);
 }
 
 #[test]
@@ -123,7 +124,7 @@ fn an_agent_changes_its_profiles_default_model_and_the_next_worktree_starts_from
     assert_eq!(profile.settings.agent.model.as_deref(), Some("sonnet"));
     let other = s.other_worktree();
     assert_eq!(
-        s.core.workspace(&other).unwrap().panels,
+        s.core.starting_workspace(&other).unwrap().panels,
         [PanelKind::Files, PanelKind::Logs]
     );
 
@@ -139,9 +140,9 @@ fn an_agent_changes_its_profiles_default_model_and_the_next_worktree_starts_from
 fn an_unknown_panel_kind_or_field_is_refused_and_nothing_changes() {
     let mut s = setup(json!([{"wait_input": "\r"}]));
     s.use_profile(&s.worktree, "Plain", plain());
-    let (_, mut client) = agent_with_client(&s, Agent::Claude);
+    let (session, mut client) = agent_with_client(&s, Agent::Claude);
     let workspace = workspace_of(&mut client);
-    let before = s.core.workspace(&s.worktree).unwrap();
+    let before = s.core.workspace(session).unwrap();
     let profile_before = fs::read(s.profile_file("Plain")).unwrap();
     s.drain_events();
     let mut widget = workspace.clone();
@@ -190,31 +191,64 @@ fn an_unknown_panel_kind_or_field_is_refused_and_nothing_changes() {
         assert!(is_error, "{tool}: {text}");
         assert!(text.contains(reason), "{tool}: {text}");
     }
-    assert_eq!(s.core.workspace(&s.worktree).unwrap(), before);
+    assert_eq!(s.core.workspace(session).unwrap(), before);
     assert_eq!(fs::read(s.profile_file("Plain")).unwrap(), profile_before);
     assert!(!s.changed_by_now());
 }
 
+/// Another agent session in the setup's worktree.
+fn spawn(s: &Setup, worktree: &Path, agent: Agent) -> SessionId {
+    let spec = AgentSpec {
+        agent: Some(agent),
+        mode: Mode::Terminal,
+        prompt: None,
+        cols: 100,
+        rows: 30,
+    };
+    s.core.spawn_agent(worktree, spec).unwrap()
+}
+
+/// A Claude Code subagent session of `parent`, started over the core socket as grove-mcp does.
+fn subagent_of(s: &Setup, parent: SessionId) -> SessionId {
+    let token = s.token("claude", parent);
+    let spawn = json!({"type": "subagent_spawn", "agent": "claude", "prompt": "hi"});
+    let message = json!({"session": parent.to_string(), "token": token, "request": spawn});
+    let reply = panel_request(&s.cfg.socket, &message);
+    let session = reply["result"]["session"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no subagent: {reply}"));
+    let listed = s.core.sessions(&s.worktree).unwrap();
+    let found = listed
+        .iter()
+        .find(|info| info.session.to_string() == session);
+    found
+        .unwrap_or_else(|| panic!("{session} is not listed"))
+        .session
+}
+
 #[test]
-fn a_session_changes_only_its_own_worktrees_workspace_and_its_own_repos_profile() {
+fn a_session_changes_only_its_own_workspace_and_its_own_repos_profile() {
     let s = setup(json!([{"wait_input": "\r"}]));
     s.use_profile(&s.worktree, "Plain", plain());
     let other_repo = other_repo(&s);
     s.use_profile(&other_repo, "Other", plain());
-    let other_worktree = s.other_worktree();
     let (session, mut client) = agent_with_client(&s, Agent::Claude);
     let token = s.token("claude", session);
-    let others_before = [
-        s.core.workspace(&other_repo).unwrap(),
-        s.core.workspace(&other_worktree).unwrap(),
+    // One in the same place, one in another repo.
+    let others = [
+        spawn(&s, &s.worktree, Agent::Claude),
+        spawn(&s, &other_repo, Agent::Claude),
     ];
+    let others_before = others.map(|other| s.core.workspace(other).unwrap());
     let other_profile = fs::read(s.profile_file("Other")).unwrap();
     let mut workspace = workspace_of(&mut client);
     workspace["terminal"] = json!(false);
 
-    // Naming another worktree or profile in the request changes nothing about where it acts.
+    // Naming another session, worktree or profile in the request changes nothing about where
+    // it acts.
     let requests = [
-        json!({"type": "workspace_set", "workspace": workspace, "worktree": other_worktree}),
+        json!({"type": "workspace_set", "workspace": workspace, "session": others[0],
+               "worktree": other_repo}),
         json!({"type": "profile_set", "changes": {"setup": "true"}, "profile": "Other",
                "repo": other_repo}),
     ];
@@ -224,12 +258,9 @@ fn a_session_changes_only_its_own_worktrees_workspace_and_its_own_repos_profile(
         assert!(reply.get("result").is_some(), "{reply}");
     }
 
-    assert!(!s.core.workspace(&s.worktree).unwrap().terminal);
+    assert!(!s.core.workspace(session).unwrap().terminal);
     assert_eq!(
-        [
-            s.core.workspace(&other_repo).unwrap(),
-            s.core.workspace(&other_worktree).unwrap(),
-        ],
+        others.map(|other| s.core.workspace(other).unwrap()),
         others_before
     );
     let plain = fs::read_to_string(s.profile_file("Plain")).unwrap();
@@ -238,26 +269,45 @@ fn a_session_changes_only_its_own_worktrees_workspace_and_its_own_repos_profile(
 }
 
 #[test]
+fn a_subagent_reads_and_changes_the_workspace_of_the_session_that_started_it() {
+    let mut s = setup(json!([{"wait_input": "\r"}]));
+    let (parent, mut parent_client) = agent_with_client(&s, Agent::Claude);
+    let child = subagent_of(&s, parent);
+    // A subagent runs in chat mode, so its token is in the sidecar's log.
+    let token = s.token("claude-sidecar", child);
+    let mut client = McpClient::start(&s.cfg.socket, child, &token);
+    let mut workspace = workspace_of(&mut client);
+    let both = json!([
+        {"agent": "claude", "session": parent, "shown": true},
+        {"agent": "claude", "session": child, "shown": true},
+    ]);
+    assert_eq!(workspace["chat"], both);
+    assert_eq!(workspace, workspace_of(&mut parent_client));
+    workspace["panels"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("logs"));
+    s.drain_events();
+
+    let (text, is_error) = client.call("workspace_set", json!({ "workspace": workspace }));
+
+    assert!(!is_error, "{text}");
+    let CoreEvent::WorkspaceChanged { session, by } = s.next_change() else {
+        panic!("not a workspace change");
+    };
+    assert_eq!((session, by), (parent, Some(child)));
+    assert_eq!(workspace_of(&mut parent_client), workspace);
+    assert_eq!(as_json(&s.core.workspace(parent).unwrap()), workspace);
+}
+
+#[test]
 fn a_workspace_that_drops_a_running_sessions_panel_or_names_another_session_is_refused() {
     let mut s = setup(json!([{"wait_input": "\r"}]));
     let (session, mut client) = agent_with_client(&s, Agent::Claude);
-    let other = s.other_worktree();
-    let elsewhere = s
-        .core
-        .spawn_agent(
-            &other,
-            AgentSpec {
-                agent: Agent::Codex,
-                mode: Mode::Terminal,
-                prompt: None,
-                cols: 100,
-                rows: 30,
-                panel: None,
-            },
-        )
-        .unwrap();
+    // Another session in the same place is not part of this one's workspace.
+    let beside = spawn(&s, &s.worktree, Agent::Codex);
     let workspace = workspace_of(&mut client);
-    let before = s.core.workspace(&s.worktree).unwrap();
+    let before = s.core.workspace(session).unwrap();
     s.drain_events();
     let own = json!(session);
     let mut dropped = workspace.clone();
@@ -280,6 +330,7 @@ fn a_workspace_that_drops_a_running_sessions_panel_or_names_another_session_is_r
         named["chat"].as_array_mut().unwrap().push(panel);
         named
     };
+    let not_part = "is not this workspace's session or a subagent of it";
     let cases = [
         (
             dropped,
@@ -291,13 +342,12 @@ fn a_workspace_that_drops_a_running_sessions_panel_or_names_another_session_is_r
             format!("agent session {session} runs claude, not codex"),
         ),
         (
-            with(json!(elsewhere)),
-            format!("agent session {elsewhere} is not running in this worktree"),
+            with(json!(beside)),
+            format!("agent session {beside} {not_part}"),
         ),
-        (
-            with(json!(999)),
-            "agent session 999 is not running in this worktree".into(),
-        ),
+        (with(json!(999)), format!("agent session 999 {not_part}")),
+        // An agent panel with no session is no longer a thing.
+        (with(Value::Null), "invalid type: null".into()),
     ];
 
     for (workspace, reason) in cases {
@@ -306,7 +356,12 @@ fn a_workspace_that_drops_a_running_sessions_panel_or_names_another_session_is_r
         assert!(is_error, "{workspace}: {text}");
         assert!(text.contains(&reason), "{text}");
     }
-    assert_eq!(s.core.workspace(&s.worktree).unwrap(), before);
+    assert_eq!(s.core.workspace(session).unwrap(), before);
+    assert_eq!(
+        s.core.workspace(beside).unwrap().chat.len(),
+        1,
+        "the session beside it keeps its own workspace"
+    );
     assert!(!s.changed_by_now());
 
     // Hiding it keeps the session's panel, so that is allowed.
