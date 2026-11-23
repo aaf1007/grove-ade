@@ -484,14 +484,21 @@ export function App({ bridge }: { bridge: Bridge }) {
       (session) => {
         setAgents((started) => started.map((a) => (a.session === old.session ? { ...a, session, agent } : a)));
         const before = currentWorkspace({ session: old.session });
-        if (before) void changeWorkspace({ session }, (own) => ({ ...before, chat: own.chat }));
+        const layoutMoved = before
+          ? changeWorkspace({ session }, (own) => ({ ...before, chat: own.chat }))
+          : Promise.resolve(true);
         if (selection.current.session === old.session) select(old.worktree, session);
         // The panel keeps focus through the swap, so no focus event tells the core.
         if (focusedAgent.current === old.session) focus(session, old.worktree);
-        forgetWorkspace({ session: old.session });
-        // Fails only when its process did not exit in time. Then the sidebar lists it, and the
-        // user can delete it there.
-        bridge.deleteAgentSession(old.session).catch(() => {});
+        void layoutMoved.then((moved) => {
+          // A layout that did not reach the new session stays with the old one, which the
+          // sidebar still lists.
+          if (!moved) return;
+          forgetWorkspace({ session: old.session });
+          // Fails only when its process did not exit in time. Then the sidebar lists it, and the
+          // user can delete it there.
+          bridge.deleteAgentSession(old.session).catch(() => {});
+        });
       },
     );
   }

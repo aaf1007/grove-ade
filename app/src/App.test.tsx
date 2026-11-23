@@ -1405,6 +1405,33 @@ test("a switch leaves one panel, with the Codex session, in a workspace with the
   expect(panels.map((panel) => [panel.getAttribute("aria-label"), panel.hidden])).toEqual([["Panel 1", false]]);
 });
 
+// The risk this guards: the Claude session is deleted with its tabs and terminal setting when they
+// never reached the Codex one.
+test.each([
+  ["load", "workspace", "Could not load this layout: the state file is unreadable"],
+  ["save", "setWorkspace", "Could not save this layout: the state file is unreadable"],
+] as const)("a switch whose layout does not %s for the Codex session keeps the Claude one", async (_, call, error) => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  startAgent();
+  await screen.findByRole("region", { name: "Panel 0" });
+  const claude = await bridge.workspace("0");
+  await act(() => bridge.setWorkspace("0", { ...claude, panels: ["Diff", "Logs"], selected: "Logs", terminal: false }));
+  const toCore = bridge[call].bind(bridge) as (session: string, workspace: Workspace) => Promise<unknown>;
+  vi.spyOn(bridge, call).mockImplementation((session: string, workspace?: Workspace) =>
+    session === "1" ? Promise.reject("the state file is unreadable") : (toCore(session, workspace!) as Promise<never>),
+  );
+  const deleteAgentSession = vi.spyOn(bridge, "deleteAgentSession");
+
+  fireEvent.click(screen.getByRole("button", { name: "Switch to Codex" }));
+
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toBe(error));
+  expect(deleteAgentSession).not.toHaveBeenCalled();
+  expect((await bridge.agentSessions()).map((record) => record.session)).toEqual(["0", "1"]);
+  expect((await bridge.workspace("0")).panels).toEqual(["Diff", "Logs"]);
+});
+
 test("a focused panel that switches agent stays focused on the new session", async () => {
   const bridge = await trackedBridge();
   render(<App bridge={bridge} />);

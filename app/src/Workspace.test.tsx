@@ -697,6 +697,30 @@ test("a layout that loads clears an earlier load error", async () => {
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
+test("a layout the core gives again clears the error of a reload that failed", async () => {
+  const bridge = await trackedBridge();
+  render(<App bridge={bridge} />);
+  await select("feat-36");
+  await startClaudeCode();
+  await screen.findByRole("region", { name: "Panel 0" });
+  const workspace = bridge.workspace.bind(bridge);
+  let readable = false;
+  vi.spyOn(bridge, "workspace").mockImplementation((session) =>
+    readable ? workspace(session) : Promise.reject("the state file is unreadable"),
+  );
+  // Each subagent's start changes the workspace in the core, so the window loads it again.
+  await act(async () => void bridge.spawnSubagent(feature, "Codex", "0"));
+  await waitFor(() =>
+    expect(screen.getByRole("alert").textContent).toBe("Could not load this layout: the state file is unreadable"),
+  );
+  readable = true;
+
+  await act(async () => void bridge.spawnSubagent(feature, "Codex", "0"));
+
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(shownPanels()).toEqual(["Panel 0", "Panel 1", "Panel 2"]);
+});
+
 test("a slow layout that loads late leaves another worktree's load error in place", async () => {
   const bridge = await trackedBridge();
   const workspace = bridge.startingWorkspace.bind(bridge);

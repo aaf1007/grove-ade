@@ -103,29 +103,40 @@ export function useWorkspaces(bridge: Bridge) {
     return loading;
   }
 
-  async function change(owner: WorkspaceOwner, update: (workspace: Workspace) => Workspace) {
+  // Resolves to false when the workspace did not load or the change was not saved, so the core
+  // does not have it.
+  async function change(owner: WorkspaceOwner, update: (workspace: Workspace) => Workspace): Promise<boolean> {
     const key = workspaceKey(owner);
     if (!latest.current[key]) {
       try {
         await load(owner);
       } catch {
         // `load` has said why.
-        return;
+        return false;
       }
     }
     const next = update(latest.current[key]);
     // A change that changes nothing saves nothing.
-    if (JSON.stringify(next) === JSON.stringify(latest.current[key])) return;
-    if (!("session" in owner)) return put(key, next);
+    if (JSON.stringify(next) === JSON.stringify(latest.current[key])) return true;
+    if (!("session" in owner)) {
+      put(key, next);
+      return true;
+    }
     const unsavedChange = { key, update };
     unsaved.current.push(unsavedChange);
     put(key, next);
-    await enqueue(key, () => {
+    return enqueue(key, () => {
       unsaved.current = unsaved.current.filter((other) => other !== unsavedChange);
       return bridge.setWorkspace(owner.session, latest.current[key]);
     }).then(
-      () => setError(key, null),
-      (e: unknown) => setError(key, `Could not save this layout: ${String(e)}`),
+      () => {
+        setError(key, null);
+        return true;
+      },
+      (e: unknown) => {
+        setError(key, `Could not save this layout: ${String(e)}`);
+        return false;
+      },
     );
   }
 
@@ -143,6 +154,7 @@ export function useWorkspaces(bridge: Bridge) {
         key,
         mine.reduce((next, { update }) => update(next), core),
       );
+      setError(key, null);
     }).catch((e: unknown) => {
       if (!forgottenSince(key, forgotten)) setError(key, `Could not load this layout: ${String(e)}`);
     });
