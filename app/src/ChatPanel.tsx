@@ -19,6 +19,7 @@ import {
   useCallback,
   useEffect,
   useEffectEvent,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -43,7 +44,15 @@ import type {
 import { AgentMarkdown } from "./AgentMarkdown";
 import "./ChatPanel.css";
 import { takeCommands, useCommandMenu } from "./CommandMenu";
-import { AgentMark, type ModelChoice, Picker, useModelChoice } from "./Picker";
+import {
+  AgentMark,
+  type ModelChoice,
+  Picker,
+  type PickerHandle,
+  type PickerList,
+  useModelChoice,
+} from "./Picker";
+import { isInputMethodKey, type PanelShortcut, pressedShortcut } from "./shortcuts";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { TerminalPanel } from "./TerminalPanel";
 import { DeclinedCall, relative, type ToolCall, ToolCalls } from "./ToolCalls";
@@ -169,6 +178,9 @@ export function ChatPanel({
     />
   );
   const reportMode = useEffectEvent((mode: Mode) => onMode?.(mode));
+  // Null in terminal mode, where the agent's TUI takes the keys of the turn and the composer.
+  const chat = useRef<ChatHandle>(null);
+  const panel = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (modeSwitch.mode !== null) reportMode(modeSwitch.mode);
@@ -204,6 +216,41 @@ export function ChatPanel({
     );
   }
 
+  // The composer takes focus when a switch to chat mode ends, as the TUI does in terminal mode,
+  // unless the user moved focus out of the panel while the switch ran.
+  const focusComposerAfterSwitch = useEffectEvent(() => {
+    const focused = document.activeElement;
+    const nowhere = focused === null || focused === document.body;
+    if (shown && (nowhere || panel.current!.contains(focused))) chat.current?.focusComposer();
+  });
+
+  useEffect(() => {
+    if (modeSwitch.switches > 0) focusComposerAfterSwitch();
+  }, [modeSwitch.switches]);
+
+  // Each says whether it took the key.
+  const shortcutActions: Record<PanelShortcut["id"], () => boolean> = {
+    // Esc closes the panel's open picker first.
+    stopTurn: () => {
+      const view = chat.current;
+      return view !== null && (view.closePicker() || view.stopTurn());
+    },
+    pickModel: () => chat.current?.openPicker("model") ?? false,
+    pickEffort: () => chat.current?.openPicker("effort") ?? false,
+    switchMode: () => {
+      if (blocked) return false;
+      switchTo(modeSwitch.mode === "Chat" ? "Terminal" : "Chat");
+      return true;
+    },
+  };
+
+  // A held key repeats, and acts once. A key an input method took is not a shortcut.
+  function onShortcutKey(event: KeyboardEvent) {
+    if (event.repeat || isInputMethodKey(event.nativeEvent)) return;
+    const pressed = pressedShortcut(event.nativeEvent, "agentPanel");
+    if (pressed && shortcutActions[pressed.id]()) event.preventDefault();
+  }
+
   const strip = (
     <div className="composer-strip" role="group" aria-label="Branch and profile">
       {branch && (
@@ -232,6 +279,7 @@ export function ChatPanel({
 
   return (
     <section
+      ref={panel}
       className="chat-panel"
       aria-label={`Panel ${session}`}
       hidden={!shown}
@@ -240,6 +288,7 @@ export function ChatPanel({
       tabIndex={-1}
       onFocus={onFocus}
       onBlur={onBlur}
+      onKeyDown={onShortcutKey}
     >
       {showHeader && (
         <div className="pane-head">
@@ -271,6 +320,7 @@ export function ChatPanel({
       )}
       {modeSwitch.mode === "Chat" && (
         <ChatView
+          ref={chat}
           notice={notice}
           strip={strip}
           key={modeSwitch.switches}
@@ -562,11 +612,23 @@ const RESUMED = { type: "Resumed" } as const;
 /** What the message list holds: the agent session's messages, and where the panel resumed them. */
 type ChatMessage = AgentMessage | typeof RESUMED;
 
+/** What the panel's shortcuts ask of the conversation. Each says whether it did it. */
+interface ChatHandle {
+  /** Interrupts the turn, as the stop button does. Does nothing while the button does not show. */
+  stopTurn(): boolean;
+  /** Opens the picker on `list`. */
+  openPicker(list: PickerList): boolean;
+  /** Closes the picker's popover, if it is open. */
+  closePicker(): boolean;
+  focusComposer(): void;
+}
+
 /**
  * The conversation of a chat-mode agent session and the composer with the agent and model picker.
  * It follows the conversation while `shown`, and gets the whole of it again each time it is shown.
  */
 function ChatView({
+  ref,
   notice,
   strip,
   bridge,
@@ -588,6 +650,7 @@ function ChatView({
   switchBlocked,
   onSwitchToTerminal,
 }: {
+  ref: Ref<ChatHandle>;
   /** Goes right above the composer. */
   notice: ReactNode;
   /** Goes right under the composer. */
@@ -634,6 +697,7 @@ function ChatView({
   const resumedAt = useRef<number | null>(null);
   const list = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<PickerHandle>(null);
   const approvalCard = useRef<HTMLDivElement>(null);
   // Set when the user answers an approval with focus in its card, until focus moves to the next.
   const focusFollowsApproval = useRef(false);
@@ -832,6 +896,19 @@ function ChatView({
     bridge.interrupt(session).catch(() => {});
   }
 
+  useImperativeHandle(ref, () => ({
+    stopTurn() {
+      if (working) interrupt();
+      return working;
+    },
+    openPicker(list) {
+      picker.current!.openOn(list);
+      return true;
+    },
+    closePicker: () => picker.current!.close(),
+    focusComposer: () => composer.current!.focus(),
+  }));
+
   // A refused answer means the request has ended.
   function answer(request: string, reply: Reply) {
     if (answering.includes(request)) return Promise.resolve();
@@ -941,6 +1018,7 @@ function ChatView({
           <div className="composer-row">
             <span className="spacer" />
             <Picker
+              ref={picker}
               agent={agent}
               agentLocked={agentLocked}
               models={models}

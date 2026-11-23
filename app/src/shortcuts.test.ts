@@ -34,6 +34,8 @@ test("a hint writes the keys as macOS shows them", () => {
   expect(keyHint("Meta+N")).toBe("⌘N");
   expect(keyHint("Meta+/")).toBe("⌘/");
   expect(keyHint("Shift+Meta+K")).toBe("⇧⌘K");
+  expect(keyHint("Escape")).toBe("Esc");
+  expect(keyHint("1-9")).toBe("1 to 9");
 });
 
 test("keys match only their own key with exactly their modifiers", () => {
@@ -52,4 +54,16 @@ test("a key that some layouts type with Shift, such as / on a German keyboard, m
   expect(matchesKeys("Meta+/", press({ key: "/", code: "Digit7", metaKey: true, shiftKey: true }))).toBe(true);
   // A letter's Shift is still its own key: Cmd-Shift-N is not Cmd-N.
   expect(matchesKeys("Meta+N", press({ key: "N", metaKey: true, shiftKey: true }))).toBe(false);
+});
+
+test("1-9 matches any one of those digits, typed with Shift or not, and no other key", () => {
+  const press = (init: KeyboardEventInit) => new KeyboardEvent("keydown", init);
+  expect(matchesKeys("1-9", press({ key: "1" }))).toBe(true);
+  expect(matchesKeys("1-9", press({ key: "9" }))).toBe(true);
+  // Such as a French keyboard, where the digits take Shift.
+  expect(matchesKeys("1-9", press({ key: "4", shiftKey: true }))).toBe(true);
+  expect(matchesKeys("1-9", press({ key: "0" }))).toBe(false);
+  expect(matchesKeys("1-9", press({ key: "!", shiftKey: true }))).toBe(false);
+  expect(matchesKeys("1-9", press({ key: "1", metaKey: true }))).toBe(false);
+  expect(matchesKeys("1-9", press({ key: "F1" }))).toBe(false);
 });
