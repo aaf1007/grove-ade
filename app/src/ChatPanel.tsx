@@ -1043,11 +1043,14 @@ function ChatView({
   );
 }
 
-/** What the empty composer says. While an approval waits, a message declines it. */
+/**
+ * What the empty composer says. While an approval waits, a message declines it. Enter sends only
+ * with text in the box, so the hint for an agent that takes no message also names Decline.
+ */
 function placeholder(name: string, agent: Agent, declining: boolean): string {
   if (!declining) return `Ask ${name} anything. @ files, / commands`;
   if (DECLINE_TAKES_MESSAGE[agent]) return "Send a message to decline and redirect the agent";
-  return `Send to decline. ${name} takes no message with a decline`;
+  return `Send text to decline, or press Decline. ${name} takes no message with a decline`;
 }
 
 function fitComposer(el: HTMLTextAreaElement) {
@@ -1333,7 +1336,12 @@ function Item({
       // Pending, it is a card above the composer.
       if (isPending(item, refused)) return null;
       if (item.reply) return <div className="record">{describeAnswers(item, item.reply)}</div>;
-      return <div className="record expired">Expired: {item.questions[0]?.question}</div>;
+      // A request with no questions has nothing to name.
+      return (
+        <div className="record expired">
+          {item.questions.length > 0 ? `Expired: ${item.questions[0].question}` : "Expired"}
+        </div>
+      );
     case "user":
       return <div className="msg-user">{item.text}</div>;
     case "agent":
