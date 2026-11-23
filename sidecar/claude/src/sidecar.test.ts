@@ -849,6 +849,24 @@ describe("the usage reading", () => {
     await vi.waitFor(() => expect(usageLines(s.out)).toEqual([failed, failed, planWindows]));
   });
 
+  it("drops an older read that fails after a newer one answered, so the reading stays good", async () => {
+    let failTheFirstRead: (error: Error) => void = () => {};
+    const firstRead = new Promise<unknown>((_resolve, reject) => (failTheFirstRead = reject));
+    const usage = vi
+      .fn<() => Promise<unknown>>()
+      .mockReturnValueOnce(firstRead)
+      .mockResolvedValueOnce(planUsage);
+    const s = startWithUsage(usage);
+    await playTurn(s);
+    await vi.waitFor(() => expect(usageLines(s.out)).toEqual([planWindows]));
+
+    failTheFirstRead(new Error("request timed out"));
+    await playTurn(s);
+
+    await vi.waitFor(() => expect(usage).toHaveBeenCalledTimes(3));
+    expect(usageLines(s.out)).toEqual([planWindows]);
+  });
+
   it("never holds up a turn while a read has no answer", async () => {
     const s = startWithUsage(() => new Promise(() => {}));
 

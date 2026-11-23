@@ -225,11 +225,16 @@ export async function run(launch: Launch, deps: Deps): Promise<void> {
 
   // The plan's limits, read at the start and after each turn. Never awaited, so no turn waits for
   // a read. Once the account has no plan limits or the SDK cannot read them, nothing more is read.
+  // Only the newest read started counts: an older one that answers late is dropped, so it
+  // cannot mark a newer good reading as failed.
   let readsUsage = true;
+  let usageReadsStarted = 0;
   const readUsage = () => {
     if (!readsUsage) return;
     const read = (q as unknown as Record<string, unknown>)[USAGE_CALL];
+    const thisRead = ++usageReadsStarted;
     const line = (reading: UsageLine) => {
+      if (thisRead !== usageReadsStarted) return;
       readsUsage = reading.reading === "windows" || reading.reading === "failed";
       write({ type: "usage", ...reading });
     };

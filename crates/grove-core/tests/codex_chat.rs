@@ -1200,6 +1200,35 @@ fn a_failed_rate_limit_read_keeps_the_last_good_reading_and_never_fails_a_turn()
 }
 
 #[test]
+fn a_failed_rate_limit_read_leaves_its_error_in_the_sessions_log() {
+    let mut s = setup(json!(turn(&["ok"])));
+    let down = json!({"error": "the usage service is down"});
+    fs::write(&s.rate_limits, json!([two_windows(), down]).to_string()).unwrap();
+    let session = s.spawn(Some("go"));
+    s.next_usage_reading().expect("a reading");
+    s.next_usage_reading().expect("the last good reading");
+
+    let log = s
+        ._dir
+        .path()
+        .join(format!("home/sessions/{session}/app-server.log"));
+    let wanted = "account/rateLimits/read failed: the usage service is down";
+    // The core writes the log after it sends the reading, so the line may not be in yet.
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let logged = fs::read_to_string(&log).unwrap();
+        if logged.contains(wanted) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the log never held it: {logged:?}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
 fn an_api_key_account_has_no_plan_limits_and_the_core_never_reads_them() {
     let mut s = setup_with_account(
         json!([turn(&["ok"]), turn(&["ok again"])].concat()),

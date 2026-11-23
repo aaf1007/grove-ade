@@ -7,7 +7,7 @@ mod codex;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::mem;
 use std::path::Path;
 use std::process::{ChildStdout, Command};
@@ -570,6 +570,9 @@ impl Core {
         prompt: Option<&str>,
     ) -> Result<()> {
         let log = File::create(&spec.stderr).map_err(CoreError::io("create", &spec.stderr))?;
+        // The same open file as the process's stderr, so the core's lines and its own never
+        // overwrite each other. Without it the core's lines are lost, and the session still runs.
+        let core_log = log.try_clone().ok();
         let mut cmd = Command::new(&spec.command);
         cmd.args(&spec.args).stderr(log);
         let (input, input_rx) = mpsc::channel();
@@ -600,7 +603,7 @@ impl Core {
             let input = input.clone();
             move || {
                 if let Ok(stdout) = stdout_rx.recv() {
-                    read_messages(stdout, session, &chat, &agents, &events, &input);
+                    read_messages(stdout, session, &chat, &agents, &events, &input, core_log);
                 }
                 comments.reopen(&worktree, &chat.close());
                 // Last, so the exit comes after the comments are open again.
@@ -802,6 +805,7 @@ fn read_messages(
     agents: &Agents,
     events: &broadcast::Sender<CoreEvent>,
     input: &mpsc::Sender<Vec<u8>>,
+    mut log: Option<File>,
 ) {
     let mut reader = BufReader::new(stdout);
     let mut line = Vec::new();
@@ -825,9 +829,24 @@ fn read_messages(
                 incoming
             }
         };
+        let mut failed_reads = Vec::new();
         for message in incoming {
+            if let FromAgent::Usage(UsageRead::Failed {
+                reason: Some(reason),
+            }) = &message
+            {
+                failed_reads.push(reason.clone());
+            }
             settle(&mut s, &message);
             apply(session, chat, &mut s, message, agents, events);
+        }
+        // Written after the chat's lock is free, so a slow disk holds up no one else.
+        drop(s);
+        if let Some(log) = &mut log {
+            for reason in failed_reads {
+                // The reading is already marked. A log that cannot be written changes nothing.
+                let _ = writeln!(log, "grove: account/rateLimits/read failed: {reason}");
+            }
         }
     }
 }

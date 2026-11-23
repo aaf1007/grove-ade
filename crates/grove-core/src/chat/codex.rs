@@ -299,7 +299,11 @@ impl AppServer {
             // The picker offers no models, and Codex uses its own.
             "model/list" => return vec![FromAgent::Models { models: Vec::new() }],
             // The last good reading stays, marked. A read never ends a turn.
-            "account/rateLimits/read" => return vec![FromAgent::Usage(UsageRead::Failed)],
+            "account/rateLimits/read" => {
+                return vec![FromAgent::Usage(UsageRead::Failed {
+                    reason: Some(message),
+                })];
+            }
             "initialize" | "thread/start" | "thread/resume" => {
                 self.thread = Thread::Failed;
                 self.queued.clear();
@@ -703,7 +707,9 @@ fn usage(rate_limits: &Value) -> UsageRead {
         })
         .collect();
     if windows.is_empty() {
-        UsageRead::Failed
+        UsageRead::Failed {
+            reason: Some("the reply has no limit window".into()),
+        }
     } else {
         UsageRead::Windows { windows }
     }

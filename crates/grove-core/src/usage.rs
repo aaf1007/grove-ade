@@ -69,8 +69,12 @@ pub(crate) enum UsageRead {
         windows: Vec<UsageWindow>,
     },
     NoPlanLimits,
-    /// The read failed, or it held no window.
-    Failed,
+    /// The read failed, or it held no window. `reason` is the agent's error, when the core
+    /// was the one that read.
+    Failed {
+        #[serde(default)]
+        reason: Option<String>,
+    },
     /// The agent has no way to read its plan limits, or not the one grove knows.
     Unsupported,
 }
@@ -97,7 +101,7 @@ impl UsageReadings {
             UsageRead::Windows { windows } => Some(fresh(PlanLimits::Windows(windows))),
             UsageRead::NoPlanLimits => Some(fresh(PlanLimits::NoPlanLimits)),
             // With no good reading before it, a failed read leaves nothing to show.
-            UsageRead::Failed => match readings.get(&agent) {
+            UsageRead::Failed { .. } => match readings.get(&agent) {
                 Some(last_good) => Some(UsageReading {
                     latest_read_failed: true,
                     ..last_good.clone()

@@ -168,8 +168,8 @@ and after each `result`. It never calls a provider's HTTP API and never sees a c
 The window names are `5-hour`, `Weekly`, `Weekly Opus`, `Weekly Sonnet`, and `Weekly <model>` for
 each other model the SDK lists. Extra usage in dollars is left out.
 
-A read never holds up a turn and never fails one. The core sends the reading on as
-`CoreEvent::UsageReading`.
+A read never holds up a turn and never fails one. Only the newest read started counts: an older
+one that answers late is dropped. The core sends the reading on as `CoreEvent::UsageReading`.
 
 ### `context`
 
