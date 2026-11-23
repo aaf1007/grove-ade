@@ -1,5 +1,6 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { createRoot } from "react-dom/client";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 
 import { InlinePage, PAGE_POLICY, pageDocument } from "./InlinePage";
 import { setAppearance, tokensInDocument } from "./tokensInDocument";
@@ -149,15 +150,74 @@ test("a theme switch re-themes a page already shown, without loading it again", 
   expect(frame().srcdoc).toBe(shown);
 });
 
-test("the page itself swaps its theme when the window sends a new one", () => {
-  const script = new DOMParser()
-    .parseFromString(pageDocument(CHART, ":root{--background:#161616;}"), "text/html")
-    .querySelector("script")!.textContent;
+/**
+ * Runs a page's own script as its frame would, against `html` parsed but not laid out. `parent`
+ * stands for the window that holds the frame, and `heights` gives each element's box by its id.
+ */
+function runPageScript(html: string, heights: Record<string, { height: number; bottom: number }> = {}) {
+  const page = new DOMParser().parseFromString(pageDocument(html, ":root{--background:#161616;}"), "text/html");
+  for (const element of [page.documentElement, ...page.querySelectorAll("*")]) {
+    const box = heights[element === page.documentElement ? "root" : element.id] ?? { height: 0, bottom: 0 };
+    element.getBoundingClientRect = () => box as DOMRect;
+  }
+  const parent = { postMessage: vi.fn() };
+  const listeners: Record<string, (event: { source: unknown; data: unknown }) => void> = {};
+  let resized = () => {};
+  class Sizes {
+    constructor(callback: () => void) {
+      resized = callback;
+    }
+    observe() {}
+  }
+  new Function("document", "parent", "addEventListener", "ResizeObserver", "scrollY", page.querySelector("script")!.textContent)(
+    page,
+    parent,
+    (type: string, listener: (typeof listeners)[string]) => (listeners[type] = listener),
+    Sizes,
+    0,
+  );
+  return { page, parent, listeners, resized: () => resized() };
+}
 
-  // The reporter listens for the theme only from the window that holds the frame.
-  expect(script).toContain('e.source!==parent');
-  expect(script).toContain('"grove-page-theme"');
-  expect(script).toContain('getElementById("grove-theme")');
+test("the page itself swaps its theme when the window sends a new one, and only then", () => {
+  const { page, parent, listeners } = runPageScript(CHART);
+  const theme = page.getElementById("grove-theme")!;
+
+  listeners.message({ source: {}, data: { type: "grove-page-theme", css: ":root{--background:red;}" } });
+  listeners.message({ source: parent, data: { type: "something-else", css: ":root{--background:red;}" } });
+  listeners.message({ source: parent, data: null });
+  expect(theme.textContent).toBe(":root{--background:#161616;}");
+
+  listeners.message({ source: parent, data: { type: "grove-page-theme", css: ":root{--background:#ffffff;}" } });
+  expect(theme.textContent).toBe(":root{--background:#ffffff;}");
+});
+
+test("the page says how tall it is, down to content that sits outside the flow", () => {
+  // The root has no height of its own: its one child is placed absolutely.
+  const html = '<div id="diagram" style="position:absolute;top:0;height:400px">Diagram</div>';
+  const { parent, listeners, resized } = runPageScript(html, {
+    root: { height: 0, bottom: 0 },
+    diagram: { height: 400, bottom: 400 },
+  });
+
+  listeners.load({ source: null, data: null });
+
+  expect(parent.postMessage.mock.calls).toEqual([[{ type: "grove-page-height", height: 400 }, "*"]]);
+
+  // The same height is not said twice.
+  resized();
+  expect(parent.postMessage).toHaveBeenCalledTimes(1);
+});
+
+test("a page in the flow is as tall as its root, when nothing in it reaches lower", () => {
+  const { parent, listeners } = runPageScript('<p id="text">Text</p>', {
+    root: { height: 120.4, bottom: 120.4 },
+    text: { height: 20, bottom: 100 },
+  });
+
+  listeners.load({ source: null, data: null });
+
+  expect(parent.postMessage.mock.calls).toEqual([[{ type: "grove-page-height", height: 121 }, "*"]]);
 });
 
 test("where the app serves the frame, the page is sent to it when the frame says it is ready", () => {
@@ -176,6 +236,41 @@ test("where the app serves the frame, the page is sent to it when the frame says
   expect(sent[0].document).toContain(CHART);
   expect(policyOf(sent[0].document!)).toBe(PAGE_POLICY);
   expect(sent[0].document).toContain("--background:#161616;");
+});
+
+test("a frame that is ready before the panel's effects have run still gets its page", async () => {
+  // React runs a component's effects in a later task than the one that puts it in the document.
+  // A frame can say it is ready in between, and it says so only once.
+  const act = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+  const acting = act.IS_REACT_ACT_ENVIRONMENT;
+  act.IS_REACT_ACT_ENVIRONMENT = false;
+  const container = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(container);
+  onTestFinished(() => {
+    root.unmount();
+    container.remove();
+    act.IS_REACT_ACT_ENVIRONMENT = acting;
+  });
+  const sent: { type: string }[] = [];
+  const inDocument = new Promise<void>((resolve) => {
+    new MutationObserver((_, observer) => {
+      const shown = container.querySelector("iframe");
+      if (!shown) return;
+      observer.disconnect();
+      vi.spyOn(shown.contentWindow!, "postMessage").mockImplementation((message: unknown) => {
+        sent.push(message as { type: string });
+      });
+      window.dispatchEvent(
+        new MessageEvent("message", { data: { type: "grove-page-ready" }, source: shown.contentWindow }),
+      );
+      resolve();
+    }).observe(container, { childList: true, subtree: true });
+  });
+
+  root.render(<InlinePage title="Build workflow" html={CHART} height={null} frame="grove-page://localhost/" />);
+  await inDocument;
+
+  expect(sent.map((message) => message.type)).toEqual(["grove-page"]);
 });
 
 test("a ready message from any other window sends no page", () => {

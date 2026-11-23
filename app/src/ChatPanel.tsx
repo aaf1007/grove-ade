@@ -775,10 +775,13 @@ function ChatView({
   }, [historyTurnCount, loginFailedTurn]);
   const changes = useHeadDiff(bridge, worktree);
 
-  useLayoutEffect(() => {
+  // Keeps the end of the conversation in view while the user follows it. Not after they scrolled
+  // away to read.
+  const followEnd = useCallback(() => {
     const el = list.current;
     if (el && following.current) el.scrollTop = el.scrollHeight;
-  }, [items, unechoed]);
+  }, []);
+  useLayoutEffect(followEnd, [followEnd, items, unechoed]);
 
   // A jump lands on the approval that waits, else in the composer.
   useEffect(() => {
@@ -970,6 +973,7 @@ function ChatView({
               onOpenDiff={onOpenDiff}
               onOpenLink={openLink}
               pageFrame={bridge.inlinePageFrame}
+              onPageResize={followEnd}
               switchBlocked={switchBlocked}
               onSwitchToTerminal={onSwitchToTerminal}
             />
@@ -1302,6 +1306,7 @@ function Item({
   onOpenDiff,
   onOpenLink,
   pageFrame,
+  onPageResize,
   switchBlocked,
   onSwitchToTerminal,
 }: {
@@ -1318,6 +1323,8 @@ function Item({
   onOpenLink(link: string): void;
   /** Where an inline page's frame loads from, as `Bridge.inlinePageFrame`. */
   pageFrame: string | null;
+  /** An inline page's frame changed height, which moves everything below it. */
+  onPageResize(): void;
   /** Why the mode switch is off. null while it is on. */
   switchBlocked: string | null;
   onSwitchToTerminal(): void;
@@ -1374,7 +1381,15 @@ function Item({
       );
     }
     case "page":
-      return <InlinePage title={item.title} html={item.html} height={item.height} frame={pageFrame} />;
+      return (
+        <InlinePage
+          title={item.title}
+          html={item.html}
+          height={item.height}
+          frame={pageFrame}
+          onResize={onPageResize}
+        />
+      );
     case "resumed":
       return (
         <div className="notice-line">

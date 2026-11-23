@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { colorScheme, onAppearanceChange, readToken } from "./codeTheme";
 import "./InlinePage.css";
+// Takes a new theme from the window, and tells it how tall the page is.
+import PAGE_SCRIPT from "./inlinePageScript.js?raw";
 
 /**
- * What a page may load: nothing from anywhere. Scripts and styles run only inline, and images,
- * fonts and media come only from `data:` and `blob:` URLs the page makes itself. It is
+ * What a page may load: nothing from anywhere. Scripts and styles run only inline, images and
+ * media come only from `data:` and `blob:` URLs the page makes itself, and fonts only from
+ * `data:` URLs. It is
  * `INLINE_PAGE_CSP` in `crates/grove-core/src/inline_page.rs` without its `sandbox`, which a
  * `<meta>` cannot set: the frame's `sandbox` attribute does that. A test in
  * `app/src-tauri/src/main.rs` keeps the two the same.
@@ -47,22 +50,6 @@ export function pageTheme(): string {
 const BASE_STYLE =
   "body{margin:0;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:var(--font-size)}";
 
-// Runs in the page, before the agent's HTML. It takes a new theme from the window that holds the
-// frame and from no other, and tells that window how tall the page is whenever that changes.
-const PAGE_SCRIPT = [
-  "(function(){",
-  'var theme=document.getElementById("grove-theme");',
-  'addEventListener("message",function(e){',
-  'if(e.source!==parent||!e.data||e.data.type!=="grove-page-theme")return;',
-  "theme.textContent=String(e.data.css)});",
-  "function report(){",
-  "var height=Math.ceil(document.documentElement.getBoundingClientRect().height);",
-  'parent.postMessage({type:"grove-page-height",height:height},"*")}',
-  "new ResizeObserver(report).observe(document.documentElement);",
-  'addEventListener("load",report)',
-  "})()",
-].join("");
-
 /**
  * The document a page's frame shows: the policy first, so it covers everything after it, then
  * `theme`, then the agent's `html` as the agent wrote it.
@@ -90,18 +77,21 @@ function messageOf(data: unknown): { type?: unknown; height?: unknown } {
  * `frame` is the URL the app serves the page's frame from, under the page policy. The window
  * sends the page to it once it says it is ready. null where nothing serves one, as on the fake
  * bridge: the frame then holds the page itself. `height` is the frame's height in CSS pixels,
- * or null to fit the page.
+ * or null to fit the page. `onResize` is called once the frame has its first height, and after
+ * each change of it.
  */
 export function InlinePage({
   title,
   html,
   height,
   frame,
+  onResize,
 }: {
   title: string;
   html: string;
   height: number | null;
   frame: string | null;
+  onResize?(): void;
 }) {
   const iframe = useRef<HTMLIFrameElement>(null);
   const [fitted, setFitted] = useState(UNMEASURED_HEIGHT);
@@ -109,7 +99,9 @@ export function InlinePage({
   // and keeps what the user did in it.
   const held = useMemo(() => (frame === null ? pageDocument(html, pageTheme()) : undefined), [frame, html]);
 
-  useEffect(() => {
+  // A layout effect, so the window listens before the frame can say it is ready, which it says
+  // only once.
+  useLayoutEffect(() => {
     function onMessage(event: MessageEvent) {
       const page = iframe.current?.contentWindow;
       // What the page sends is the agent's word, so only these two messages count.
@@ -136,6 +128,9 @@ export function InlinePage({
     [],
   );
 
+  const shownHeight = Math.min(height ?? fitted, MAX_HEIGHT);
+  useLayoutEffect(() => onResize?.(), [shownHeight, onResize]);
+
   return (
     <div className="card inline-page" role="group" aria-label={`Page: ${title}`}>
       <div className="card-head">
@@ -148,7 +143,7 @@ export function InlinePage({
         sandbox="allow-scripts"
         src={frame ?? undefined}
         srcDoc={held}
-        style={{ height: Math.min(height ?? fitted, MAX_HEIGHT) }}
+        style={{ height: shownHeight }}
       />
     </div>
   );

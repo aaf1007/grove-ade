@@ -3016,3 +3016,40 @@ test("a page shown outside a turn shows too, and two pages keep their own frames
   expect(screen.getByTitle<HTMLIFrameElement>("Before").srcdoc).toContain("<p>one</p>");
   expect(screen.getByTitle<HTMLIFrameElement>("After").srcdoc).toContain("<p>two</p>");
 });
+
+test("a page that grows keeps the end of the conversation in view, unless the user scrolled away", async () => {
+  const removeTokens = tokensInDocument();
+  onTestFinished(removeTokens);
+  const bridge = await started();
+  await shownPanel(bridge);
+  const list = document.querySelector<HTMLElement>(".messages")!;
+  // jsdom lays nothing out: the list is 400 pixels of a conversation 1000 pixels long.
+  let length = 1000;
+  Object.defineProperty(list, "scrollHeight", { get: () => length });
+  Object.defineProperty(list, "clientHeight", { get: () => 400 });
+  act(() =>
+    bridge.messages("0", { type: "InlinePage", id: "page-0000000000000001", title: "Chart", html: "<p>one</p>", height: null }),
+  );
+  nextFrame();
+  const page = screen.getByTitle<HTMLIFrameElement>("Chart");
+  const grows = (height: number) => {
+    length += height;
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", { data: { type: "grove-page-height", height }, source: page.contentWindow }),
+      );
+    });
+  };
+  expect(list.scrollTop).toBe(1000);
+
+  grows(300);
+
+  expect(list.scrollTop).toBe(1300);
+
+  // The user scrolls up to read, and the page grows again.
+  list.scrollTop = 200;
+  fireEvent.scroll(list);
+  grows(500);
+
+  expect(list.scrollTop).toBe(200);
+});

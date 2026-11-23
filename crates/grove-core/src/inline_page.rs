@@ -14,9 +14,10 @@ use crate::agent::random_bytes;
 use crate::{AgentMessage, Core, CoreError, Result, SessionId};
 
 /// The Content Security Policy of the frame an inline page renders in. Nothing loads from
-/// anywhere: scripts and styles run only inline, and images, fonts and media come only from
-/// `data:` and `blob:` URLs the page makes itself. `sandbox` gives the page scripts and nothing
-/// else: its origin is its own, so it reaches no storage and no other frame.
+/// anywhere: scripts and styles run only inline, images and media come only from `data:` and
+/// `blob:` URLs the page makes itself, and fonts only from `data:` URLs. `sandbox` gives the
+/// page scripts and nothing else: its origin is its own, so it reaches no storage and no other
+/// frame.
 pub const INLINE_PAGE_CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; \
     style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; \
     form-action 'none'; base-uri 'none'; sandbox allow-scripts";
