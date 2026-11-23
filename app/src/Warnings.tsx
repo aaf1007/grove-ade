@@ -10,8 +10,10 @@ export function Warnings({ bridge }: { bridge: Bridge }) {
 
   useEffect(
     () =>
-      bridge.onWarning((warning) =>
-        setWarnings((known) => (warning.id in known ? known : { ...known, [warning.id]: warning })),
+      bridge.onWarnings((active) =>
+        setWarnings((known) => Object.fromEntries(
+          active.map((warning) => [warning.id, warning.id in known ? known[warning.id] : warning]),
+        )),
       ),
     [bridge],
   );
@@ -21,7 +23,6 @@ export function Warnings({ bridge }: { bridge: Bridge }) {
   async function retry(warning: WarningSent & { kind: "WatcherNotStarted" }) {
     try {
       await bridge.retryWatcher(warning.worktree);
-      dismiss(warning.id);
     } catch (error) {
       // It stays, with the new cause, unless the user dismissed it meanwhile.
       setWarnings((known) =>
@@ -53,7 +54,7 @@ function message(warning: Warning) {
     case "LoginShellEnv":
       return `grove could not read your login shell's environment, so sessions may not find claude or codex: ${warning.reason}.`;
     case "CodexHooksNotTrusted":
-      return `Codex is not running grove's hooks in ${warning.worktree}, so grove guesses the session's state. Approve the hooks in Codex's /hooks.`;
+      return `Codex is not running grove's hooks for session ${warning.session} in ${warning.worktree}, so grove guesses the session's state. Approve the hooks in Codex's /hooks.`;
     case "SessionNotRestored":
       return `grove could not bring back a session in ${warning.worktree}, so it is gone: ${warning.reason}.`;
     case "WatcherNotStarted":
