@@ -26,7 +26,7 @@ import { PanelTabs, tabId } from "./PanelTabs";
 import type { ModelChoice } from "./Picker";
 import { ProfilePanel } from "./ProfilePanel";
 import { QuitGuard } from "./QuitGuard";
-import { matchesKeys, type Shortcut, type ShortcutId, SHORTCUTS } from "./shortcuts";
+import { pressedShortcut, type WindowShortcut } from "./shortcuts";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import {
   AGENT_NAMES,
@@ -215,15 +215,14 @@ export function App({ bridge }: { bridge: Bridge }) {
   }, [bridge]);
 
   const [showingShortcuts, setShowingShortcuts] = useState(false);
-  const shortcutActions: Record<ShortcutId, () => void> = {
+  const shortcutActions: Record<WindowShortcut["id"], () => void> = {
     newSession: () => sidebarRef.current?.newSession(),
     search: () => sidebarRef.current?.focusSearch(),
     jump: () => jump(),
     showShortcuts: () => setShowingShortcuts(true),
   };
-  const onShortcutKey = useEffectEvent((event: KeyboardEvent, when: Shortcut["when"]) => {
-    if (event.defaultPrevented || document.querySelector('[aria-modal="true"]')) return;
-    const pressed = SHORTCUTS.find((shortcut) => shortcut.when === when && matchesKeys(shortcut.keys, event));
+  const onShortcutKey = useEffectEvent((event: KeyboardEvent, when: WindowShortcut["when"]) => {
+    const pressed = pressedShortcut(event, when);
     if (!pressed) return;
     event.preventDefault();
     shortcutActions[pressed.id]();
