@@ -232,8 +232,8 @@ impl GroveTools {
                        script, remote image, font or fetch. It gets grove's theme as CSS \
                        variables, so use them in place of fixed colors and the page matches \
                        light and dark: --background, --foreground, --muted, --border, --accent, \
-                       --chart-1 to --chart-6, --radius, --font-sans and --font-mono. Works \
-                       only in chat mode."
+                       --chart-1 to --chart-6, --radius, --font-sans, --font-mono and \
+                       --font-size. Works only in chat mode."
     )]
     async fn html_show(
         &self,

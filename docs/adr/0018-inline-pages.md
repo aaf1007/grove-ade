@@ -1,0 +1,22 @@
+# 0018: Inline pages, agent-written HTML in the app window
+
+- Status: Proposed (Nov 2026)
+- Context: Agents explain work better with a chart or a diagram than with text. Issue #35 lets an agent session in chat mode show a small HTML page in its conversation. That page is code the agent wrote, and it renders in the same window that holds grove's UI and the Tauri API. Until now only grove's own code ran there.
+- Decision:
+  - An agent shows a page with `html_show(title, html | path, height?)` through `grove-mcp`, or `grovecode html show`. It works in chat mode only. A path must be an `.html` file inside the session's worktree, with symlinks and `..` followed first.
+  - The page renders in an iframe with `sandbox="allow-scripts"` and nothing else. Its origin is its own, so it has no storage and cannot read the window, grove's UI or another panel.
+  - The frame's Content Security Policy is `default-src 'none'` with inline scripts and styles, and `data:` and `blob:` images, fonts and media. Nothing loads from the network. The policy is `INLINE_PAGE_CSP` in `grove-core`.
+  - The app serves the frame from its own URL scheme, `grove-page`, with that policy as a response header. A document the window writes into a frame (`srcdoc`, `data:` or `blob:`) takes the window's policy in WKWebView, which allows no inline script, so such a page never runs. The frame loads a small document that says it is ready, the window sends it the page with `postMessage`, and the page replaces that document under the same policy.
+  - The window's policy gets `frame-src grove-page:`. That also stops a page from sending its frame to any other address.
+  - A page gets no grove API. It gets grove's theme as CSS variables, and a new theme as a message when the app's theme changes. The window reads two messages from a page: that it is ready, and how tall it is. The height is capped at 2000 pixels, then the frame scrolls.
+  - grove saves what each page held when it was shown, in `~/.grovecode/sessions/<id>/pages/`. The reply to `html_show` names the page's id, so the agent's own record of the call does too, and a conversation read back from that record gets the page again. A page from a file is a copy, so it comes back when the file has changed or is gone.
+  - A page holds at most 1 MiB. A page sent inline must fit a core socket message, so its request holds at most 60 KiB, and a larger page goes by path.
+- Consequences:
+  - `AgentMessage` gains `InlinePage`, and the Core API gains `INLINE_PAGE_CSP` and `INLINE_PAGE_FRAME`. The app registers a URL scheme and its policy gains a `frame-src`.
+  - A test runs a page that tries each way out in Chrome, under the core's policy and frame: a remote script, image and style, `fetch`, a beacon, storage and the window's `__TAURI__`. It gets none. The same page in a frame with no policy gets all of them. The test needs Chrome or Chromium, which the CI image has.
+  - The Tauri API is not in the frame: Tauri puts it only in the window's main frame. WKWebView does give a subframe the message handler Tauri listens on, and Tauri treats a custom scheme as local. What stops a call from the frame is the invoke key, which only the window's own scripts hold. This was read in Tauri 2.12.5's source and not tested in the bundle.
+  - The WKWebView facts above (which frames take the window's policy, what the sandbox blocks) were checked by hand on macOS 26.6 with a probe, not by a test in CI.
+  - With the dev server the window has no policy, so nothing stops a page there from sending its own frame elsewhere. The bundle has the policy.
+  - Pages are saved until the session is deleted. A session that shows many large pages grows its folder.
+  - The Browser panel cannot show a page yet (issue #109), so there is no action to open one there.
+- Revisit if: a page needs to call grove (the agent-written widgets of ADR 0016), pages need to load from the network, Tauri changes how it guards the API from subframes, or saved pages grow too large.

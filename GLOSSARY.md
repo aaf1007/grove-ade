@@ -46,6 +46,7 @@ Use these terms exactly. If a new concept appears, add it here in the same PR.
 | Attention queue | Agent sessions waiting on the user, ranked Approval, Question, `Failed`, `Done`, oldest first within each. One key jumps to the head. |
 | Diff base | What a diff compares against: `Head` (all uncommitted changes, staged or not, plus untracked files) or `MergeBase` (everything since the branch left its base branch, committed or not). The Diff panel opens on `Head`. |
 | Review comment | A note the user attaches to a file and line range in a diff. It is `Open`, `Sent`, or `Resolved`, and can be flagged possibly addressed. |
+| Inline page | A small HTML page, such as a chart or a diagram, that an agent session in chat mode shows in its conversation with `html_show`. It runs in a sandboxed frame, loads nothing from the network and cannot reach grove (ADR 0018). grove keeps what it held when shown, so it comes back with the conversation. |
 | Review batch | All open review comments for a place, sent as one message to one agent session in that place: a chat message in chat mode, a bracketed paste in terminal mode. |
 | Adapter | Per-agent code (Claude Code, Codex) for launching in each mode, the hook and MCP integration passed at launch, and parsing protocol and hook events. |
 | Core event | A message the core broadcasts to the UI (`AgentState`, `DiffChanged`, `CommentsChanged`, `WorkspaceChanged`, ...). |
