@@ -17,7 +17,7 @@ use anyhow::Context;
 use grove_core::{
     AccountInfo, AgentMessage, AgentSpec, CommentId, Core, CoreConfig, CoreError, CoreEvent,
     DiffBase, FileStatus, LineKind, ModelChoice, ModelInfo, OutputFrame, RemoveOpts, RequestId,
-    SessionId, Snapshot, TurnOutcome, WorktreeInfo,
+    SessionId, SideQuestionId, Snapshot, TurnOutcome, WorktreeInfo,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -2056,6 +2056,46 @@ fn subscribe(
     })
 }
 
+/// Asks a side question in a fork of the session's conversation. Its answer comes on `answer`,
+/// a channel of its own, in the core's frames. Returns the side question's id.
+#[tauri::command]
+fn ask_side_question(
+    grove: State<'_, Grove>,
+    sessions: State<'_, Sessions>,
+    session: String,
+    question: String,
+    answer: Channel<Vec<Message>>,
+) -> Result<u64, String> {
+    with_session(&grove, &sessions, &session, |core, id| {
+        let (sink, mut frames) = mpsc::unbounded_channel();
+        let side_question = core.ask_side_question(id, &question, sink)?;
+        // Ends when the core drops the sink: when the side question ends.
+        tauri::async_runtime::spawn(async move {
+            while let Some(frame) = frames.recv().await {
+                let frame = frame.into_iter().map(Message::from).collect();
+                // Fails only once the webview is gone.
+                if answer.send(frame).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(side_question.0)
+    })
+}
+
+#[tauri::command]
+fn end_side_question(
+    grove: State<'_, Grove>,
+    sessions: State<'_, Sessions>,
+    session: String,
+    side_question: u64,
+) -> Result<(), String> {
+    with_session(&grove, &sessions, &session, |core, id| {
+        core.end_side_question(id, SideQuestionId(side_question));
+        Ok(())
+    })
+}
+
 #[tauri::command]
 fn send_message(
     grove: State<'_, Grove>,
@@ -2545,6 +2585,9 @@ fn main() -> anyhow::Result<()> {
             attach,
             subscribe,
             send_message,
+            // Side questions (#94).
+            ask_side_question,
+            end_side_question,
             interrupt,
             answer,
             models,

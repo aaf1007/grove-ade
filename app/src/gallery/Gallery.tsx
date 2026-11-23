@@ -63,6 +63,13 @@ const GALLERY_COMMANDS: SlashCommand[] = [
   { name: "security-review", description: "Review the branch for security issues", argumentHint: "", invocation: "/security-review" },
 ];
 
+/** What the gallery's agent answers each side question with. */
+const SIDE_QUESTION_ANSWER = [
+  "`tests/lexer.rs` covers it, in `a_last_token_with_no_trailing_newline_is_kept`.",
+  "",
+  "It fails on `main` and passes with the fix.",
+].join("\n");
+
 const STATES: State[] = [
   { state: "Working" },
   { state: "NeedsInput", kind: "Approval" },
@@ -132,6 +139,8 @@ export function Gallery({ bridge }: { bridge: FakeBridge }) {
       bridge.agentStateChanged({ session, state: "Working", source: "Protocol" });
       // A / in its composer opens the command menu.
       bridge.messages(session, { type: "Commands", commands: GALLERY_COMMANDS });
+      // Cmd-; in its composer opens the side question popover, and Enter there gets an answer.
+      bridge.answerSideQuestionsWith(SIDE_QUESTION_ANSWER);
       setPane(session);
     });
     return () => {

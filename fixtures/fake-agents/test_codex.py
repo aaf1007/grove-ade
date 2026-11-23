@@ -491,6 +491,59 @@ class FakeCodexTest(unittest.TestCase):
         self.assertEqual((completed["method"], completed["params"]["turn"]["status"]), ("turn/completed", "interrupted"))
         self.assertIn("result", after)
 
+    def test_app_server_forks_the_thread_and_runs_the_forks_turn_beside_the_threads_own(self):
+        steps = [{"wait_message": "thread/fork"}, {"wait_message": "turn/start"},
+                 {"send": {"method": "item/agentMessage/delta",
+                           "params": {"threadId": "{{fork_thread_id}}", "turnId": "{{fork_turn_id}}", "itemId": "m1",
+                                      "delta": "{{fork_text}} / {{text}}"}}},
+                 {"wait_message": "turn/interrupt"},
+                 {"send": {"method": "turn/completed", "params": {"threadId": "{{fork_thread_id}}",
+                                                                  "turn": {"id": "{{fork_turn_id}}", "status": "interrupted"}}}}]
+        server = self.chat(steps)
+        server.handshake()
+        text = [{"type": "text", "text": "main", "text_elements": []}]
+        aside = [{"type": "text", "text": "aside", "text_elements": []}]
+
+        no_thread = server.request("thread/fork", {"threadId": SESSION})
+        thread = server.request("thread/start", {})["result"]["thread"]["id"]
+        own = server.request("turn/start", {"threadId": thread, "input": text})["result"]["turn"]["id"]
+        forked = server.request("thread/fork", {"threadId": thread, "ephemeral": True, "approvalPolicy": "never"})
+        fork = forked["result"]["thread"]
+        started = server.read()
+        turn = server.request("turn/start", {"threadId": fork["id"], "input": aside})["result"]["turn"]["id"]
+        delta = server.read()
+        busy = server.request("turn/start", {"threadId": fork["id"], "input": aside})
+        wrong_turn = server.request("turn/interrupt", {"threadId": fork["id"], "turnId": own})
+        interrupted = server.request("turn/interrupt", {"threadId": fork["id"], "turnId": turn})
+        completed = server.read()
+        again = server.request("turn/start", {"threadId": fork["id"], "input": aside})
+        # The thread's own turn ran through all of it.
+        own_busy = server.request("turn/start", {"threadId": thread, "input": text})
+        unsubscribed = server.request("thread/unsubscribe", {"threadId": fork["id"]})
+        closed = server.read()
+        gone = server.request("thread/unsubscribe", {"threadId": fork["id"]})
+        no_fork = server.request("turn/start", {"threadId": fork["id"], "input": aside})
+
+        self.assertIn("no thread", no_thread["error"]["message"])
+        uuid.UUID(fork["id"])
+        self.assertNotEqual(fork["id"], thread)
+        self.assertEqual((fork["forkedFromId"], fork["ephemeral"], fork["turns"]), (thread, True, []))
+        self.assertEqual(forked["result"]["approvalPolicy"], "never")
+        self.assertEqual((started["method"], started["params"]["thread"]["id"]), ("thread/started", fork["id"]))
+        self.assertNotEqual(turn, own)
+        self.assertIn("one turn", busy["error"]["message"])
+        self.assertEqual(delta["params"], {"threadId": fork["id"], "turnId": turn, "itemId": "m1",
+                                           "delta": "aside / main"})
+        self.assertIn("no turn", wrong_turn["error"]["message"])
+        self.assertEqual(interrupted["result"], {})
+        self.assertEqual((completed["method"], completed["params"]["threadId"]), ("turn/completed", fork["id"]))
+        self.assertIn("result", again)
+        self.assertIn("one turn", own_busy["error"]["message"])
+        self.assertEqual(unsubscribed["result"], {"status": "unsubscribed"})
+        self.assertEqual(closed, {"method": "thread/closed", "params": {"threadId": fork["id"]}})
+        self.assertEqual(gone["result"], {"status": "notLoaded"})
+        self.assertIn("no thread", no_fork["error"]["message"])
+
     def test_app_server_lists_its_skills_for_each_folder_asked_or_its_own(self):
         server = self.chat([])
         server.handshake()

@@ -5,7 +5,8 @@
 //! <run>/home/           HOME, so the core's state is <run>/home/.grovecode/
 //! <run>/bin/            claude, codex and claude-sidecar, wrappers around fixtures/fake-agents
 //! <run>/control.sock    one JSON request per connection, one JSON reply
-//! <run>/evidence/       events.log, and session-<id>.log for each session it follows
+//! <run>/evidence/       events.log, session-<id>.log for each session it follows, and
+//!                       side-question-<session>-<id>.log for each side question's answer
 //! ```
 //!
 //! A request is `{"cmd": "spawn_agent", ...}`, and the reply `{"ok": ...}` or `{"error": ...}`.
@@ -23,6 +24,7 @@ use std::{env, thread};
 use grove_core::{
     Agent, AgentSpec, Core, CoreConfig, CoreEvent, DiffBase, FileDiff, LineKind, Mode,
     NewReviewComment, NewWorktree, PanelSpec, RemoveOpts, Reply, RequestId, SessionId,
+    SideQuestionId,
 };
 use serde_json::{Value, json};
 use tokio::sync::broadcast::error::RecvError;
@@ -236,6 +238,30 @@ fn handle(
         "interrupt" => {
             core.interrupt(session()?)?;
             json!("interrupted")
+        }
+        "ask_side_question" => {
+            let session = session()?;
+            let (answer, mut frames) = unbounded_channel();
+            let SideQuestionId(id) = core.ask_side_question(session, &text("question")?, answer)?;
+            let name = format!("side-question-{}-{id}.log", json!(session));
+            let log = log.clone();
+            thread::spawn(move || {
+                while let Some(frame) = frames.blocking_recv() {
+                    for message in frame {
+                        log.line(&name, &format!("{message:?}"));
+                    }
+                }
+                // The core dropped the sink: the side question ended.
+                log.line(&name, "closed");
+            });
+            json!(id)
+        }
+        "end_side_question" => {
+            let id = request["side_question"]
+                .as_u64()
+                .ok_or("side_question is a number")?;
+            core.end_side_question(session()?, SideQuestionId(id));
+            json!("ended")
         }
         "set_model" => {
             let effort = request["effort"].as_str();

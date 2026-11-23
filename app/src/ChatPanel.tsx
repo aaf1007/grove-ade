@@ -53,6 +53,7 @@ import {
 } from "./Picker";
 import { isInputMethodKey, type PanelShortcut, pressedShortcut } from "./shortcuts";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
+import { SideQuestion } from "./SideQuestion";
 import { TerminalPanel } from "./TerminalPanel";
 import { DeclinedCall, relative, type ToolCall, ToolCalls } from "./ToolCalls";
 import { AgentState } from "./ui/AgentState";
@@ -161,6 +162,8 @@ export function ChatPanel({
   });
   // Kept here, so a switch to terminal mode and back keeps what the user was typing.
   const [draft, setDraft] = useState("");
+  // Cmd-; was pressed in terminal mode, where the agent's TUI holds the conversation.
+  const [sideQuestionRefused, setSideQuestionRefused] = useState(false);
   const name = AGENT_NAMES[agent];
   const blocked = switchBlocked(state, modeSwitch, name);
   const { branch, profile } = useWorktreePlace(bridge, worktree);
@@ -211,6 +214,7 @@ export function ChatPanel({
   // it runs. A switch also starts an ended session again.
   function switchTo(mode: Mode) {
     if (blocked || mode === modeSwitch.mode) return;
+    setSideQuestionRefused(false);
     setModeSwitch((current) => ({ ...current, pending: mode, error: null }));
     bridge.setMode(session, mode).then(
       () => setModeSwitch(({ switches }) => ({ mode, switches: switches + 1, pending: null, error: null })),
@@ -237,6 +241,12 @@ export function ChatPanel({
       const view = chat.current;
       return view !== null && (view.closePicker() || view.stopTurn());
     },
+    sideQuestion: () => {
+      if (chat.current) return chat.current.openSideQuestion();
+      if (modeSwitch.mode !== "Terminal") return false;
+      setSideQuestionRefused(true);
+      return true;
+    },
     pickModel: () => chat.current?.openPicker("model") ?? false,
     pickEffort: () => chat.current?.openPicker("effort") ?? false,
     switchMode: () => {
@@ -249,6 +259,8 @@ export function ChatPanel({
   // A held key repeats, and acts once. A key an input method took is not a shortcut.
   function onShortcutKey(event: KeyboardEvent) {
     if (event.repeat || isInputMethodKey(event.nativeEvent)) return;
+    // The note that a side question needs chat mode goes with the next key.
+    setSideQuestionRefused(false);
     const pressed = pressedShortcut(event.nativeEvent, "agentPanel");
     if (pressed && shortcutActions[pressed.id]()) event.preventDefault();
   }
@@ -343,6 +355,11 @@ export function ChatPanel({
           <p className="tui-note">
             The same conversation, resumed in {name}&apos;s own TUI. State now comes from hooks.
           </p>
+          {sideQuestionRefused && (
+            <p role="alert" className="chat-error">
+              A side question needs chat mode.
+            </p>
+          )}
           <TerminalPanel
             key={`${modeSwitch.switches} ${resumes}`}
             bridge={bridge}
@@ -614,6 +631,8 @@ interface ChatHandle {
   openPicker(list: PickerList): boolean;
   /** Closes the picker's popover, if it is open. */
   closePicker(): boolean;
+  /** Opens the side question popover, or puts focus back in the open one. */
+  openSideQuestion(): boolean;
   focusComposer(): void;
 }
 
@@ -692,6 +711,8 @@ function ChatView({
   const list = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<PickerHandle>(null);
+  const [sideQuestionOpen, setSideQuestionOpen] = useState(false);
+  const sideQuestionInput = useRef<HTMLInputElement>(null);
   const approvalCard = useRef<HTMLDivElement>(null);
   // Set when the user answers an approval with focus in its card, until focus moves to the next.
   const focusFollowsApproval = useRef(false);
@@ -900,6 +921,11 @@ function ChatView({
       return true;
     },
     closePicker: () => picker.current!.close(),
+    openSideQuestion() {
+      if (sideQuestionOpen) sideQuestionInput.current!.focus();
+      else setSideQuestionOpen(true);
+      return true;
+    },
     focusComposer: () => composer.current!.focus(),
   }));
 
@@ -999,6 +1025,19 @@ function ChatView({
         {question && <QuestionCard key={question.request} item={question} agentName={name} onAnswer={answer} />}
         <div className="composer composer-commands">
           {commandMenu.menu}
+          {sideQuestionOpen && (
+            <SideQuestion
+              ref={sideQuestionInput}
+              bridge={bridge}
+              session={session}
+              agentName={name}
+              onOpenLink={openLink}
+              onClose={() => {
+                setSideQuestionOpen(false);
+                composer.current!.focus();
+              }}
+            />
+          )}
           <textarea
             ref={composer}
             aria-label="Message"

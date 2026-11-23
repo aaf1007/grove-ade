@@ -4,12 +4,15 @@ import type {
   AccountInfo,
   CanUseTool,
   EffortLevel,
+  HookCallback,
   ModelInfo,
   Options,
   PermissionResult,
   PermissionUpdate,
   Query,
+  SDKAssistantMessage,
   SDKMessage,
+  SDKResultMessage,
   SDKUserMessage,
   SessionMessage,
   SlashCommand,
@@ -111,11 +114,32 @@ type Pending = {
   settle: (result: PermissionResult) => void;
 };
 
-type Turn = { interrupted: boolean; error?: { kind: string; message: string } };
+type Turn = { interrupted: boolean; error?: TurnError };
 
 type ModelChoice = { model?: string; effort?: EffortLevel };
 
 const DENIED = "The user declined this. Ask them what to do instead.";
+
+/** The tools a side question's fork may run. They read the worktree and change nothing. */
+const SIDE_QUESTION_TOOLS = new Set(["Read", "Grep", "Glob"]);
+const SIDE_QUESTION_ONLY_READS = "A side question only reads. Answer from the conversation and the files you can read.";
+
+/** Denies every tool call of a fork but the reading ones, whatever the user's own rules allow. */
+const sideQuestionOnlyReads: HookCallback = async (input) =>
+  input.hook_event_name === "PreToolUse" && !SIDE_QUESTION_TOOLS.has(input.tool_name)
+    ? {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: SIDE_QUESTION_ONLY_READS,
+        },
+      }
+    : {};
+
+/** The open side question. `fork` is set once its query runs. */
+type Side = { id: number; fork?: Query };
+
+type TurnError = { kind: string; message: string };
 
 /**
  * Runs the conversation until the core closes stdin. Rejects if the SDK ends it first.
@@ -152,6 +176,11 @@ export async function run(launch: Launch, deps: Deps): Promise<void> {
   let turn: Turn | undefined;
   // What set_model chose during the running turn, for the next one.
   let nextModel: ModelChoice | undefined;
+  // What the session runs with now, which a side question's fork runs with too.
+  let running: ModelChoice = {};
+  // The conversation's id now. Claude gives it a new one on /clear.
+  let conversation = launch.sessionId;
+  let side: Side | undefined;
   let stdinEnded = false;
   // The uuids of the user's messages that no result has answered yet. A message can reach claude
   // after it counted its queue for a result, so the queue count alone can miss it.
@@ -267,9 +296,89 @@ export async function run(launch: Launch, deps: Deps): Promise<void> {
     void window.then((context_window) => write({ type: "context", session_total_tokens: total, context_window }));
   };
 
-  const applyModel = ({ model, effort }: ModelChoice) => {
-    if (model !== undefined) void q.setModel(model).catch(logError);
-    if (effort !== undefined) void q.applyFlagSettings({ effortLevel: effort }).catch(logError);
+  const applyModel = (choice: ModelChoice) => {
+    running = { model: choice.model ?? running.model, effort: choice.effort ?? running.effort };
+    if (choice.model !== undefined) void q.setModel(choice.model).catch(logError);
+    if (choice.effort !== undefined) void q.applyFlagSettings({ effortLevel: choice.effort }).catch(logError);
+  };
+
+  const endSide = () => {
+    side?.fork?.close();
+    side = undefined;
+  };
+
+  /**
+   * Answers `text` in a fork of the conversation: a second query that resumes it under a new id
+   * and saves no record. It gets neither grove's hooks nor its MCP server, so it reports no state
+   * and opens no panel. The side question before ends.
+   */
+  const askSide = async (id: number, text: string) => {
+    endSide();
+    const mine: Side = { id };
+    side = mine;
+    // Nothing goes out once this side question has ended.
+    const send = (message: Record<string, unknown>) => {
+      if (side === mine) write({ type: "side", id, message });
+    };
+    const end = (error?: TurnError) => {
+      send(error ? { type: "turn_end", error } : { type: "turn_end" });
+      if (side === mine) endSide();
+    };
+    try {
+      // Claude writes the record only after the first message. With none there is nothing to
+      // fork, and the side question starts with no history.
+      const recorded = await deps.sessionMessages(conversation, deps.cwd).then(
+        (messages) => messages.length > 0,
+        () => false,
+      );
+      if (side !== mine) return;
+      const question = new Inbox<SDKUserMessage>();
+      question.push({
+        type: "user",
+        message: { role: "user", content: text },
+        parent_tool_use_id: null,
+        origin: { kind: "human" },
+        uuid: crypto.randomUUID(),
+      });
+      mine.fork = deps.query({
+        prompt: question,
+        options: {
+          cwd: deps.cwd,
+          settingSources: ["user", "project", "local"],
+          systemPrompt: { type: "preset", preset: "claude_code" },
+          pathToClaudeCodeExecutable: launch.claude,
+          includePartialMessages: true,
+          persistSession: false,
+          canUseTool: async () => ({ behavior: "deny", message: SIDE_QUESTION_ONLY_READS }),
+          hooks: { PreToolUse: [{ hooks: [sideQuestionOnlyReads] }] },
+          ...(recorded ? { resume: conversation, forkSession: true } : {}),
+          ...(running.model !== undefined ? { model: running.model } : {}),
+          ...(running.effort !== undefined ? { effort: running.effort } : {}),
+        },
+      });
+      send({ type: "turn_start" });
+      let hasText = false;
+      let error: TurnError | undefined;
+      for await (const message of mine.fork) {
+        if (message.type === "stream_event" && message.parent_tool_use_id === null) {
+          const { event } = message;
+          // The answer shows no tool calls, so the text after one starts a new paragraph.
+          if (event.type === "message_start" && hasText) send({ type: "text_delta", text: "\n\n" });
+          if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+            hasText = true;
+            send({ type: "text_delta", text: event.delta.text });
+          }
+        } else if (message.type === "assistant" && message.parent_tool_use_id === null) {
+          error ??= assistantError(message);
+        } else if (message.type === "result") {
+          return end(error ?? resultError(message));
+        }
+      }
+      end({ kind: "fork", message: "Claude ended the side question before it answered." });
+    } catch (failure) {
+      logError(failure);
+      end({ kind: "fork", message: failure instanceof Error ? failure.message : String(failure) });
+    }
   };
 
   const answer = (line: AnswerLine) => {
@@ -313,6 +422,12 @@ export async function run(launch: Launch, deps: Deps): Promise<void> {
         turn.interrupted = true;
         void q.interrupt().catch(logError);
         return;
+      case "side_question":
+        void askSide(line.id, line.text);
+        return;
+      case "end_side_question":
+        if (side?.id === line.id) endSide();
+        return;
       case "set_model": {
         const choice = { model: line.model, effort: line.effort };
         // The running turn keeps its own model. The next one takes this.
@@ -339,6 +454,9 @@ export async function run(launch: Launch, deps: Deps): Promise<void> {
   };
 
   const onMessage = (message: SDKMessage) => {
+    if ("session_id" in message && typeof message.session_id === "string" && message.session_id) {
+      conversation = message.session_id;
+    }
     switch (message.type) {
       case "stream_event": {
         const { event } = message;
@@ -352,11 +470,8 @@ export async function run(launch: Launch, deps: Deps): Promise<void> {
       }
       case "assistant": {
         if (message.parent_tool_use_id !== null) return;
-        const blocks = message.message.content;
-        if (message.error && turn) {
-          turn.error = { kind: message.error, message: blocks.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("\n") };
-        }
-        for (const block of blocks) {
+        if (turn) turn.error = assistantError(message) ?? turn.error;
+        for (const block of message.message.content) {
           if (block.type === "tool_use") write({ type: "tool_call", id: block.id, tool: block.name, input: block.input });
         }
         return;
@@ -371,13 +486,7 @@ export async function run(launch: Launch, deps: Deps): Promise<void> {
         return;
       }
       case "result": {
-        if (turn && !turn.error) {
-          if (message.subtype !== "success") {
-            turn.error = { kind: message.subtype, message: message.errors.join("\n") || message.subtype };
-          } else if (message.is_error) {
-            turn.error = { kind: "unknown", message: message.result };
-          }
-        }
+        if (turn) turn.error ??= resultError(message);
         const answered = message.user_message_uuids ?? (message.user_message_uuid ? [message.user_message_uuid] : undefined);
         if (answered) {
           for (const uuid of answered) unanswered.delete(uuid);
@@ -399,6 +508,7 @@ export async function run(launch: Launch, deps: Deps): Promise<void> {
   const reading = (async () => {
     for await (const raw of { [Symbol.asyncIterator]: () => incoming }) onLine(raw);
     stdinEnded = true;
+    endSide();
     for (const request of pending.values()) request.settle({ behavior: "deny", message: DENIED });
     prompt.close();
     q.close();
@@ -421,7 +531,9 @@ type Line =
   | { type: "user_message"; text: string }
   | AnswerLine
   | { type: "interrupt" }
-  | ({ type: "set_model" } & ModelChoice);
+  | ({ type: "set_model" } & ModelChoice)
+  | { type: "side_question"; id: number; text: string }
+  | { type: "end_side_question"; id: number };
 
 /** The core's line, or undefined when it is not one of PROTOCOL.md's. */
 function parseLine(raw: string): Line | undefined {
@@ -441,8 +553,27 @@ function parseLine(raw: string): Line | undefined {
     case "interrupt":
     case "set_model":
       return l as Line;
+    case "side_question":
+      return typeof l.id === "number" && typeof l.text === "string" ? (l as Line) : undefined;
+    case "end_side_question":
+      return typeof l.id === "number" ? (l as Line) : undefined;
   }
   return undefined;
+}
+
+/** The error an assistant message carries, with its text, if it has one. */
+function assistantError(message: SDKAssistantMessage): TurnError | undefined {
+  if (!message.error) return undefined;
+  const text = message.message.content.flatMap((b) => (b.type === "text" ? [b.text] : []));
+  return { kind: message.error, message: text.join("\n") };
+}
+
+/** The error a result ends its turn with, if it failed. */
+function resultError(message: SDKResultMessage): TurnError | undefined {
+  if (message.subtype !== "success") {
+    return { kind: message.subtype, message: message.errors.join("\n") || message.subtype };
+  }
+  return message.is_error ? { kind: "unknown", message: message.result } : undefined;
 }
 
 /**

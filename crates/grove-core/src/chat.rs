@@ -146,6 +146,11 @@ enum Listing {
     Closed,
 }
 
+/// The id of a side question, unique within its agent session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SideQuestionId(pub u64);
+
 /// The id the sidecar gives an approval request or a question.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(transparent)]
@@ -245,6 +250,21 @@ struct ChatState {
     commands: Option<Vec<SlashCommand>>,
     // What the agent reported after its last turn. None before the first report.
     context_reading: Option<ContextReading>,
+    // The side question that is open, whose answer goes to its own sink.
+    side_question: Option<SideQuestion>,
+    // The id the next side question takes.
+    next_side_question: u64,
+}
+
+/// A question the user asked in a fork of the conversation. Its messages go to its own sink and
+/// never join the history.
+struct SideQuestion {
+    id: SideQuestionId,
+    sink: MessageSink,
+    // Added for the sink and not in a frame yet.
+    batch: Vec<AgentMessage>,
+    // Its answer ended, so the process ending adds nothing to it.
+    answered: bool,
 }
 
 /// A message sent that no turn has started on yet.
@@ -343,6 +363,19 @@ impl Chat {
         }
     }
 
+    /// Adds a message of side question `id`'s fork to its batch. A message for a side question
+    /// that has ended is dropped.
+    fn push_side_locked(&self, s: &mut ChatState, id: SideQuestionId, message: AgentMessage) {
+        let Some(side) = s.side_question.as_mut().filter(|side| side.id == id) else {
+            return;
+        };
+        side.answered |= matches!(message, AgentMessage::TurnEnded { .. });
+        side.batch.push(message);
+        if side.batch.len() == 1 {
+            self.arrived.notify_one();
+        }
+    }
+
     /// Sends the messages from now on to `sink`, in place of any earlier sink, and returns the
     /// ones before, then the latest command list. Under one lock, so each message is in one of
     /// the two exactly once.
@@ -433,6 +466,12 @@ impl Chat {
             self.push_locked(&mut s, AgentMessage::NotDelivered { text });
             comments.extend(unstarted.comments);
         }
+        // A side question the process never answered ends failed, so its popover stops waiting.
+        let unanswered = s.side_question.as_ref().filter(|side| !side.answered);
+        if let Some(id) = unanswered.map(|side| side.id) {
+            let reason = "The agent's process ended before it answered.";
+            self.push_side_locked(&mut s, id, failed_answer("exited", reason.into()));
+        }
         drop(s);
         self.arrived.notify_one();
         self.history_read.send_replace(true);
@@ -463,6 +502,15 @@ impl Batch for Chat {
             if sink.send(mem::take(&mut s.batch)).is_err() {
                 // The receiver is gone, so the sink is detached.
                 s.sink = None;
+            }
+        }
+        if let Some(side) = &mut s.side_question
+            && !side.batch.is_empty()
+        {
+            flushed = Flushed::Frame;
+            if side.sink.send(mem::take(&mut side.batch)).is_err() {
+                // The receiver is gone, so nobody reads the answer.
+                s.side_question = None;
             }
         }
         if s.closed { Flushed::Closed } else { flushed }
@@ -547,6 +595,12 @@ enum FromAgent {
     #[serde(skip)]
     Thread {
         id: String,
+    },
+    /// A message of a side question's fork, by the side question's id. It never joins the
+    /// conversation and sets no state.
+    Side {
+        id: SideQuestionId,
+        message: Box<FromAgent>,
     },
 }
 
@@ -733,6 +787,80 @@ impl Core {
         self.agents.model_choice(session)
     }
 
+    /// Asks `question` in a fork of the session's conversation, made through the agent's own
+    /// protocol, and sends the fork's messages to `answer_sink` in frames: the turn's start, the
+    /// answer's text and the turn's end. The fork can read the worktree, changes nothing and asks
+    /// for nothing. The session's own conversation, agent state and resume id stay as they are,
+    /// and the fork is no agent session. A side question the session had open ends. Refused in
+    /// terminal mode, and once the session's process has ended.
+    pub fn ask_side_question(
+        &self,
+        session: SessionId,
+        question: &str,
+        answer_sink: MessageSink,
+    ) -> Result<SideQuestionId> {
+        let chat = self.agents.chat(session)?;
+        // Taken before the chat's lock, so the two never nest.
+        let input = self.input(session)?;
+        let mut guard = chat.state();
+        let s = &mut *guard;
+        if s.closed {
+            return Err(CoreError::SessionNotRunning(session));
+        }
+        if s.ending {
+            return Err(CoreError::SwitchingMode(session));
+        }
+        let id = SideQuestionId(s.next_side_question);
+        s.next_side_question += 1;
+        // The sidecar ends the fork of the side question before by itself.
+        let asked = match &mut s.app_server {
+            None => Ok(vec![side_question_line(id, question)]),
+            Some(server) => server.ask_side_question(id, question),
+        };
+        s.side_question = Some(SideQuestion {
+            id,
+            sink: answer_sink,
+            batch: Vec::new(),
+            answered: false,
+        });
+        match asked {
+            Ok(lines) => {
+                for line in lines {
+                    if input.send(line).is_err() {
+                        s.side_question = None;
+                        return Err(CoreError::SessionNotRunning(session));
+                    }
+                }
+            }
+            Err(reason) => chat.push_side_locked(s, id, failed_answer("thread/fork", reason)),
+        }
+        Ok(id)
+    }
+
+    /// Ends the side question and its fork, and drops its sink. Does nothing for a side question
+    /// that has ended, or whose session left chat mode, which ended the fork with its process.
+    pub fn end_side_question(&self, session: SessionId, side_question: SideQuestionId) {
+        let Ok(chat) = self.agents.chat(session) else {
+            return;
+        };
+        // Taken before the chat's lock, so the two never nest.
+        let input = self.input(session).ok();
+        let mut guard = chat.state();
+        let s = &mut *guard;
+        if s.side_question.as_ref().map(|side| side.id) != Some(side_question) {
+            return;
+        }
+        s.side_question = None;
+        let lines = match &mut s.app_server {
+            None => vec![end_side_question_line(side_question)],
+            Some(server) => server.end_side_question(side_question),
+        };
+        for line in lines {
+            // Fails only once the process has exited, which ended the fork.
+            let _ = input.as_ref().map(|input| input.send(line));
+        }
+    }
+
     /// Asks the agent to stop the turn. The session becomes `Idle` when the agent reports the
     /// turn ended. With Codex, nothing happens while no turn runs.
     pub fn interrupt(&self, session: SessionId) -> Result<()> {
@@ -763,6 +891,31 @@ fn set_model_line(model: &str, effort: Option<&str>) -> String {
         None => json!({"type": "set_model", "model": model}),
     };
     format!("{line}\n")
+}
+
+/// The line that asks the sidecar a side question.
+fn side_question_line(id: SideQuestionId, question: &str) -> Vec<u8> {
+    format!(
+        "{}\n",
+        json!({"type": "side_question", "id": id, "text": question})
+    )
+    .into_bytes()
+}
+
+/// The line that ends a side question's fork in the sidecar.
+fn end_side_question_line(id: SideQuestionId) -> Vec<u8> {
+    format!("{}\n", json!({"type": "end_side_question", "id": id})).into_bytes()
+}
+
+/// The end of a side question's answer that the core gives it itself, when no answer can come.
+fn failed_answer(kind: &str, message: String) -> AgentMessage {
+    AgentMessage::TurnEnded {
+        outcome: TurnOutcome::Failed {
+            kind: kind.to_owned(),
+            message,
+        },
+        time_unix_ms: now_unix_ms(),
+    }
 }
 
 /// Why `reply` does not fit a request asking `questions` (None for an approval), if it does not.
@@ -895,6 +1048,12 @@ fn apply(
         }
         FromAgent::Thread { id } => {
             agents.on_thread(session, id);
+            return;
+        }
+        FromAgent::Side { id, message } => {
+            if let Some(message) = side_message(*message) {
+                chat.push_side_locked(s, id, message);
+            }
             return;
         }
         FromAgent::Models { models } => {
@@ -1043,6 +1202,19 @@ fn turn_end(interrupted: bool, error: Option<TurnError>) -> (TurnOutcome, AgentS
         }
         (false, None) => (TurnOutcome::Completed, AgentState::Done),
     }
+}
+
+/// A message of a side question's fork as its answer shows it, with the time the core got it.
+/// None for one an answer never holds.
+fn side_message(message: FromAgent) -> Option<AgentMessage> {
+    let mut message = recorded(message)?;
+    if let AgentMessage::TurnStarted { time_unix_ms }
+    | AgentMessage::ToolCall { time_unix_ms, .. }
+    | AgentMessage::TurnEnded { time_unix_ms, .. } = &mut message
+    {
+        *time_unix_ms = now_unix_ms();
+    }
+    Some(message)
 }
 
 /// A message of a `history` as the conversation shows it. None for one a record never holds.

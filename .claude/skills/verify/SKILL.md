@@ -223,6 +223,8 @@ L=$(wc -l < <run>/evidence/session-0.log)
 | `send` | `session:=N`, `text` | a chat-mode message |
 | `answer` | `session:=N`, `request`, `reply=allow_once\|allow_session\|deny` or `reply:='[["label"]]'` | answers an approval or a question |
 | `interrupt` | `session:=N` | interrupts the turn |
+| `ask_side_question` | `session:=N`, `question` | asks a chat-mode session a side question, prints its id, and logs the answer to `side-question-<session>-<id>.log`, with `closed` once the core drops it |
+| `end_side_question` | `session:=N`, `side_question:=N` | ends that side question and its fork |
 | `set_model` | `session:=N`, `model`, optional `effort` | changes model and effort |
 | `set_mode` | `session:=N`, `mode` | switches chat and terminal mode |
 | `write` | `session:=N`, `text` | bytes to a PTY, such as `text=$'\r'` for Enter |
@@ -270,6 +272,7 @@ Everything lands in `<run>/evidence/` and stays after cleanup:
 |---|---|
 | `events.log` | every `CoreEvent`, with seconds since start: agent states and their source, diffs changed, workspace and profile changes, panels, accounts |
 | `session-<id>.log` | a chat session's messages, or a PTY session's raw output |
+| `side-question-<session>-<id>.log` | a side question's answer, which never reaches `session-<id>.log` |
 | `fake-<agent>.jsonl` | what the fake agent got: argv, env, every stdin line, hook runs and their exit codes |
 | `grovecode.log` | each `grovecode` call, its exit code and output |
 | `driver.out` | the core's stderr |

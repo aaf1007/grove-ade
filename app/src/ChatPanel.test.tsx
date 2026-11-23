@@ -2962,3 +2962,210 @@ test("focus that moves to the panel around the picker leaves the popover open", 
   fireEvent.click(pickerButton());
   expect(screen.queryByRole("dialog")).toBeNull();
 });
+
+function sideQuestion() {
+  return screen.queryByRole("dialog", { name: "Side question" });
+}
+
+function sideQuestionInput() {
+  return within(sideQuestion()!).getByRole("textbox", { name: "Side question" }) as HTMLInputElement;
+}
+
+// Opens the popover from the composer and asks `question` with Enter.
+async function askAside(question: string) {
+  press("sideQuestion", composer());
+  fireEvent.change(sideQuestionInput(), { target: { value: question } });
+  await act(async () => fireEvent.keyDown(sideQuestionInput(), { key: "Enter" }));
+}
+
+test("Cmd-; opens the side question popover over the composer, Enter asks, and the answer streams in once per animation frame", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  composer().focus();
+
+  expect(press("sideQuestion", composer())).toBe(true);
+
+  expect(document.activeElement).toBe(sideQuestionInput());
+  expect(composer().closest(".composer")!.contains(sideQuestion())).toBe(true);
+
+  // Enter with nothing typed asks nothing.
+  await act(async () => fireEvent.keyDown(sideQuestionInput(), { key: "Enter" }));
+  expect(bridge.sideQuestions).toEqual([]);
+
+  fireEvent.change(sideQuestionInput(), { target: { value: "Which test covers the lexer?" } });
+  await act(async () => fireEvent.keyDown(sideQuestionInput(), { key: "Enter" }));
+
+  expect(bridge.sideQuestions).toEqual([{ session: "0", question: "Which test covers the lexer?" }]);
+  expect(sideQuestionInput().value).toBe("");
+  expect(within(sideQuestion()!).getByText("Which test covers the lexer?")).toBeTruthy();
+  expect(within(sideQuestion()!).getByRole("status").textContent).toBe("Asking Claude Code");
+
+  act(() => {
+    bridge.sideMessages("0", { type: "TurnStarted" }, { type: "TextDelta", text: "It is " });
+    bridge.sideMessages("0", { type: "TextDelta", text: "`tests/lexer.rs`." });
+  });
+  expect(sideQuestion()!.textContent).not.toContain("It is");
+
+  nextFrame();
+
+  expect(sideQuestion()!.querySelector(".side-question-answer")!.textContent).toBe("It is tests/lexer.rs.");
+  expect(within(sideQuestion()!).queryByRole("status")).toBeNull();
+
+  act(() => bridge.sideMessages("0", { type: "TurnEnded", outcome: "Completed" }));
+  nextFrame();
+
+  // Neither the question nor the answer joins the conversation.
+  expect(bridge.sent).toEqual([]);
+  expect(document.querySelector(".thread")!.textContent).toBe("");
+});
+
+test("Esc in the side question popover closes it, ends its fork, returns focus to the composer and stops no turn", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+  await askAside("Which test covers the lexer?");
+
+  expect(press("stopTurn", sideQuestionInput())).toBe(true);
+  await act(async () => {});
+
+  expect(sideQuestion()).toBeNull();
+  expect(bridge.endedSideQuestions).toEqual([{ session: "0", sideQuestion: 1 }]);
+  expect(document.activeElement).toBe(composer());
+  expect(bridge.interrupted).toEqual([]);
+});
+
+test("closing the side question popover before a question is asked ends no fork", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  press("sideQuestion", composer());
+
+  fireEvent.click(within(sideQuestion()!).getByRole("button", { name: "Close side question" }));
+
+  expect(sideQuestion()).toBeNull();
+  expect(document.activeElement).toBe(composer());
+  expect(bridge.endedSideQuestions).toEqual([]);
+});
+
+test("the side question popover takes no key during an input method composition", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+  press("sideQuestion", composer());
+  fireEvent.change(sideQuestionInput(), { target: { value: "テストはどこ" } });
+
+  await act(async () => fireEvent.keyDown(sideQuestionInput(), { key: "Enter", isComposing: true }));
+  // WebKit can mark the key that ends a composition with key code 229 alone.
+  await act(async () => fireEvent.keyDown(sideQuestionInput(), { key: "Enter", keyCode: 229 }));
+  expect(press("stopTurn", sideQuestionInput(), { isComposing: true })).toBe(false);
+  expect(press("stopTurn", sideQuestionInput(), { keyCode: 229 })).toBe(false);
+
+  expect(bridge.sideQuestions).toEqual([]);
+  expect(sideQuestionInput().value).toBe("テストはどこ");
+  expect(bridge.interrupted).toEqual([]);
+});
+
+test("the side question's keys work only with focus in its popover: Esc in the composer still stops the turn", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+  await askAside("Which test covers the lexer?");
+  composer().focus();
+
+  expect(press("stopTurn", composer())).toBe(true);
+
+  expect(bridge.interrupted).toEqual(["0"]);
+  expect(sideQuestion()).toBeTruthy();
+  expect(bridge.endedSideQuestions).toEqual([]);
+
+  // Cmd-; with the popover open goes back to its input.
+  expect(press("sideQuestion", composer())).toBe(true);
+  expect(document.activeElement).toBe(sideQuestionInput());
+});
+
+test("a new side question takes the place of the one before, and a late frame of the old one is not shown", async () => {
+  const bridge = await started();
+  const ask = vi.spyOn(bridge, "askSideQuestion");
+  await shownPanel(bridge);
+  await askAside("Which test covers the lexer?");
+  const answerFirst = ask.mock.calls[0][2];
+  act(() => bridge.sideMessages("0", { type: "TurnStarted" }, { type: "TextDelta", text: "It is tests/lexer.rs." }));
+  nextFrame();
+
+  fireEvent.change(sideQuestionInput(), { target: { value: "And the parser?" } });
+  await act(async () => fireEvent.keyDown(sideQuestionInput(), { key: "Enter" }));
+
+  expect(bridge.sideQuestions.map((asked) => asked.question)).toEqual(["Which test covers the lexer?", "And the parser?"]);
+  expect(sideQuestion()!.textContent).not.toContain("It is tests/lexer.rs.");
+  expect(within(sideQuestion()!).getByText("And the parser?")).toBeTruthy();
+
+  act(() => {
+    answerFirst([{ type: "TextDelta", text: " Late." }]);
+    bridge.sideMessages("0", { type: "TurnStarted" }, { type: "TextDelta", text: "tests/parser.rs." });
+  });
+  nextFrame();
+
+  expect(sideQuestion()!.querySelector(".side-question-answer")!.textContent).toBe("tests/parser.rs.");
+});
+
+test("a side question whose fork fails says why, and the next one can be asked", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  await askAside("Which test covers the lexer?");
+
+  act(() =>
+    bridge.sideMessages(
+      "0",
+      { type: "TurnStarted" },
+      { type: "TurnEnded", outcome: "Failed", kind: "fork", message: "The conversation could not be forked." },
+    ),
+  );
+  nextFrame();
+
+  expect(within(sideQuestion()!).getByRole("alert").textContent).toBe("The conversation could not be forked.");
+  expect(within(sideQuestion()!).queryByRole("status")).toBeNull();
+
+  await askAside("And the parser?");
+
+  expect(within(sideQuestion()!).queryByRole("alert")).toBeNull();
+  expect(bridge.sideQuestions).toHaveLength(2);
+});
+
+test("a side question the core refuses says why", async () => {
+  const bridge = await started();
+  vi.spyOn(bridge, "askSideQuestion").mockRejectedValue("session 0 is not running");
+  await shownPanel(bridge);
+
+  await askAside("Which test covers the lexer?");
+
+  expect(within(sideQuestion()!).getByRole("alert").textContent).toBe("session 0 is not running");
+  expect(bridge.endedSideQuestions).toEqual([]);
+});
+
+test("Cmd-; in terminal mode opens nothing and says a side question needs chat mode", async () => {
+  const bridge = await started();
+  await bridge.setMode("0", "Terminal");
+  await shownPanel(bridge, { state: { session: "0", state: "Working", source: "Hook" } });
+
+  expect(press("sideQuestion", terminal()!)).toBe(true);
+
+  expect(sideQuestion()).toBeNull();
+  expect(bridge.sideQuestions).toEqual([]);
+  expect(screen.getByRole("alert").textContent).toBe("A side question needs chat mode.");
+
+  // The note goes with the next key, which the agent's TUI still gets.
+  let taken = true;
+  act(() => {
+    taken = !fireEvent.keyDown(terminal()!, { key: "l" });
+  });
+
+  expect(taken).toBe(false);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("a switch to terminal mode closes the side question and ends its fork", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  await askAside("Which test covers the lexer?");
+
+  await switchTo("Terminal");
+
+  expect(sideQuestion()).toBeNull();
+  expect(bridge.endedSideQuestions).toEqual([{ session: "0", sideQuestion: 1 }]);
+});

@@ -25,7 +25,8 @@ side by side. Standard library only. Run from anywhere in the repo:
 ping, add_repo path, forget_repo path,
 worktrees, create_worktree repo branch, spawn_agent worktree mode=chat|terminal
 [agent=claude|codex] [prompt], spawn_shell worktree, follow session, send session text, answer session request
-reply=allow_once|allow_session|deny|[[answers]], interrupt session, set_model session model
+reply=allow_once|allow_session|deny|[[answers]], interrupt session,
+ask_side_question session question, end_side_question session side_question, set_model session model
 [effort], set_mode session mode, write session text, kill session, diff worktree
 base=head|merge_base, workspace session, starting_workspace worktree, undo_workspace session,
 add_comment worktree path

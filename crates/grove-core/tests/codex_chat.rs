@@ -15,7 +15,8 @@ use common::{conversation_only, now_unix_ms, times, untimed, write_script};
 use grove_core::{
     AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, ContextReading, ContextWindow, Core,
     CoreConfig, CoreEvent, InputKind, Mode, ModelInfo, PlanLimits, Question, QuestionOption, Reply,
-    RequestId, SessionId, SlashCommand, StateSource, TurnOutcome, UsageReading, UsageWindow,
+    RequestId, SessionId, SideQuestionId, SlashCommand, StateSource, TurnOutcome, UsageReading,
+    UsageWindow,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -1132,6 +1133,104 @@ fn codexs_enabled_skills_reach_the_panel_as_commands_and_the_list_after_a_skills
     assert_eq!(late.last(), Some(&second));
 }
 
+/// A notification about the fork's thread and its turn.
+fn fork_notify(method: &str, mut params: Value) -> Value {
+    params["threadId"] = "{{fork_thread_id}}".into();
+    notify(method, params)
+}
+
+fn fork_turn(status: &str) -> Value {
+    json!({"turn": {"id": "{{fork_turn_id}}", "items": [], "status": status, "error": null}})
+}
+
+fn fork_delta(text: &str) -> Value {
+    fork_notify(
+        "item/agentMessage/delta",
+        json!({"turnId": "{{fork_turn_id}}", "itemId": "msg_f", "delta": text}),
+    )
+}
+
+/// Asks a side question, and returns its id and its answer's messages as they come.
+fn ask(core: &Core, session: SessionId, question: &str) -> (SideQuestionId, Frames) {
+    let (sink, mut rx) = unbounded_channel();
+    let id = core.ask_side_question(session, question, sink).unwrap();
+    let (tx, arrivals) = mpsc::channel();
+    thread::spawn(move || {
+        while let Some(frame) = rx.blocking_recv() {
+            if tx.send(frame).is_err() {
+                return;
+            }
+        }
+    });
+    let answer = Frames {
+        arrivals,
+        messages: Vec::new(),
+        cursor: 0,
+    };
+    (id, answer)
+}
+
+/// What `agent_sessions` lists: each session, its title and its agent state.
+fn listed(core: &Core) -> Vec<(SessionId, String, Option<AgentState>)> {
+    let sessions = core.agent_sessions();
+    sessions
+        .into_iter()
+        .map(|info| (info.session, info.title, info.state))
+        .collect()
+}
+
+#[test]
+fn a_side_question_is_answered_in_a_fork_of_the_thread_and_leaves_the_session_as_it_was() {
+    let mut steps = turn(&["done"]);
+    steps.extend([
+        wait("thread/fork"),
+        wait("turn/start"),
+        fork_notify("turn/started", fork_turn("inProgress")),
+        fork_delta("For"),
+        fork_delta("ty-two"),
+        fork_notify("turn/completed", fork_turn("completed")),
+    ]);
+    let mut s = setup(json!(steps));
+    let session = s.spawn(Some("build it"));
+    s.state(session, AgentState::Working);
+    s.state(session, AgentState::Done);
+    let thread = s.wait_thread(session);
+    let before = (conversation(&s.core, session), listed(&s.core));
+
+    let (_, mut answer) = ask(&s.core, session, "what is 6 x 7?");
+
+    assert_eq!(answer.until_turn_end(), TurnOutcome::Completed);
+    assert_eq!(
+        untimed(answer.messages),
+        [started(), delta("For"), delta("ty-two"), completed()]
+    );
+    let fork = s.wait_request("thread/fork");
+    assert_eq!(
+        fork["params"],
+        json!({"threadId": thread, "ephemeral": true, "approvalPolicy": "never",
+               "sandbox": "read-only", "excludeTurns": true})
+    );
+    let asked = s.wait_sent("the fork's turn", |m| {
+        m["method"] == "turn/start" && m["params"]["threadId"] != thread.as_str()
+    });
+    assert_eq!(asked["params"]["input"], text_input("what is 6 x 7?"));
+    // Its answer is whole, so the core lets the fork go.
+    let unsubscribed = s.wait_request("thread/unsubscribe");
+    assert_eq!(
+        unsubscribed["params"]["threadId"],
+        asked["params"]["threadId"]
+    );
+    assert_eq!((conversation(&s.core, session), listed(&s.core)), before);
+    assert_eq!(s.core.resume_id(session), Some(thread));
+    assert!(
+        s.events
+            .try_recv()
+            .iter()
+            .all(|e| !matches!(e, CoreEvent::AgentState { .. })),
+        "the side question set a state"
+    );
+}
+
 /// What the app server replies to `account/rateLimits/read` for a plan with two windows.
 fn two_windows() -> Value {
     json!({"rateLimits": {
@@ -1255,6 +1354,92 @@ fn an_api_key_account_has_no_plan_limits_and_the_core_never_reads_them() {
     assert_eq!(
         s.core.usage_reading(Agent::Codex).map(|r| r.limits),
         Some(PlanLimits::NoPlanLimits)
+    );
+}
+
+#[test]
+fn ending_a_side_question_stops_its_forks_turn_and_what_the_fork_says_later_never_reaches_the_session()
+ {
+    let mut s = setup(json!([
+        wait("turn/start"),
+        turn_started(),
+        text_delta("working"),
+        wait("thread/fork"),
+        wait("turn/start"),
+        fork_notify("turn/started", fork_turn("inProgress")),
+        fork_delta("so far"),
+        wait("thread/unsubscribe"),
+        // Already on their way when the side question ended.
+        fork_delta(" too late"),
+        fork_notify("turn/completed", fork_turn("interrupted")),
+        text_delta(" on it"),
+        turn_completed("completed", Value::Null),
+    ]));
+    let session = s.spawn(None);
+    let mut frames = Frames::subscribe(&s.core, session);
+    s.core.send_message(session, "go").unwrap();
+    s.state(session, AgentState::Working);
+    frames.until("the turn's first text", |m| m == &delta("working"));
+
+    let (id, mut answer) = ask(&s.core, session, "how far along?");
+    answer.until("the answer's first text", |m| m == &delta("so far"));
+    s.core.end_side_question(session, id);
+
+    assert_eq!(frames.until_turn_end(), TurnOutcome::Completed);
+    // The fork's late turn end did not end the session's turn: its next state is its own end.
+    s.state(session, AgentState::Done);
+    assert_eq!(
+        untimed(conversation_only(frames.messages)),
+        [
+            AgentMessage::User { text: "go".into() },
+            started(),
+            delta("working"),
+            delta(" on it"),
+            completed(),
+        ]
+    );
+    assert_eq!(untimed(answer.messages), [started(), delta("so far")]);
+    let interrupt = s.wait_request("turn/interrupt");
+    let unsubscribed = s.wait_request("thread/unsubscribe");
+    assert_eq!(
+        interrupt["params"]["threadId"],
+        unsubscribed["params"]["threadId"]
+    );
+    assert_ne!(
+        Some(interrupt["params"]["threadId"].as_str().unwrap().to_owned()),
+        s.core.resume_id(session)
+    );
+}
+
+#[test]
+fn an_approval_a_side_questions_fork_asks_for_is_declined_and_never_shown() {
+    let mut s = setup(json!([
+        wait("thread/fork"),
+        wait("turn/start"),
+        fork_notify("turn/started", fork_turn("inProgress")),
+        send(
+            json!({"id": 7, "method": "item/commandExecution/requestApproval",
+            "params": {"threadId": "{{fork_thread_id}}", "turnId": "{{fork_turn_id}}",
+                       "itemId": "call_f", "command": "rm -rf build"}})
+        ),
+        wait("response"),
+        fork_notify("turn/completed", fork_turn("completed")),
+    ]));
+    let session = s.spawn(None);
+    s.wait_thread(session);
+
+    let (_, mut answer) = ask(&s.core, session, "can you clean up?");
+
+    assert_eq!(answer.until_turn_end(), TurnOutcome::Completed);
+    assert_eq!(s.wait_reply(7)["result"], json!({"decision": "decline"}));
+    assert_eq!(untimed(answer.messages), [started(), completed()]);
+    assert_eq!(conversation(&s.core, session), []);
+    assert!(
+        s.events
+            .try_recv()
+            .iter()
+            .all(|e| !matches!(e, CoreEvent::AgentState { .. })),
+        "the fork's approval set a state"
     );
 }
 

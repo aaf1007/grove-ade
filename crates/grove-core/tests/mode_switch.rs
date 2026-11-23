@@ -847,3 +847,29 @@ fn claude_a_chosen_model_runs_in_the_tui_and_back_in_chat_mode() {
 fn codex_a_chosen_model_runs_in_the_tui_and_back_in_chat_mode() {
     a_chosen_model_runs_in_the_tui_and_back_in_chat_mode(Agent::Codex);
 }
+
+fn a_side_question_is_refused_in_terminal_mode_with_the_reason(agent: Agent) {
+    let s = setup(agent, Vec::new(), vec![json!({"wait_input": "never"})]);
+    let session = s.spawn(Mode::Terminal);
+
+    let refused = s
+        .core
+        .ask_side_question(session, "why?", unbounded_channel().0)
+        .unwrap_err();
+
+    assert!(matches!(refused, CoreError::NotInChatMode(id) if id == session));
+    assert_eq!(
+        refused.to_string(),
+        format!("session {session} is not an agent session in chat mode")
+    );
+}
+
+#[test]
+fn claude_a_side_question_is_refused_in_terminal_mode_with_the_reason() {
+    a_side_question_is_refused_in_terminal_mode_with_the_reason(Agent::Claude);
+}
+
+#[test]
+fn codex_a_side_question_is_refused_in_terminal_mode_with_the_reason() {
+    a_side_question_is_refused_in_terminal_mode_with_the_reason(Agent::Codex);
+}

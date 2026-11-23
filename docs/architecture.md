@@ -80,6 +80,8 @@ impl Core {
     pub fn send_message(&self, s: SessionId, text: &str) -> Result<()>;
     pub fn answer(&self, s: SessionId, request: RequestId, reply: Reply) -> Result<()>; // approval or question
     pub fn interrupt(&self, s: SessionId) -> Result<()>;
+    pub fn ask_side_question(&self, s: SessionId, question: &str, answer_sink: MessageSink) -> Result<SideQuestionId>; // answered in a fork of the conversation, in place of the session's earlier side question; NotInChatMode in terminal mode
+    pub fn end_side_question(&self, s: SessionId, side_question: SideQuestionId); // ends its fork; nothing once it has ended
     pub fn set_model(&self, s: SessionId, model: &str, effort: Option<&str>) -> Result<()>; // from the next turn, saved with the session
     pub fn model_choice(&self, s: SessionId) -> Result<Option<ModelChoice>>; // what set_model saved; every launch in either mode applies it
     pub async fn models(&self, s: SessionId) -> Result<Vec<ModelInfo>>; // the agent's own list, with each model's efforts
@@ -188,6 +190,12 @@ ADR 0013 and 0015 decided this section. Details marked "M4" are settled by the M
   - The UI draws a card. `answer` sends allow once, allow for this session, or deny, or the chosen answer.
 - Model and effort: set in the composer's picker; the profile gives the defaults. Claude uses `setModel` and `applyFlagSettings({ effortLevel })`. Codex takes them on the next `turn/start`. The models come from each agent. Effort is a plain string the agent defines, not a fixed list, since Codex has levels such as `ultra`. The agent is fixed after the first message.
 - Slash commands: Claude's `supportedCommands()` fills the `/` menu, and the sidecar sends it again when it changes. For Codex the menu lists the enabled skills from `skills/list`, asked for again on `skills/changed`, and picking one puts `$name` in the composer, as Codex runs skills. Anything chat mode cannot do, the user does in terminal mode.
+- Side questions: `ask_side_question` asks the agent in a fork of the session's conversation, made through the agent's own protocol, so grove calls no model itself (ADR 0015) and starts no session (ADR 0006).
+  - Claude: the sidecar runs a second SDK query with `resume`, `forkSession` and `persistSession: false`, with no grove hooks and no `grove-mcp`. Only `Read`, `Grep` and `Glob` run in it.
+  - Codex: `thread/fork` with `ephemeral`, a read-only sandbox and approval policy `never`, then `turn/start` on the fork. The core tells the fork's notifications from the session's by `threadId`, and declines any request the fork makes. `turn/interrupt` and `thread/unsubscribe` end it.
+  - The answer is `TurnStarted`, `TextDelta` and `TurnEnded` messages on the side question's own `MessageSink`, batched with the session's frames. It never joins the conversation or the history, and sets no agent state. A fork that cannot start ends its answer with a failed `TurnEnded`.
+  - One side question is open per session. A new one takes its place. The fork ends when its answer is whole, on `end_side_question`, or with the session's process. It is never listed by `agent_sessions` and never saved.
+  - The UI opens it with Cmd-; in a popover over the composer. Esc there closes the popover and ends the fork, and never stops the turn.
 - Messages not delivered: the core keeps each message sent until the agent starts a turn on it. If the process ends first, the conversation gets a `NotDelivered` entry for it, and a review batch's comments go back to `Open`.
 - Switching mode: `set_mode` is refused while the session is `Working` or `NeedsInput`, or with `MessagePending` while a sent message has no turn started yet. A send that comes during the switch fails with `SwitchingMode`. It ends the current process and resumes the same conversation in the other mode with the resume id. Chat mode shows the history from the agent's own record: the turns in Codex's `thread/resume` reply, the same ones `thread/read` returns, and for Claude the sidecar's `history`, which it reads with the Agent SDK's `getSessionMessages`. `set_mode` returns once the history is in.
 - Account: each transport reports who is logged in and on which plan, or that an API key is in use. grove shows it and never stores credentials.

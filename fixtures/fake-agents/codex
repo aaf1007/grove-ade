@@ -347,6 +347,8 @@ class AppServer:
         self.initialized = False
         self.thread = None
         self.turn = None
+        # Each fork of the thread, with its running turn or None.
+        self.forks = {}
         self.rate_limit_reads = 0
         threading.Thread(target=self.read, daemon=True).start()
 
@@ -447,16 +449,43 @@ class AppServer:
             self.send({"id": rid, "result": {"thread": dict(thread, turns=turns), "model": "gpt-5.5", "modelProvider": "openai",
                                              "cwd": os.getcwd(), "approvalPolicy": "on-request"}})
             return self.send({"method": "thread/started", "params": {"thread": thread}})
-        if method == "turn/start":
+        if method == "thread/fork":
             if not self.thread or params.get("threadId") != self.thread:
-                return self.error(rid, f"turn/start: no thread {params.get('threadId')!r}")
-            if self.turn:
-                return self.error(rid, "turn/start: the fake runs one turn at a time")
+                return self.error(rid, f"thread/fork: no thread {params.get('threadId')!r}")
+            fork = self.slots["fork_thread_id"] = str(uuid.uuid4())
+            self.forks[fork] = None
+            thread = {"id": fork, "sessionId": fork, "forkedFromId": self.thread, "cwd": os.getcwd(),
+                      "cliVersion": VERSION, "ephemeral": bool(params.get("ephemeral")),
+                      "status": {"type": "idle"}, "turns": []}
+            self.send({"id": rid, "result": {"thread": thread, "model": self.slots["model"], "modelProvider": "openai",
+                                             "cwd": os.getcwd(),
+                                             "approvalPolicy": params.get("approvalPolicy") or "on-request"}})
+            return self.send({"method": "thread/started", "params": {"thread": thread}})
+        if method == "thread/unsubscribe":
+            fork = params.get("threadId")
+            if fork not in self.forks:
+                return self.send({"id": rid, "result": {"status": "notLoaded"}})
+            # Like the real server, a thread nobody listens to closes.
+            del self.forks[fork]
+            self.send({"id": rid, "result": {"status": "unsubscribed"}})
+            return self.send({"method": "thread/closed", "params": {"threadId": fork}})
+        if method == "turn/start":
             text = params.get("input")
+            fork = params.get("threadId")
+            if fork not in self.forks and (not self.thread or fork != self.thread):
+                return self.error(rid, f"turn/start: no thread {fork!r}")
+            if self.forks.get(fork) if fork in self.forks else self.turn:
+                return self.error(rid, "turn/start: the fake runs one turn at a time")
             if not (isinstance(text, list) and text and all(
                     isinstance(i, dict) and i.get("type") == "text" and isinstance(i.get("text"), str)
                     and isinstance(i.get("text_elements"), list) for i in text)):
                 return self.error(rid, f"turn/start: want text input with text_elements: {text!r}")
+            if fork in self.forks:
+                # A fork's turn leaves the thread's own turn, model and text as they are.
+                turn = self.forks[fork] = self.slots["fork_turn_id"] = str(uuid.uuid4())
+                self.slots["fork_text"] = text[0]["text"]
+                return self.send({"id": rid, "result": {"turn": {"id": turn, "items": [], "status": "inProgress",
+                                                                 "error": None}}})
             # Like Codex, a model or effort given here holds for this turn and the later ones.
             model = params.get("model") or self.slots["model"]
             effort = params.get("effort") or self.slots["effort"]
@@ -470,6 +499,10 @@ class AppServer:
             return self.send({"id": rid, "result": {"turn": {"id": self.turn, "items": [], "status": "inProgress",
                                                              "error": None}}})
         if method == "turn/interrupt":
+            if params.get("threadId") in self.forks:
+                if not params.get("turnId") or self.forks[params["threadId"]] != params["turnId"]:
+                    return self.error(rid, f"turn/interrupt: no turn {params.get('turnId')!r} running")
+                return self.send({"id": rid, "result": {}})
             if not self.turn or params.get("threadId") != self.thread or params.get("turnId") != self.turn:
                 return self.error(rid, f"turn/interrupt: no turn {params.get('turnId')!r} running")
             return self.send({"id": rid, "result": {}})
@@ -496,7 +529,11 @@ class AppServer:
                 with self.cond:
                     msg = fill(step["send"], self.slots)
                     if msg.get("method") == "turn/completed":
-                        self.turn = None
+                        thread = (msg.get("params") or {}).get("threadId")
+                        if thread in self.forks:
+                            self.forks[thread] = None
+                        elif thread in (None, self.thread):
+                            self.turn = None
                 self.send(msg)
             elif "wait_message" in step:
                 self.wait_message(step["wait_message"])
@@ -530,7 +567,8 @@ def run(args, log):
         # A variable of its own, as the hook check runs the app server beside the TUI.
         steps = load_scenario("FAKE_CODEX_APP_SERVER_SCENARIO", DATA, APP_SERVER_ACTIONS) \
             if os.environ.get("FAKE_CODEX_APP_SERVER_SCENARIO") else []
-        return AppServer(hooks, trust, {**slots, "thread_id": "", "turn_id": ""}, log).play(steps)
+        return AppServer(hooks, trust, {**slots, "thread_id": "", "turn_id": "", "fork_thread_id": "", "fork_turn_id": "",
+                                        "fork_text": ""}, log).play(steps)
     steps = load_scenario("FAKE_CODEX_SCENARIO", DATA)
     # Hooks get the fake's own environment. shell_environment_policy does not apply to them.
     shell = [os.environ.get("SHELL", "/bin/sh"), "-lc"]

@@ -18,7 +18,7 @@ export interface WindowShortcut extends ShortcutText {
 
 /** A key that works with focus in an agent panel, on that panel's agent session. */
 export interface PanelShortcut extends ShortcutText {
-  id: "stopTurn" | "pickModel" | "pickEffort" | "switchMode";
+  id: "stopTurn" | "sideQuestion" | "pickModel" | "pickEffort" | "switchMode";
   when: "agentPanel";
 }
 
@@ -41,6 +41,8 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: "jump", keys: "Meta+J", label: "Needs you", group: "Agent sessions", when: "anywhere" },
   // It stops a turn in chat mode only. In terminal mode Esc goes to the agent's TUI.
   { id: "stopTurn", keys: "Escape", label: "Stop the turn", group: TURN, when: "agentPanel" },
+  // It works in chat mode only: a side question forks the conversation over the agent's protocol.
+  { id: "sideQuestion", keys: "Meta+;", label: "Ask a side question", group: TURN, when: "agentPanel" },
   { id: "pickModel", keys: "Shift+Meta+I", label: "Open the model list", group: TURN, when: "agentPanel" },
   { id: "pickEffort", keys: "Shift+Meta+E", label: "Open the effort list", group: TURN, when: "agentPanel" },
   { id: "switchMode", keys: "Shift+Meta+M", label: "Switch chat mode and terminal mode", group: TURN, when: "agentPanel" },

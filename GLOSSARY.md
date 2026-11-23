@@ -23,6 +23,7 @@ Use these terms exactly. If a new concept appears, add it here in the same PR.
 | Chat mode | An agent session driven through its protocol (the Claude sidecar or `codex app-server`), with grove drawing the messages, tool calls, approvals and questions. The default. |
 | Terminal mode | An agent session running as the agent's real TUI in a PTY. It resumes the same conversation as chat mode. A conversation runs in one mode at a time. |
 | Turn | One message to an agent session (from the user, or a review batch) and the agent's work until it stops. |
+| Side question | A question to the agent of an agent session in chat mode that stays out of its conversation. The agent answers it in a fork of the conversation, made through its own protocol, and the fork can only read. The answer shows in a popover over the composer. The fork is not a session: it is never listed or saved, and it ends when the popover closes. Not available in terminal mode. _Avoid_: side chat, subagent. |
 | Claude sidecar | The Node program that runs the Claude Agent SDK for one agent session in chat mode and talks to the core over stdio. |
 | Shell session | A plain interactive shell in an agent session's place. |
 | Run session | A named command from the profile (dev server, tests), started in one place. It may record a port. |

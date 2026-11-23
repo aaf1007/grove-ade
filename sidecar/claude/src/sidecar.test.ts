@@ -1,6 +1,7 @@
 import type {
   AccountInfo,
   CanUseTool,
+  HookCallback,
   ModelInfo,
   Options,
   PermissionResult,
@@ -50,6 +51,8 @@ function start(
   const core = new Inbox<string>();
   const out: Record<string, unknown>[] = [];
   let params: { prompt: AsyncIterable<SDKUserMessage>; options: Options } | undefined;
+  // Every query after the first is a side question's fork.
+  const forks: ReturnType<typeof fork>[] = [];
   const q = {
     [Symbol.asyncIterator]: () => sdk[Symbol.asyncIterator](),
     interrupt: vi.fn(async () => undefined),
@@ -68,6 +71,11 @@ function start(
   };
   const done = run({ ...launch, ...overrides }, {
     query: (p) => {
+      if (params) {
+        const forked = fork(p);
+        forks.push(forked);
+        return forked.query;
+      }
       params = p;
       return q as unknown as Query;
     },
@@ -82,6 +90,8 @@ function start(
     out,
     done,
     options,
+    /** The side questions' forks, in the order they were made. */
+    forks,
     /** The core writes a line to the sidecar's stdin. */
     send: (line: object) => core.push(JSON.stringify(line)),
     sendRaw: (line: string) => core.push(line),
@@ -113,6 +123,29 @@ function start(
 }
 
 const USAGE = "usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET";
+
+/** A stubbed `query` for a side question's fork. The test plays the SDK. */
+function fork(params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) {
+  const sdk = new Inbox<SDKMessage>();
+  let failure: Error | undefined;
+  async function* messages() {
+    yield* sdk;
+    if (failure) throw failure;
+  }
+  const close = vi.fn(() => sdk.close());
+  return {
+    options: params.options,
+    prompt: params.prompt,
+    close,
+    query: { [Symbol.asyncIterator]: messages, close } as unknown as Query,
+    yields: (message: object) => sdk.push(message as SDKMessage),
+    /** The fork's process ends on an error. */
+    fails: (error: Error) => {
+      failure = error;
+      sdk.close();
+    },
+  };
+}
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -944,5 +977,196 @@ describe("the SDK", () => {
     const s = start();
     s.q.close();
     await expect(s.done).rejects.toThrow(/ended/);
+  });
+});
+
+describe("a side question", () => {
+  const side = (id: number, message: object) => ({ type: "side", id, message });
+  const starts = { type: "stream_event", event: { type: "message_start" }, parent_tool_use_id: null };
+  const delta = (text: string, parent: string | null = null) => ({
+    type: "stream_event",
+    event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+    parent_tool_use_id: parent,
+  });
+  const withRecord = () => start({}, ann, async () => models, async () => [recorded("user", "fix the parser")]);
+  /** What the sidecar wrote for side questions. */
+  const sides = (s: ReturnType<typeof start>) => s.out.filter((m) => m.type === "side");
+
+  /** A sidecar with side question `id` asked and its fork made. */
+  async function asked(id = 3, s = withRecord()) {
+    s.send({ type: "side_question", id, text: "what is 6 x 7?" });
+    await vi.waitFor(() => expect(s.forks).toHaveLength(1));
+    return s;
+  }
+
+  it("forks the conversation on resume, saves no record, and gets neither grove's hooks nor its MCP server", async () => {
+    const s = await asked();
+    const { options, prompt } = s.forks[0];
+    expect(options).toMatchObject({
+      resume: launch.sessionId,
+      forkSession: true,
+      persistSession: false,
+      cwd: "/repo/worktrees/fix-parser",
+      settingSources: ["user", "project", "local"],
+      systemPrompt: { type: "preset", preset: "claude_code" },
+      pathToClaudeCodeExecutable: "/Users/ann/.local/bin/claude",
+      includePartialMessages: true,
+    });
+    expect(options).not.toHaveProperty("settings");
+    expect(options).not.toHaveProperty("extraArgs");
+    expect(options).not.toHaveProperty("sessionId");
+    for await (const message of prompt) {
+      expect(message.message.content).toBe("what is 6 x 7?");
+      break;
+    }
+    // The session's own query is the one before, and it got nothing.
+    expect(s.options()).not.toHaveProperty("forkSession");
+    expect(s.out.filter((m) => m.type === "turn_start")).toEqual([]);
+  });
+
+  it("starts with no history when the conversation has no record yet", async () => {
+    const s = await asked(3, start());
+    expect(s.forks[0].options).toMatchObject({ persistSession: false });
+    expect(s.forks[0].options).not.toHaveProperty("resume");
+    expect(s.forks[0].options).not.toHaveProperty("forkSession");
+  });
+
+  it("forks the id the conversation has now, as after /clear", async () => {
+    const s = withRecord();
+    s.yields({ ...assistant([{ type: "text", text: "cleared" }]), session_id: "7c1d7f0e-2a54-4b0e-9d7a-0d6c1b8d3e21" });
+    await settle();
+    await asked(3, s);
+    expect(s.forks[0].options.resume).toBe("7c1d7f0e-2a54-4b0e-9d7a-0d6c1b8d3e21");
+  });
+
+  it("runs on the model and effort the session was set to", async () => {
+    const s = withRecord();
+    s.send({ type: "set_model", model: "opus", effort: "high" });
+    await asked(3, s);
+    expect(s.forks[0].options).toMatchObject({ model: "opus", effort: "high" });
+  });
+
+  it("streams the fork's text under its id, a new paragraph per message, and ends with the result", async () => {
+    const s = await asked();
+    const [forked] = s.forks;
+    forked.yields(starts);
+    forked.yields(delta("For"));
+    forked.yields(delta("hidden", "toolu_09"));
+    forked.yields(delta("ty-two"));
+    forked.yields(assistant([{ type: "tool_use", id: "toolu_1", name: "Read", input: {} }]));
+    forked.yields(starts);
+    forked.yields(delta("Checked."));
+    forked.yields(result());
+    await vi.waitFor(() => expect(forked.close).toHaveBeenCalled());
+    expect(sides(s)).toEqual([
+      side(3, { type: "turn_start" }),
+      side(3, { type: "text_delta", text: "For" }),
+      side(3, { type: "text_delta", text: "ty-two" }),
+      side(3, { type: "text_delta", text: "\n\n" }),
+      side(3, { type: "text_delta", text: "Checked." }),
+      side(3, { type: "turn_end" }),
+    ]);
+  });
+
+  it("only reads: every tool but Read, Grep and Glob is denied, and so is one that would ask", async () => {
+    const s = await asked();
+    const { options } = s.forks[0];
+    const [hook] = options.hooks!.PreToolUse![0].hooks as HookCallback[];
+    const decides = async (tool: string) => {
+      const input = { hook_event_name: "PreToolUse", tool_name: tool, tool_input: {}, tool_use_id: "t" };
+      const output = await hook(input as Parameters<HookCallback>[0], "t", { signal: new AbortController().signal });
+      return (output as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision;
+    };
+    expect(await Promise.all(["Read", "Grep", "Glob"].map(decides))).toEqual([undefined, undefined, undefined]);
+    expect(await Promise.all(["Bash", "Edit", "Write", "Task", "mcp__grove__subagent_spawn"].map(decides))).toEqual(
+      Array(5).fill("deny"),
+    );
+    const asks = (options.canUseTool as CanUseTool)("Read", { file_path: "/etc/hosts" }, {
+      signal: new AbortController().signal,
+      toolUseID: "t",
+      requestId: "r",
+    });
+    expect(await asks).toMatchObject({ behavior: "deny" });
+    expect(s.out.filter((m) => m.type === "approval_request")).toEqual([]);
+  });
+
+  it("an error result ends the answer with the error", async () => {
+    const s = await asked();
+    s.forks[0].yields(assistant([{ type: "text", text: "API Error: 529 overloaded" }], { error: "overloaded" }));
+    s.forks[0].yields(result({ is_error: true }));
+    await vi.waitFor(() =>
+      expect(s.out.at(-1)).toEqual(side(3, { type: "turn_end", error: { kind: "overloaded", message: "API Error: 529 overloaded" } })),
+    );
+  });
+
+  it("a fork that ends without a result ends the answer failed", async () => {
+    const s = await asked();
+    s.forks[0].fails(new Error("No conversation found with session ID"));
+    await vi.waitFor(() =>
+      expect(s.out.at(-1)).toEqual(
+        side(3, { type: "turn_end", error: { kind: "fork", message: "No conversation found with session ID" } }),
+      ),
+    );
+    // The next one gets a fork of its own.
+    s.send({ type: "side_question", id: 4, text: "again?" });
+    await vi.waitFor(() => expect(s.forks).toHaveLength(2));
+  });
+
+  it("end_side_question closes the fork, and what the fork says later is dropped", async () => {
+    const s = await asked();
+    const [forked] = s.forks;
+    forked.yields(delta("so far"));
+    await vi.waitFor(() => expect(sides(s)).toHaveLength(2));
+    s.send({ type: "end_side_question", id: 9 });
+    await settle();
+    expect(forked.close).not.toHaveBeenCalled();
+
+    s.send({ type: "end_side_question", id: 3 });
+    await vi.waitFor(() => expect(forked.close).toHaveBeenCalled());
+    await settle();
+
+    forked.yields(delta(" too late"));
+    await settle();
+    expect(sides(s)).toEqual([side(3, { type: "turn_start" }), side(3, { type: "text_delta", text: "so far" })]);
+  });
+
+  it("a new side question closes the fork of the one before", async () => {
+    const s = await asked();
+    s.send({ type: "side_question", id: 4, text: "and 7 x 8?" });
+    await vi.waitFor(() => expect(s.forks).toHaveLength(2));
+    expect(s.forks[0].close).toHaveBeenCalled();
+    s.forks[1].yields(delta("56"));
+    await vi.waitFor(() => expect(s.out.at(-1)).toEqual(side(4, { type: "text_delta", text: "56" })));
+  });
+
+  it("one ended while its fork was being made starts no fork", async () => {
+    let release: (record: SessionMessage[]) => void = () => {};
+    const reading = new Promise<SessionMessage[]>((resolve) => (release = resolve));
+    const s = start({}, ann, async () => models, () => reading);
+    s.send({ type: "side_question", id: 3, text: "why?" });
+    s.send({ type: "end_side_question", id: 3 });
+    await settle();
+    release([recorded("user", "fix the parser")]);
+    await settle();
+    expect(s.forks).toEqual([]);
+    expect(sides(s)).toEqual([]);
+  });
+
+  it("leaves the session's own turn running, and ends with stdin", async () => {
+    const s = withRecord();
+    s.send({ type: "user_message", text: "go" });
+    await asked(3, s);
+    s.forks[0].yields(delta("aside"));
+    s.forks[0].yields(result());
+    await vi.waitFor(() => expect(sides(s).at(-1)).toEqual(side(3, { type: "turn_end" })));
+    s.yields(delta("on it"));
+    await vi.waitFor(() => expect(s.out.at(-1)).toEqual({ type: "text_delta", text: "on it" }));
+    expect(s.out.filter((m) => m.type === "turn_end")).toEqual([]);
+
+    s.send({ type: "side_question", id: 4, text: "still?" });
+    await vi.waitFor(() => expect(s.forks).toHaveLength(2));
+    s.endStdin();
+    await s.done;
+    expect(s.forks[1].close).toHaveBeenCalled();
   });
 });

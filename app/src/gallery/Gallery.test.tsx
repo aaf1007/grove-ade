@@ -43,6 +43,15 @@ test("the gallery shows every component, every agent state, and switches between
   fireEvent.change(composer, { target: { value: "/" } });
   expect(within(screen.getByRole("listbox", { name: "Commands" })).getAllByRole("option")).toHaveLength(5);
 
+  // Cmd-; there opens the side question popover, and the gallery's agent answers.
+  fireEvent.change(composer, { target: { value: "" } });
+  fireEvent.keyDown(composer, { key: ";", metaKey: true });
+  const sideQuestion = screen.getByRole("dialog", { name: "Side question" });
+  const asked = within(sideQuestion).getByRole("textbox", { name: "Side question" });
+  fireEvent.change(asked, { target: { value: "Which test covers the lexer fix?" } });
+  await act(async () => fireEvent.keyDown(asked, { key: "Enter" }));
+  expect(await within(sideQuestion).findByText(/It fails on/)).toBeTruthy();
+
   fireEvent.click(within(screen.getByRole("group", { name: "Theme" })).getByRole("button", { name: "Light" }));
 
   expect(document.documentElement.dataset.theme).toBe("light");
