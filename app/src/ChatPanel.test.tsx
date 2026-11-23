@@ -1452,6 +1452,25 @@ test("the card's keys still answer while focus is on Show full input", async () 
   expect(answer).toHaveBeenCalledWith("0", "toolu_01", { type: "AllowOnce" });
 });
 
+test("Esc and Enter on Show full input answer nothing, stop nothing and leave it as it is", async () => {
+  const bridge = await asked({ ...approval, input: { command: "npm test", timeout: 600000 } });
+  const answer = vi.spyOn(bridge, "answer");
+  const show = within(approvalCard()).getByRole("button", { name: "Show full input" });
+  fireEvent.click(show);
+  show.focus();
+
+  for (const key of ["Escape", "Enter"]) {
+    // Not prevented, so the browser still presses the button on Enter.
+    expect(fireEvent.keyDown(show, { key })).toBe(true);
+  }
+  await settle();
+
+  expect(answer).not.toHaveBeenCalled();
+  expect(bridge.interrupted).toEqual([]);
+  expect(show.getAttribute("aria-expanded")).toBe("true");
+  expect(approvalCard().contains(show)).toBe(true);
+});
+
 test("an approval with no tool call of its own shows its own row", async () => {
   await asked({ ...approval, request: "item_7", tool: "commandExecution", input: { command: "ls -la" } });
 

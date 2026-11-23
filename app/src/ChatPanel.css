@@ -279,6 +279,8 @@ button.tool:hover {
   margin: var(--space-8) 0 0;
   padding: var(--space-8) var(--space-10);
   overflow: auto;
+  /* Scrolling past its end does not scroll the page, which can overflow in a short window. */
+  overscroll-behavior: contain;
   border-radius: var(--radius-lg);
   background: var(--bg);
   font: var(--text-code-sm);
