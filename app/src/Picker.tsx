@@ -95,19 +95,19 @@ export function AgentMark({ agent }: { agent: Agent }) {
   );
 }
 
-/** A list of the popover that a shortcut opens it on. */
+/** A list in the popover that a shortcut can open it on. */
 export type PickerList = "model" | "effort";
 
 /** What the picker's owner can ask of it. */
 export interface PickerHandle {
   /**
    * Opens the popover on `list`, or moves an open one to it. Focus goes to the list's current
-   * item, and a digit 1 to 9 picks that item of the list and closes the popover.
+   * item. A digit 1 to 9 picks the item at that place in the list and closes the popover.
    */
   openOn(list: PickerList): void;
 }
 
-// The buttons of each list, in the popover.
+// A selector for each list's buttons in the popover.
 const LIST_ITEMS: Record<PickerList, string> = {
   model: "button[data-picker-list=model]",
   effort: "[role=group][aria-label=Effort] button",
@@ -162,7 +162,8 @@ export function Picker({
     },
   }));
 
-  // Focus in the popover would go away with it, so it goes back to what had it, or to the button.
+  // The popover takes its focused item away with it, so focus goes back to the opener, or to the
+  // button.
   function close() {
     if (pop.current?.contains(document.activeElement)) {
       (opener.current?.isConnected ? opener.current : button.current)?.focus();
@@ -206,8 +207,8 @@ export function Picker({
     }
   });
 
-  // Keys go in the capture phase, and are taken, so Escape closes the popover and nothing behind
-  // it, and a digit types nothing.
+  // The popover takes its keys in the capture phase, so Escape closes it and nothing behind it,
+  // and a digit types nothing.
   useEffect(() => {
     if (!open) return;
     const outside = (event: MouseEvent) => {

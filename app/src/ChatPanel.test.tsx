@@ -2251,7 +2251,7 @@ test("Esc during a turn sends one interrupt, as the stop button does", async () 
   await shownPanel(bridge, { state: working("Working") });
 
   expect(press("stopTurn", composer())).toBe(true);
-  // A held key repeats. The turn is still stopped once.
+  // A held key repeats, and still stops the turn once.
   press("stopTurn", composer(), { repeat: true });
   // The Esc that ends an input method's composition is not grove's.
   expect(press("stopTurn", composer(), { isComposing: true })).toBe(false);
@@ -2469,7 +2469,7 @@ test("Cmd-Shift-M switches the mode as the Chat and Terminal switch does, and ba
 
   expect(bridge.modesSet.at(-1)).toEqual({ session: "0", mode: "Chat" });
   expect(terminal()).toBeNull();
-  // The keyboard is in the composer again, so the next shortcut reaches the panel.
+  // Focus is in the composer again, so the next shortcut reaches the panel.
   expect(document.activeElement).toBe(composer());
 });
 

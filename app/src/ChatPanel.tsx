@@ -167,7 +167,7 @@ export function ChatPanel({
     />
   );
   const reportMode = useEffectEvent((mode: Mode) => onMode?.(mode));
-  // None in terminal mode, where the keys of the turn and the composer belong to the agent's TUI.
+  // Null in terminal mode, where the agent's TUI takes the keys of the turn and the composer.
   const chat = useRef<ChatHandle>(null);
 
   useEffect(() => {
@@ -760,7 +760,7 @@ function ChatView({
     (approvalCard.current ?? composer.current!).focus();
   }, [focusRequest, shown, historyLoaded]);
 
-  // The view a mode switch opens takes the keyboard, as the TUI does in terminal mode.
+  // The view a mode switch opens takes focus, as the TUI does in terminal mode.
   const focusAfterSwitch = useEffectEvent(() => {
     if (resumed && shown) composer.current!.focus();
   });

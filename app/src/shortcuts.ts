@@ -39,7 +39,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: "search", keys: "Meta+K", label: "Search", group: "Agent sessions", when: "unclaimed" },
   // Plain Ctrl-J is a newline in a terminal, so Cmd-J is free to come first.
   { id: "jump", keys: "Meta+J", label: "Needs you", group: "Agent sessions", when: "anywhere" },
-  // In chat mode only. In terminal mode Esc belongs to the agent's TUI.
+  // It stops a turn in chat mode only. In terminal mode Esc goes to the agent's TUI.
   { id: "stopTurn", keys: "Escape", label: "Stop the turn", group: TURN, when: "agentPanel" },
   { id: "pickModel", keys: "Shift+Meta+I", label: "Open the model list", group: TURN, when: "agentPanel" },
   { id: "pickEffort", keys: "Shift+Meta+E", label: "Open the effort list", group: TURN, when: "agentPanel" },
