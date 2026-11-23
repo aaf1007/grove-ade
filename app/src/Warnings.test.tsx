@@ -32,15 +32,30 @@ test("a watcher that could not start shows its worktree and the cause", async ()
   );
 });
 
-test("Retry retries the worktree's watcher and the warning goes once it starts", async () => {
+test("Retry starts the watcher and its warning stays gone after a reload", async () => {
   const bridge = await unwatchedBridge();
-  render(<Warnings bridge={bridge} />);
+  const view = render(<Warnings bridge={bridge} />);
 
   fireEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "Retry" }));
 
   expect(bridge.watcherRetries).toEqual([feature]);
   await act(async () => {});
   expect(screen.queryByRole("status")).toBeNull();
+  view.unmount();
+  render(<Warnings bridge={bridge} />);
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+test("forgetting a worktree clears its bar and a reload keeps the unrelated warning", async () => {
+  const bridge = await unwatchedBridge();
+  bridge.warn({ kind: "SessionNotRestored", worktree: feature, reason: "command missing" });
+  const view = render(<Warnings bridge={bridge} />);
+  expect(screen.getAllByRole("status")).toHaveLength(2);
+  await act(() => bridge.forgetWorktree(feature));
+  expect(screen.getByRole("status").textContent).toContain("command missing");
+  view.unmount();
+  render(<Warnings bridge={bridge} />);
+  expect(screen.getByRole("status").textContent).toContain("command missing");
 });
 
 test("a failed Retry keeps the warning and shows the new cause", async () => {
@@ -61,7 +76,7 @@ test("Codex hooks that are not approved show the worktree and say to approve the
   render(<Warnings bridge={bridge} />);
 
   expect(screen.getByRole("status").querySelector("p")!.textContent).toBe(
-    `Codex is not running grove's hooks in ${feature}, so grove guesses the session's state. Approve the hooks in Codex's /hooks.`,
+    `Codex is not running grove's hooks for session 7 in ${feature}, so grove guesses the session's state. Approve the hooks in Codex's /hooks.`,
   );
 });
 

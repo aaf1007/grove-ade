@@ -47,6 +47,8 @@
 impl Core {
     pub fn start(cfg: CoreConfig) -> Result<(Core, broadcast::Receiver<CoreEvent>)>;
 
+    pub fn warnings(&self) -> Vec<ActiveWarning>; // active warnings, oldest first, each with its own id
+
     // worktrees
     pub async fn add_repo(&self, path: &Path) -> Result<()>; // adopts every worktree in `git worktree list`
     pub async fn create_worktree(&self, repo: &Path, req: NewWorktree) -> Result<AddedWorktree>; // the worktree and its setup's run session
@@ -136,12 +138,16 @@ pub enum CoreEvent {
     ProfilesChanged { by: Option<SessionId> }, // by Some: show the notice with Undo
     RepoSettingsChanged { repo: PathBuf, by: Option<SessionId> }, // a repo's profile pick or overrides changed
     Setup { worktree: PathBuf, setup: Setup }, // a worktree's setup started or ended
+    Warning(Warning),
+    WarningCleared { id: usize },
     Account { agent: AgentKind, account: Option<AccountInfo> }, // plan or API key as each agent reports it
 }
 ```
 - `AgentMessage` covers user and agent text (streamed as deltas), turn starts and ends (an end carries its error, if any), tool calls and results, file changes, approval and question requests, review batches, messages that never reached the agent, notices and errors. It also carries the agent's command list (`Commands`), which is never part of the conversation: the core keeps only the latest list, `subscribe` returns it after the history, and a new list goes out as a frame. Each subscribed agent panel gets its own `MessageSink`, batched like PTY output: at most one frame per 8 ms per session.
 - Run sessions start through `spawn_run`. The core records a run session's port, read with `port`, for the future port router.
 - `OutputSink` is a core type (a sender of `OutputFrame { seq, bytes }`), so the core never depends on Tauri (ADR 0002). src-tauri forwards each frame to that session's `ipc::Channel` as raw bytes.
+
+The UI subscribes before reading `warnings()` on each load. A `Warning` or `WarningCleared { id }` event prompts a fresh read. The core keeps one watcher warning per worktree until the watcher starts or the worktree leaves grove. A Codex hooks warning belongs to one terminal session until its first accepted hook or its process exits. Login shell and failed restore warnings last for the life of the core. Dismiss hides an occurrence in the current view.
 
 ## Output pipeline
 This pipeline carries every PTY session: shell, run and command sessions, and agent sessions in terminal mode.

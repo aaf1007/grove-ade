@@ -384,6 +384,9 @@ fn a_login_shell_that_does_not_exist_leaves_the_minimal_environment_and_a_warnin
     let (core, mut events, worktree) = start(dir.path(), config(dir.path(), Some(shell)));
 
     let reason = login_shell_warning(&mut events);
+    assert!(core.warnings().iter().any(|entry| matches!(
+        &entry.warning, Warning::LoginShellEnv { reason: active } if active == &reason
+    )));
     assert!(reason.contains("could not start"), "{reason}");
     let env = session_env(&core, &worktree);
     assert_eq!(env["PATH"], MINIMAL_PATH);

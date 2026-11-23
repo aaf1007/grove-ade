@@ -133,9 +133,10 @@ impl Core {
             self.events.clone(),
             self.state_file.clone(),
         );
+        let warnings = self.warnings.clone();
         let folder = path.clone();
         self.blocking(&path, move || {
-            let removing = removing;
+            let mut removing = removing;
             // Stop the watcher first, so the removal sends no `DiffChanged`.
             drop(lock(&watches).remove(&folder));
             let removed = (|| {
@@ -162,14 +163,15 @@ impl Core {
                         Err(start) => Some(watch::not_started(&folder, &start)),
                     };
                     // Unmarked first, so a retry finds the worktree.
-                    drop(removing);
-                    if let Some(warning) = failed {
-                        let _ = events.send(CoreEvent::Warning(warning));
-                    }
+                    removing.release(|| match failed {
+                        Some(warning) => warnings.raise(warning),
+                        None => warnings.clear_watcher(&folder),
+                    });
                     return Err(e);
                 }
             };
             // Before it leaves the list, so a worktree added at the same path keeps its own.
+            warnings.clear_watcher(&folder);
             comments.drop_worktree(&folder);
             let sessions = agents.drop_records_in(std::slice::from_ref(&folder));
             // The worktree is gone by now, so a folder that stays is only left behind.
@@ -312,6 +314,7 @@ impl Core {
             self.drop_stopped_runs(|w, _| w == path);
             self.drop_panels_in(path);
             self.comments.drop_worktree(path);
+            self.warnings.clear_watcher(path);
         }
         let sessions = self.agents.drop_records_in(&paths);
         untrack(&mut self.tracked(), |path| paths.iter().any(|p| p == path));
@@ -383,12 +386,20 @@ struct Removing {
     worktrees: Vec<PathBuf>,
 }
 
+impl Removing {
+    // Publish the outcome before a competing retry or removal can take the mark.
+    fn release(&mut self, publish: impl FnOnce()) {
+        let mut removing = lock(&self.marks);
+        for worktree in self.worktrees.drain(..) {
+            removing.remove(&worktree);
+        }
+        publish();
+    }
+}
+
 impl Drop for Removing {
     fn drop(&mut self) {
-        let mut removing = lock(&self.marks);
-        for worktree in &self.worktrees {
-            removing.remove(worktree);
-        }
+        self.release(|| {});
     }
 }
 

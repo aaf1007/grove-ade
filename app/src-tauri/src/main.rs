@@ -37,10 +37,6 @@ struct Grove(RwLock<Option<Core>>);
 /// until quit, because a panel still acks and detaches after its session exits.
 struct Sessions(Mutex<HashMap<String, SessionId>>);
 
-/// Every warning the core has sent, oldest first. The core sends some before the UI listens,
-/// such as the login shell's at start, so the UI asks for these as well.
-struct Warnings(Mutex<Vec<WarningSent>>);
-
 /// Each agent's latest login, as its sessions reported it. An agent reports it once a session
 /// starts, so the UI asks for these as well after a reload.
 struct Accounts(Mutex<Vec<AccountChanged>>);
@@ -808,13 +804,21 @@ struct AgentStateChanged {
     source: StateSource,
 }
 
-/// A warning from the core, sent as the `warning` event and listed by `warnings`. `id` is its
-/// place in that list. Mirrors `WarningSent` in `app/src/bridge.ts`.
+/// One active core warning, as the webview reads it from `warnings`.
 #[derive(Serialize, Clone)]
 struct WarningSent {
     id: usize,
     #[serde(flatten)]
     warning: Warning,
+}
+
+impl From<grove_core::ActiveWarning> for WarningSent {
+    fn from(entry: grove_core::ActiveWarning) -> Self {
+        Self {
+            id: entry.id,
+            warning: entry.warning.into(),
+        }
+    }
 }
 
 /// Mirrors `Warning` in `app/src/bridge.ts`. Its name goes in a `kind` field.
@@ -2072,12 +2076,10 @@ fn lock(sessions: &Sessions) -> MutexGuard<'_, HashMap<String, SessionId>> {
 }
 
 #[tauri::command]
-fn warnings(warnings: State<'_, Warnings>) -> Vec<WarningSent> {
-    warnings
-        .0
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+async fn warnings(grove: State<'_, Grove>) -> Result<Vec<WarningSent>, String> {
+    let core = grove.0.read().await;
+    let core = core.as_ref().ok_or(QUITTING)?;
+    Ok(core.warnings().into_iter().map(Into::into).collect())
 }
 
 /// Starts the worktree's watcher after a `WatcherNotStarted` warning. The error holds the new
@@ -2089,21 +2091,6 @@ async fn retry_watcher(grove: State<'_, Grove>, worktree: PathBuf) -> Result<(),
     core.retry_watcher(&worktree)
         .await
         .map_err(|e| with_causes(&e))
-}
-
-// Keeps the warning for `warnings`, then sends it to the UI.
-fn warn(app: &tauri::AppHandle, warning: Warning) {
-    let sent = {
-        let warnings = app.state::<Warnings>();
-        let mut warnings = warnings.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let sent = WarningSent {
-            id: warnings.len(),
-            warning,
-        };
-        warnings.push(sent.clone());
-        sent
-    };
-    let _ = app.emit("warning", sent);
 }
 
 #[tauri::command]
@@ -2276,7 +2263,6 @@ fn main() -> anyhow::Result<()> {
         .manage(Grove(RwLock::new(Some(core))))
         .manage(Sessions(Mutex::default()))
         .manage(Quitting(watch::Sender::new(false)))
-        .manage(Warnings(Mutex::default()))
         .manage(Accounts(Mutex::default()))
         .manage(WindowFocused(AtomicBool::new(false)))
         .plugin(tauri_plugin_notification::init())
@@ -2332,7 +2318,9 @@ fn main() -> anyhow::Result<()> {
                             };
                             report_account(&app, change);
                         }
-                        Ok(CoreEvent::Warning(warning)) => warn(&app, warning.into()),
+                        Ok(CoreEvent::Warning(_) | CoreEvent::WarningCleared { .. }) => {
+                            let _ = app.emit("warnings-changed", ());
+                        }
                         Ok(CoreEvent::Setup { worktree, setup }) => {
                             let change = SetupChanged {
                                 worktree,
@@ -2365,8 +2353,10 @@ fn main() -> anyhow::Result<()> {
                         }
                         Ok(_) => {}
                         Err(_) if events.is_closed() => break,
-                        // After a lag the missed events are gone. Carry on with the next one.
-                        Err(_) => {}
+                        // The active list can recover even if a warning event was lost.
+                        Err(_) => {
+                            let _ = app.emit("warnings-changed", ());
+                        }
                     }
                 }
             });
@@ -3254,12 +3244,12 @@ mod tests {
 
     #[test]
     fn a_warning_reaches_the_ui_as_bridge_ts_reads_it() {
-        let sent = WarningSent {
+        let sent = WarningSent::from(grove_core::ActiveWarning {
             id: 2,
-            warning: Warning::LoginShellEnv {
+            warning: grove_core::Warning::LoginShellEnv {
                 reason: "/bin/zsh did not print its environment within 5s".into(),
             },
-        };
+        });
 
         match sent.body() {
             Ok(InvokeResponseBody::Json(json)) => assert_eq!(

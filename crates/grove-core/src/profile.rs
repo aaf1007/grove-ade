@@ -979,7 +979,13 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let home = tempfile::tempdir().unwrap();
-        let agents = Agents::new(&crate::CoreConfig::new(home.path()), Default::default());
+        let agents = Agents::new(
+            &crate::CoreConfig::new(home.path()),
+            Default::default(),
+            std::sync::Arc::new(crate::warnings::Warnings::new(
+                tokio::sync::broadcast::channel(1).0,
+            )),
+        );
         let dir = home.path().join("profiles");
         let profiles = Profiles::open(&dir).unwrap();
         assert!(profiles.reread(&agents));
@@ -999,7 +1005,13 @@ mod tests {
     #[test]
     fn a_change_starts_from_the_file_on_disk_not_from_what_grove_read() {
         let home = tempfile::tempdir().unwrap();
-        let agents = Agents::new(&crate::CoreConfig::new(home.path()), Default::default());
+        let agents = Agents::new(
+            &crate::CoreConfig::new(home.path()),
+            Default::default(),
+            std::sync::Arc::new(crate::warnings::Warnings::new(
+                tokio::sync::broadcast::channel(1).0,
+            )),
+        );
         let dir = home.path().join("profiles");
         let profiles = Profiles::open(&dir).unwrap();
         assert!(profiles.reread(&agents));
