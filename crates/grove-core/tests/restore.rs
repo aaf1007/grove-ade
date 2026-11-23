@@ -1973,22 +1973,34 @@ fn a_session_saved_before_grove_kept_models_comes_back_with_no_choice() {
     let mut s = setup(Scenarios::default());
     let claude = s.spawn(Agent::Claude, Mode::Chat);
     s.core().set_model(claude, "haiku", Some("low")).unwrap();
+    // Not what the layout gives, so it can only come back from the file.
+    let layout = Workspace {
+        panels: vec![PanelKind::Logs],
+        selected: Some(PanelKind::Logs),
+        terminal: false,
+        ..s.core().workspace(claude).unwrap()
+    };
+    block_on(s.core().set_workspace(claude, layout.clone(), None)).unwrap();
     drop(s.core.take());
-    // The state file as grove wrote it before version 7: no model on any session.
+    // The state file as grove wrote it at version 6: the workspace on the worktree, not on the
+    // session, and nothing a later version added.
     let path = s.cfg.home.join("state.json");
     let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(state["version"], json!(10));
-    fn forget_models(value: &mut Value) {
-        match value {
-            Value::Object(object) => {
-                object.remove("model");
-                object.values_mut().for_each(forget_models);
-            }
-            Value::Array(items) => items.iter_mut().for_each(forget_models),
-            _ => {}
-        }
-    }
-    forget_models(&mut state);
+    let worktree = &mut state["repos"][0]["main_worktree"];
+    let record = worktree["sessions"][0].as_object_mut().unwrap();
+    assert!(record.contains_key("model"), "{record:?}");
+    let workspace = record.remove("workspace").unwrap();
+    // Version 7 added the model, and version 9 the title, the created time and the ended flag.
+    record.retain(|field, _| {
+        !["model", "title", "created_unix_ms", "ended"].contains(&field.as_str())
+    });
+    let known = ["agent", "cols", "id", "kind", "mode", "resume_id", "rows"];
+    assert_eq!(record.keys().collect::<Vec<_>>(), known, "{record:?}");
+    let worktree = worktree.as_object_mut().unwrap();
+    // Version 8 added the worktree a worktree nests under.
+    worktree.remove("nested_under");
+    worktree.insert("workspace".into(), workspace);
     state["version"] = json!(6);
     fs::write(&path, state.to_string()).unwrap();
 
@@ -2000,4 +2012,5 @@ fn a_session_saved_before_grove_kept_models_comes_back_with_no_choice() {
         [agent_info(claude, Agent::Claude, Mode::Chat)]
     );
     assert_eq!(s.core().model_choice(claude).unwrap(), None);
+    assert_eq!(s.core().workspace(claude).unwrap(), layout);
 }

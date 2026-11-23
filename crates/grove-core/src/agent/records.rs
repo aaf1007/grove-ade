@@ -9,6 +9,7 @@ use std::time::SystemTime;
 
 use tokio::sync::broadcast;
 
+use super::workspaces::{move_panels, placed_panels};
 use super::{Agent, AgentState, Agents, Mode, Switch, Tracked, lock};
 use crate::remove::{EXIT_WAIT, wait_for_exits};
 use crate::{Core, CoreError, CoreEvent, Result, SessionId};
@@ -98,20 +99,27 @@ impl Agents {
     }
 
     /// Drops the records of the agent sessions in `worktrees`, which are being removed, with
-    /// their workspaces, and returns them. The removal saves the state.
-    pub(crate) fn drop_records_in(&self, worktrees: &[PathBuf]) -> Vec<SessionId> {
+    /// their workspaces and their agent panels in other workspaces. A subagent session that
+    /// runs elsewhere stays: it shows in the workspace of the top parent it has left, or in its
+    /// own, with the panel it had. The removal saves the state.
+    pub(crate) fn drop_records_in(&self, worktrees: &[PathBuf]) -> Dropped {
         let mut live = lock(&self.live);
-        let dropped: Vec<SessionId> = live
+        let sessions: Vec<SessionId> = live
             .iter()
             .filter(|(_, tracked)| worktrees.contains(&tracked.worktree))
             .map(|(&id, _)| id)
             .collect();
-        for id in &dropped {
+        let placed = placed_panels(&live);
+        for id in &sessions {
             live.remove(id);
         }
+        let workspaces_changed = move_panels(&mut live, placed);
         drop(live);
         lock(&self.last_focused).retain(|worktree, _| !worktrees.contains(worktree));
-        dropped
+        Dropped {
+            sessions,
+            workspaces_changed,
+        }
     }
 
     /// Removes the folders of `sessions` under the home folder, with the files each launch
@@ -169,6 +177,13 @@ pub(super) fn with_those_below(
         at += 1;
     }
     found
+}
+
+/// What `drop_records_in` dropped.
+pub(crate) struct Dropped {
+    pub(crate) sessions: Vec<SessionId>,
+    /// The sessions left whose workspace lost or got an agent panel.
+    pub(crate) workspaces_changed: Vec<SessionId>,
 }
 
 impl Core {

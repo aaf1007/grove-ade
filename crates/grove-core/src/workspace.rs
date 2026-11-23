@@ -137,6 +137,22 @@ impl Workspace {
         self
     }
 
+    // With a shown panel, after the last one, for each running session of `members` that `now`
+    // has a panel for and this has none.
+    fn with_running_panels_of(mut self, now: &Workspace, members: &[Member]) -> Workspace {
+        for panel in &now.chat {
+            let running = |m: &Member| m.session == panel.session && !m.ended;
+            let kept = self.chat.iter().any(|p| p.session == panel.session);
+            if members.iter().any(running) && !kept {
+                self.chat.push(AgentPanel {
+                    shown: true,
+                    ..panel.clone()
+                });
+            }
+        }
+        self
+    }
+
     // As `Core::workspace` returns it: only the panels of `members`, each with the agent its
     // session runs.
     fn listed(&self, members: &[Member]) -> Workspace {
@@ -174,7 +190,9 @@ impl Core {
     /// `by`. `by` is the agent session that changed it, None for the user. Undo restores the
     /// workspace from before the last change an agent made. Refused when the selected tab is
     /// not one of the tabs, or when an agent panel names a session twice or one that is neither
-    /// the workspace's own session nor a subagent below it.
+    /// the workspace's own session nor a subagent below it. A running session `workspace` has
+    /// no panel for, such as a subagent started since the caller read it, keeps its panel,
+    /// shown after the last one.
     pub async fn set_workspace(
         &self,
         session: SessionId,
@@ -185,6 +203,7 @@ impl Core {
             .agents
             .with_workspace(session, |owner, members, saved| {
                 check_workspace(&workspace, members)?;
+                let workspace = workspace.with_running_panels_of(&saved.workspace, members);
                 saved.replace(workspace, by);
                 Ok::<_, CoreError>(owner)
             })??;
@@ -194,24 +213,18 @@ impl Core {
     /// Restores the workspace `session` shows in from before the last change an agent made to
     /// it, even if the user changed it since, and sends `WorkspaceChanged` with no `by`. It can
     /// be undone once. A running session the restored workspace has no panel for, such as a
-    /// subagent started since, keeps its panel, shown after the last one.
+    /// subagent started since, keeps its panel, shown after the last one. A panel whose session
+    /// was deleted since is left out.
     pub async fn undo_workspace(&self, session: SessionId) -> Result<()> {
         let owner = self
             .agents
             .with_workspace(session, |owner, members, saved| {
                 let nothing = CoreError::NothingToUndo(owner);
                 let mut restored = saved.before_agent_change.take().ok_or(nothing)?;
-                for panel in &saved.workspace.chat {
-                    let running = |m: &Member| m.session == panel.session && !m.ended;
-                    let kept = restored.chat.iter().any(|p| p.session == panel.session);
-                    if members.iter().any(running) && !kept {
-                        restored.chat.push(AgentPanel {
-                            shown: true,
-                            ..panel.clone()
-                        });
-                    }
-                }
-                saved.workspace = restored;
+                let member =
+                    |panel: &AgentPanel| members.iter().any(|m| m.session == panel.session);
+                restored.chat.retain(member);
+                saved.workspace = restored.with_running_panels_of(&saved.workspace, members);
                 Ok::<_, CoreError>(owner)
             })??;
         self.changed(owner, None).await

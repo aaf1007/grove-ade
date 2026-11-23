@@ -172,14 +172,15 @@ impl Core {
             // Before it leaves the list, so a worktree added at the same path keeps its own.
             warnings.clear_watcher(&folder);
             comments.drop_worktree(&folder);
-            let sessions = agents.drop_records_in(std::slice::from_ref(&folder));
+            let dropped = agents.drop_records_in(std::slice::from_ref(&folder));
             // The worktree is gone by now, so a folder that stays is only left behind.
-            let _ = agents.remove_session_folders(&sessions);
-            if !sessions.is_empty() {
+            let _ = agents.remove_session_folders(&dropped.sessions);
+            if !dropped.sessions.is_empty() {
                 let _ = events.send(CoreEvent::AgentSessionsChanged);
             }
-            // A subagent that ran here leaves the workspace of its top parent elsewhere.
-            for session in agents.drop_panels_of(&sessions) {
+            // A subagent that ran here leaves the workspace of its top parent elsewhere, and
+            // one that runs elsewhere may show in another workspace now.
+            for session in dropped.workspaces_changed {
                 let _ = events.send(CoreEvent::WorkspaceChanged { session, by: None });
             }
             untrack(&mut lock(&tracked), |path| path == folder);
@@ -303,7 +304,8 @@ impl Core {
             self.comments.drop_worktree(path);
             self.warnings.clear_watcher(path);
         }
-        let sessions = self.agents.drop_records_in(&paths);
+        let dropped = self.agents.drop_records_in(&paths);
+        let sessions = dropped.sessions;
         untrack(&mut self.tracked(), |path| paths.iter().any(|p| p == path));
         // Settings are keyed by main worktree, so this drops those of a forgotten repo.
         self.settings().retain(|repo, _| !paths.contains(repo));
@@ -322,8 +324,9 @@ impl Core {
         if !sessions.is_empty() {
             let _ = self.events.send(CoreEvent::AgentSessionsChanged);
         }
-        // A subagent that ran there leaves the workspace of its top parent elsewhere.
-        for owner in self.agents.drop_panels_of(&sessions) {
+        // A subagent that ran there leaves the workspace of its top parent elsewhere, and one
+        // that runs elsewhere may show in another workspace now.
+        for owner in dropped.workspaces_changed {
             self.workspace_changed(owner);
         }
         self.blocking(&first, move || {

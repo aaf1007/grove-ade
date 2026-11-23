@@ -761,6 +761,81 @@ fn a_user_change_alone_leaves_nothing_to_undo() {
     assert!(matches!(err, CoreError::NothingToUndo(_)), "{err}");
 }
 
+// The risk this guards: the window saves the workspace it loaded before a subagent started, and
+// the subagent keeps running with no panel.
+#[test]
+fn a_user_save_from_before_a_subagent_started_keeps_the_subagents_panel() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let (core, mut events, repo) = core_with_repo(dir.path());
+    let parent = session(&core, &repo, Agent::Claude);
+    let loaded_before = core.workspace(parent).unwrap();
+    let helper = subagent(dir.path(), parent, None);
+    let opened_logs = Workspace {
+        panels: vec![PanelKind::Diff, PanelKind::Logs],
+        selected: Some(PanelKind::Logs),
+        ..loaded_before
+    };
+
+    block_on(core.set_workspace(parent, opened_logs.clone(), None)).unwrap();
+
+    let both = vec![
+        panel(Agent::Claude, parent, true),
+        panel(Agent::Claude, helper, true),
+    ];
+    assert_eq!(
+        core.workspace(parent).unwrap(),
+        Workspace {
+            chat: both,
+            ..opened_logs.clone()
+        }
+    );
+    wait_saved(dir.path(), |state| {
+        saved_chat(state, parent) == Some(vec![json!(parent), json!(helper)])
+    });
+    // An ended session runs nothing, so a save without its panel drops it.
+    end(&core, &mut events, helper);
+    block_on(core.set_workspace(parent, opened_logs.clone(), None)).unwrap();
+    assert_eq!(core.workspace(parent).unwrap(), opened_logs);
+}
+
+// The risk this guards: Undo puts back the panel of a session that was deleted since, and it
+// stays in the saved workspace.
+#[test]
+fn undo_leaves_out_the_panel_of_a_subagent_deleted_since_the_agent_change() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let (core, _events, repo) = core_with_repo(dir.path());
+    let parent = session(&core, &repo, Agent::Claude);
+    let helper = subagent(dir.path(), parent, None);
+    let before = core.workspace(parent).unwrap();
+    assert_eq!(before.chat.len(), 2);
+    block_on(core.set_workspace(parent, arranged(before.chat.clone()), Some(parent))).unwrap();
+    block_on(core.delete_agent_session(helper)).unwrap();
+
+    block_on(core.undo_workspace(parent)).unwrap();
+
+    let own = vec![panel(Agent::Claude, parent, true)];
+    assert_eq!(
+        core.workspace(parent).unwrap(),
+        Workspace {
+            chat: own,
+            ..before
+        }
+    );
+    // The undo saved before it returned.
+    let saved = wait_saved(dir.path(), |state| {
+        saved_records(state)
+            .iter()
+            .any(|r| r["workspace"]["terminal"] == json!(true))
+    });
+    assert_eq!(
+        saved_chat(&saved, parent),
+        Some(vec![json!(parent)]),
+        "{saved}"
+    );
+}
+
 #[test]
 fn a_deleted_subagents_panel_goes_and_an_ended_ones_stays() {
     let _serial = serial();
@@ -876,7 +951,14 @@ fn a_deleted_sessions_workspace_never_reaches_a_new_session_that_gets_its_id() {
         core.workspace(deleted),
         Err(CoreError::NotAnAgentSession(_))
     ));
-    let saved = wait_saved(dir.path(), |state| saved_records(state).is_empty());
+    // A file that is missing or does not parse reads as null, which must not pass for saved.
+    let saved = wait_saved(dir.path(), |state| {
+        let repos = state["repos"].as_array();
+        let only_this_repo = repos.is_some_and(|repos| {
+            repos.len() == 1 && repos[0]["main_worktree"]["path"] == json!(repo)
+        });
+        state["version"] == json!(10) && only_this_repo && saved_records(state).is_empty()
+    });
     assert!(!saved.to_string().contains("workspace"), "{saved}");
     // No session is saved, so after a restart the ids start over.
     drop(core);
@@ -962,6 +1044,93 @@ fn removing_a_worktree_leaves_no_workspace_for_its_sessions() {
     let again = new_worktree(&core, &repo, "feature");
     assert_eq!(again, feature);
     assert_eq!(core.starting_workspace(&feature).unwrap(), built_in(vec![]));
+}
+
+// The risk this guards: the top parent goes with its worktree, and a subagent of a subagent that
+// runs elsewhere is left with no panel in any workspace.
+#[test]
+fn a_subagent_whose_top_parent_went_with_its_worktree_shows_in_its_new_top_parents_workspace() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let (core, mut events, repo) = core_with_repo(dir.path());
+    let feature = new_worktree(&core, &repo, "feature");
+    let top = session(&core, &feature, Agent::Codex);
+    let middle = subagent(dir.path(), top, Some(&repo));
+    let lowest = subagent(dir.path(), middle, None);
+    // The user hid the lowest one's panel.
+    let hidden = Workspace {
+        chat: vec![
+            panel(Agent::Codex, top, true),
+            panel(Agent::Claude, middle, true),
+            panel(Agent::Claude, lowest, false),
+        ],
+        ..core.workspace(top).unwrap()
+    };
+    block_on(core.set_workspace(top, hidden, None)).unwrap();
+    workspace_changes_within(&mut events, Duration::from_millis(100));
+    let delete = RemoveOpts::Delete {
+        confirmed: true,
+        delete_branch: false,
+    };
+
+    block_on(core.remove_worktree(&feature, delete)).unwrap();
+
+    // The middle one is the top parent now. Its own panel is shown, and the lowest one's came
+    // over as it was.
+    let chat = [
+        panel(Agent::Claude, middle, true),
+        panel(Agent::Claude, lowest, false),
+    ];
+    assert_eq!(core.workspace(middle).unwrap().chat, chat);
+    assert_eq!(core.workspace(lowest).unwrap().chat, chat);
+    assert_eq!(
+        workspace_changes_within(&mut events, Duration::from_millis(300)),
+        [(middle, None)]
+    );
+    wait_saved(dir.path(), |state| {
+        saved_records(state).len() == 2
+            && saved_chat(state, middle) == Some(vec![json!(middle), json!(lowest)])
+    });
+}
+
+// The risk this guards: a subagent that lost its parent shows in a workspace of its own, and its
+// old panel stays saved in the workspace it left.
+#[test]
+fn a_subagent_whose_parent_went_with_its_worktree_leaves_the_workspace_it_showed_in() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let (core, mut events, repo) = core_with_repo(dir.path());
+    let feature = new_worktree(&core, &repo, "feature");
+    let top = session(&core, &repo, Agent::Codex);
+    let middle = subagent(dir.path(), top, Some(&feature));
+    let lowest = subagent(dir.path(), middle, Some(&repo));
+    assert_eq!(core.workspace(top).unwrap().chat.len(), 3);
+    workspace_changes_within(&mut events, Duration::from_millis(100));
+    let delete = RemoveOpts::Delete {
+        confirmed: true,
+        delete_branch: false,
+    };
+
+    block_on(core.remove_worktree(&feature, delete)).unwrap();
+
+    assert_eq!(
+        core.workspace(top).unwrap().chat,
+        [panel(Agent::Codex, top, true)]
+    );
+    // No parent of it is left, so it shows in its own workspace.
+    assert_eq!(
+        core.workspace(lowest).unwrap().chat,
+        [panel(Agent::Claude, lowest, true)]
+    );
+    assert_eq!(
+        workspace_changes_within(&mut events, Duration::from_millis(300)),
+        [(top, None)]
+    );
+    wait_saved(dir.path(), |state| {
+        saved_records(state).len() == 2
+            && saved_chat(state, top) == Some(vec![json!(top)])
+            && saved_chat(state, lowest) == Some(vec![json!(lowest)])
+    });
 }
 
 // The state file a grove from before version 10 left: `sessions` in the repo's main worktree,
@@ -1468,7 +1637,16 @@ fn a_session_between_its_two_processes_in_a_mode_switch_keeps_its_workspace() {
     let chat = dropped["chat"].as_array_mut().unwrap();
     chat.retain(|panel| panel["session"] != json!(session));
     let reply = workspace_set(dir.path(), helper, &dropped);
-    assert!(reply.get("error").is_some(), "{reply}");
+    let reason = format!("it drops the panel of agent session {session}, which is running");
+    let error = reply["error"].as_str().unwrap_or_default();
+    assert!(error.contains(&reason), "{reply}");
+    // Not refused for the switch alone: a change that keeps every panel goes through.
+    let mut opened_logs = workspace_get(dir.path(), helper);
+    opened_logs["panels"] = json!(["logs"]);
+    opened_logs["selected"] = json!("logs");
+    let reply = workspace_set(dir.path(), helper, &opened_logs);
+    assert_eq!(reply, json!({"result": {}}));
+    assert_eq!(core.workspace(session).unwrap().panels, [PanelKind::Logs]);
 }
 
 #[test]

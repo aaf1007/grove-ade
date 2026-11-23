@@ -165,8 +165,9 @@ impl GroveTools {
     #[tool(
         description = "Read this session's workspace as JSON: the agent panels in the chat \
                        area, the panel area's tabs, the selected tab and whether the terminal is \
-                       open. A subagent session reads the workspace of the session that started \
-                       it, the one the user sees it in."
+                       open. A subagent session reads the workspace of its top parent, the \
+                       session the user started and sees it in, also when another subagent \
+                       started it."
     )]
     async fn workspace_get(&self) -> CallToolResult {
         self.call(tools::workspace_get).await

@@ -2,7 +2,7 @@
 //! they were in, shells start fresh in the same worktree, and run sessions come back stopped.
 //! An agent session that had ended comes back ended. Each keeps its session id.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -186,9 +186,8 @@ impl Core {
 
     /// Brings back the sessions the state file names. An agent session that had ended comes back
     /// ended, with no process. Never fails: one that cannot start is left out with a
-    /// `SessionNotRestored` warning. Returns the ids that came back.
-    pub(crate) fn restore(&self, saved: HashMap<PathBuf, Vec<Relaunch>>) -> HashSet<SessionId> {
-        let mut back = HashSet::new();
+    /// `SessionNotRestored` warning.
+    pub(crate) fn restore(&self, saved: HashMap<PathBuf, Vec<Relaunch>>) {
         // Every saved id is reserved before any session starts, an ended session's too, so
         // `new_id` never hands one out.
         for relaunch in saved.values().flatten() {
@@ -211,21 +210,15 @@ impl Core {
                         Ok(())
                     }
                 };
-                match started {
-                    Ok(()) => {
-                        back.insert(id);
-                    }
-                    Err(e) => {
-                        let warning = Warning::SessionNotRestored {
-                            worktree: worktree.clone(),
-                            reason: with_causes(&e),
-                        };
-                        self.warnings.raise(warning);
-                    }
+                if let Err(e) = started {
+                    let warning = Warning::SessionNotRestored {
+                        worktree: worktree.clone(),
+                        reason: with_causes(&e),
+                    };
+                    self.warnings.raise(warning);
                 }
             }
         }
-        back
     }
 
     pub(crate) fn stopped_runs(&self) -> MutexGuard<'_, StoppedRuns> {

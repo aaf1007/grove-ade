@@ -384,9 +384,9 @@ impl Core {
             _panel_worker: Some(panel_worker),
             inner,
         };
-        let back = core.restore(restored.sessions);
+        core.restore(restored.sessions);
         core.agents.adopt_panels(restored.subagent_panels);
-        core.agents.keep_panels_of(&back);
+        core.agents.drop_panels_of_sessions_not_listed();
         core.runtime.spawn(state::save_when_asked(
             core.saves.clone(),
             core.state_file.clone(),

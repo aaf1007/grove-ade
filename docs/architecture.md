@@ -109,7 +109,7 @@ impl Core {
     pub fn suggest_profile(&self, repo: &Path) -> Option<Suggestion>; // the profile and the marker file found
     pub fn starting_workspace(&self, wt: WorktreeId) -> Result<Workspace>; // the profile's layout, with no agent panel: what a new agent session in the worktree starts from; BadProfile while the profile file is not valid
     pub fn workspace(&self, s: SessionId) -> Result<Workspace>; // the agent session's own, or its top parent's for a subagent session
-    pub async fn set_workspace(&self, s: SessionId, w: Workspace, by: Option<SessionId>) -> Result<()>; // by: the agent session that changed it
+    pub async fn set_workspace(&self, s: SessionId, w: Workspace, by: Option<SessionId>) -> Result<()>; // by: the agent session that changed it. A running session w has no panel for keeps its panel
     pub async fn undo_workspace(&self, s: SessionId) -> Result<()>; // back to before the last change an agent session made
     pub async fn save_workspace_to_profile(&self, s: SessionId) -> Result<()>; // its agent, tabs and terminal into its repo's profile
 
@@ -292,6 +292,8 @@ In chat mode, agent state comes only from the protocol (see Chat mode). The step
 - A workspace is one agent session's layout: which agent panels the chat area shows (its own and those of the subagent sessions below it, side by side), which panels the panel area has open as tabs (Files, Diff, Browser, Logs, Profile), and whether the terminal panel is open at its bottom.
 - A new agent session's workspace starts from its profile's layout. The layout's `chat` list names the agent a new session runs: the first one, and the rest are ignored. grove saves each workspace in its session's record, so it comes back after a restart and goes when the session is deleted or its worktree is removed.
 - A subagent session shows in the workspace of its top parent: its panel is added there when it starts, and its `workspace_get` and `workspace_set` act on that workspace.
+- A running session keeps its panel: a save that has none for it, such as one from before a subagent started, keeps it, shown after the last one. Undo does the same, and leaves out the panel of a session deleted since.
+- When a worktree is removed, a subagent session that runs elsewhere stays. It shows in the workspace of the top parent it has left, or in its own when none is left, with the panel it had.
 - Files, Diff and review comments belong to the worktree. So does the shell: sessions in the same place share one, and each session keeps only whether its terminal is open.
 - A place with no agent session selected shows the starting workspace. A change to it stays in the window, since only a session's workspace is saved.
 - A profile is a TOML file in `~/.grovecode/profiles/` (ADR 0016) with:
