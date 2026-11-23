@@ -144,6 +144,10 @@ impl fmt::Display for RequestError {
                         ". It may still open the panel, which would count toward the 8 a \
                          session may hold"
                     ),
+                    "html_show" => write!(
+                        f,
+                        ". It may still show the page, so ask the user before you try again"
+                    ),
                     _ => Ok(()),
                 }
             }

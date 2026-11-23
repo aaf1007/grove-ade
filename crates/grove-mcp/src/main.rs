@@ -60,6 +60,20 @@ struct PanelCloseArguments {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct HtmlShowArguments {
+    /// The title shown above the page.
+    title: String,
+    /// The page's HTML, a whole document or a fragment. Give this or path, not both.
+    html: Option<String>,
+    /// The absolute path of an .html file in this session's worktree. Give this or html, not
+    /// both.
+    path: Option<PathBuf>,
+    /// The page's height in CSS pixels, at most 2000. Leave it out to fit the page's content,
+    /// up to 2000. A taller page scrolls.
+    height: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct WorkspaceSetArguments {
     /// The whole new workspace, in the shape workspace_get returns: {"chat": [{"agent":
     /// "claude"|"codex", "session": <id> or null, "shown": true|false}], "panels": [tabs from
@@ -203,6 +217,34 @@ impl GroveTools {
     ) -> CallToolResult {
         self.call(move |core| tools::profile_set(core, Value::Object(arguments.changes)))
             .await
+    }
+
+    #[tool(
+        description = "Show an HTML page inline in this session's conversation, where the user \
+                       reads it: a chart, a diagram or a mockup. Give the page as html, or as \
+                       the absolute path of an .html file in this session's worktree, which is \
+                       the way for a page over 30 KB. The page must hold all it needs: scripts \
+                       and styles run inline, and nothing loads from the network, so no CDN \
+                       script, remote image, font or fetch. It gets grove's theme as CSS \
+                       variables, so use them in place of fixed colors and the page matches \
+                       light and dark: --background, --foreground, --muted, --border, --accent, \
+                       --chart-1 to --chart-6, --radius, --font-sans and --font-mono. Works \
+                       only in chat mode."
+    )]
+    async fn html_show(
+        &self,
+        Parameters(arguments): Parameters<HtmlShowArguments>,
+    ) -> CallToolResult {
+        self.call(move |core| {
+            tools::html_show(
+                core,
+                &arguments.title,
+                arguments.html.as_deref(),
+                arguments.path.as_deref(),
+                arguments.height,
+            )
+        })
+        .await
     }
 }
 

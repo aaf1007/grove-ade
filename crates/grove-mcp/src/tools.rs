@@ -44,6 +44,9 @@ pub const DEFAULT_WAIT: u64 = 60;
 pub const MAX_WAIT: u64 = 600;
 /// How often `panel_wait` asks grove whether the panel's command has exited.
 const WAIT_POLL: Duration = Duration::from_millis(200);
+/// The most bytes an `html_show` request has. grove's socket takes 64 KiB a message, and the
+/// session's id and token ride with the request. A larger page goes in a file.
+const MAX_HTML_SHOW_REQUEST_BYTES: usize = 60 * 1024;
 
 pub fn subagent_spawn(
     core: &CoreClient,
@@ -173,6 +176,38 @@ pub fn profile_set(core: &CoreClient, changes: Value) -> Result<String, String> 
         .map_err(|e| e.to_string())?;
     let profile = result["profile"].as_str().unwrap_or_default();
     Ok(format!("Changed profile {profile}."))
+}
+
+/// Shows a page in the calling session's conversation: `html`, or the `.html` file at `path`.
+/// grove checks that it is one of the two, and that the path is inside the session's worktree.
+pub fn html_show(
+    core: &CoreClient,
+    title: &str,
+    html: Option<&str>,
+    path: Option<&Path>,
+    height: Option<u32>,
+) -> Result<String, String> {
+    let mut request = json!({"type": "html_show", "title": title});
+    if let Some(html) = html {
+        request["html"] = json!(html);
+    }
+    if let Some(path) = path {
+        request["path"] = json!(path);
+    }
+    if let Some(height) = height {
+        request["height"] = json!(height);
+    }
+    if request.to_string().len() > MAX_HTML_SHOW_REQUEST_BYTES {
+        return Err(
+            "The page is too large to send inline. Write it to an .html file in the worktree \
+             and pass its path."
+                .into(),
+        );
+    }
+    let result = core.request(request).map_err(|e| e.to_string())?;
+    let page = result["page"].as_str().unwrap_or_default();
+    // grove finds the page by this id when the conversation resumes, so the text must name it.
+    Ok(format!("Showed the page in the conversation as {page}."))
 }
 
 fn pretty(value: &Value) -> String {

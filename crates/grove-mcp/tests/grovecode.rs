@@ -139,6 +139,7 @@ fn help_lists_every_command_even_outside_an_agent_session() {
             "grovecode workspace set <json>",
             "grovecode profile get",
             "grovecode profile set <json>",
+            "grovecode html show <title> (--html <html> | --path <path>) [--height <n>]",
         ] {
             assert!(stdout.contains(command), "{help}: {command} in {stdout}");
         }
@@ -165,8 +166,17 @@ fn a_prompt_or_command_that_is_dash_h_goes_to_grove_not_to_help() {
 
 #[test]
 fn a_command_it_cannot_parse_exits_2_with_the_usage() {
-    let cases: [(&[&str], &str); 14] = [
+    let cases: [(&[&str], &str); 17] = [
         (&[], "no command"),
+        (&["html", "show"], "html show takes 1 argument"),
+        (
+            &["html", "show", "Chart", "--height", "tall", "--html", "<p>"],
+            "--height takes a whole number, not tall",
+        ),
+        (
+            &["html", "show", "Chart", "--lines", "3"],
+            "html show takes no --lines",
+        ),
         (&["panel", "shut", "7"], "unknown command: panel shut"),
         (&["panel", "close"], "panel close takes 1 argument"),
         (
@@ -530,4 +540,98 @@ fn workspace_and_profile_commands_act_on_the_shells_session_and_its_repo() {
         assert!(stderr.starts_with("grovecode: grove refused: "), "{stderr}");
     }
     assert!(!s.changed_by_now());
+}
+
+/// grovecode in the shell of a Claude session in chat mode.
+fn chat_shell(s: &Setup) -> Shell {
+    let session = s.spawn_parent_in(Agent::Claude, grove_core::Mode::Chat);
+    Shell {
+        socket: s.cfg.socket.clone(),
+        session,
+        token: s.token("claude-sidecar", session),
+    }
+}
+
+/// The pages in the session's conversation, once there are `n`: title, HTML and height.
+fn pages(s: &Setup, session: SessionId, n: usize) -> Vec<(String, String, Option<u32>)> {
+    use grove_core::AgentMessage;
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let (sink, _frames) = tokio::sync::mpsc::unbounded_channel();
+        let pages: Vec<_> = s
+            .core
+            .subscribe(session, sink)
+            .unwrap()
+            .into_iter()
+            .filter_map(|message| match message {
+                AgentMessage::InlinePage {
+                    title,
+                    html,
+                    height,
+                    ..
+                } => Some((title, html, height)),
+                _ => None,
+            })
+            .collect();
+        if pages.len() >= n {
+            return pages;
+        }
+        assert!(Instant::now() < deadline, "{} of {n} pages", pages.len());
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn it_shows_a_page_from_html_and_from_a_path_taken_from_the_shells_folder() {
+    let s = setup(json!([]));
+    let shell = chat_shell(&s);
+    fs::create_dir(s.worktree.join("docs")).unwrap();
+    fs::write(s.worktree.join("docs/chart.html"), "<p>from a file</p>").unwrap();
+
+    let inline = shell.run(&["html", "show", "Inline", "--html", "<p>inline</p>"]);
+    let file = shell.run_in(
+        &s.worktree.join("docs"),
+        &[
+            "html",
+            "show",
+            "File",
+            "--path",
+            "chart.html",
+            "--height=400",
+        ],
+    );
+
+    for (code, stdout, stderr) in [&inline, &file] {
+        assert_eq!(*code, Some(0), "{stderr}");
+        assert!(
+            stdout.starts_with("Showed the page in the conversation as page-"),
+            "{stdout}"
+        );
+    }
+    assert_eq!(
+        pages(&s, shell.session, 2),
+        [
+            ("Inline".to_owned(), "<p>inline</p>".to_owned(), None),
+            (
+                "File".to_owned(),
+                "<p>from a file</p>".to_owned(),
+                Some(400)
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_page_grove_refuses_fails_with_the_reason() {
+    let s = setup(json!([]));
+    let shell = chat_shell(&s);
+
+    let (code, stdout, stderr) = shell.run(&["html", "show", "Chart"]);
+
+    assert_eq!(code, Some(1));
+    assert_eq!(stdout, "");
+    assert_eq!(
+        stderr,
+        "grovecode: grove refused: html_show takes html or a path, one of the two\n"
+    );
 }
