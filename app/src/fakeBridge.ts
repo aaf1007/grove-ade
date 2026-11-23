@@ -81,6 +81,8 @@ export const STARTER_PROFILES: FakeProfile[] = [
 export interface FakeBridge extends Bridge {
   /** Tells every listener the worktree's diff may have changed, as the core's watcher does. */
   diffChanged(worktree: string): void;
+  /** Makes the worktree's folder a plain folder, not a git repo, so it has no diff from now on. */
+  makePlainFolder(worktree: string): void;
   /** Tells every listener an agent session's state changed, as the core's hooks and heuristics do. */
   agentStateChanged(change: AgentStateChanged): void;
   /** Sends a warning, as the core does. A listener that comes later still gets it. */
@@ -188,8 +190,9 @@ export interface FakeBridge extends Bridge {
   /**
    * Saves the workspace the agent session `by` shows in, as it does through `grove-mcp`: the one
    * from before stays for Undo, and `agent-change` comes before `workspace-changed`, as in the core.
+   * An agent's workspace names no diff base, so the session keeps the one it has.
    */
-  agentChangesWorkspace(by: SessionId, workspace: Workspace): void;
+  agentChangesWorkspace(by: SessionId, workspace: Omit<Workspace, "diffBase">): void;
   /** Changes a profile as the agent session `by` does through `grove-mcp`. */
   agentChangesProfile(by: SessionId): void;
   /** The session whose workspace each `undoWorkspace` call restored, in order. */
@@ -257,6 +260,7 @@ export const STARTING_WORKSPACE: Workspace = {
   panels: ["Files", "Diff"],
   selected: "Files",
   terminal: true,
+  diffBase: "Head",
 };
 
 /** The models the fake agents list, each with its own default, as the real ones do. */
@@ -713,7 +717,11 @@ export function fakeBridge(
     if (moved) commentsChanged(worktree);
   }
 
+  // The tracked folders that are not git repos.
+  const plainFolders = new Set<string>();
+
   function changes(worktree: string, base: DiffBase): FakeChange[] {
+    if (plainFolders.has(worktree)) throw `${worktree} is not a git repo`;
     const bases = diffs[worktree];
     if (!bases) throw `grove does not track a worktree at ${worktree}`;
     const found = bases[base];
@@ -762,8 +770,13 @@ export function fakeBridge(
     async listWorktrees() {
       return tracked.map((w) => ({ ...w }));
     },
+    // As the Tauri bridge: a folder that is not a git repo has no diff, which is no error.
     async diff(worktree, base) {
+      if (plainFolders.has(worktree)) return null;
       return changes(worktree, base).map((change) => change.file);
+    },
+    makePlainFolder(worktree) {
+      plainFolders.add(worktree);
     },
     async fileVersions(worktree, base, file) {
       const found = changes(worktree, base).find((change) => change.file.newPath === file.newPath);
@@ -1131,8 +1144,9 @@ export function fakeBridge(
     },
     agentChangesWorkspace(by, workspace) {
       const session = topParent(by);
-      beforeAgentChange.set(session, structuredClone(workspaces.get(session)!));
-      workspaces.set(session, structuredClone(workspace));
+      const before = workspaces.get(session)!;
+      beforeAgentChange.set(session, structuredClone(before));
+      workspaces.set(session, { ...structuredClone(workspace), diffBase: before.diffBase });
       agentChangeListeners.forEach((listener) => listener({ kind: "Workspace", session, by }));
       workspaceChanged(session);
     },
@@ -1145,7 +1159,8 @@ export function fakeBridge(
       const before = beforeAgentChange.get(owner);
       if (!before) throw `no agent change to the workspace of agent session ${owner} is left to undo`;
       beforeAgentChange.delete(owner);
-      workspaces.set(owner, before);
+      // As in the core: no agent change moves the diff base, so undoing one leaves it.
+      workspaces.set(owner, { ...before, diffBase: workspaces.get(owner)!.diffBase });
       undone.push(owner);
       workspaceChanged(owner);
     },

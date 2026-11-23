@@ -112,6 +112,36 @@ test("a menu opens from its named button, focuses its first item, and closes on 
   expect(picked).toEqual([]);
 });
 
+test("items that name a group sit in it under its name, after the items with none, and a shortcut still picks one", () => {
+  const picked: string[] = [];
+  render(
+    <Menu
+      label="Actions for Fix the login redirect"
+      icon={Plus}
+      items={[
+        { key: "deleteSession", label: "Delete session", onSelect: () => picked.push("deleteSession") },
+        { key: "forget", label: "Forget worktree", group: "Worktree feat-36", onSelect: () => picked.push("forget") },
+        { key: "delete", label: "Delete worktree", group: "Worktree feat-36", shortcut: "D", onSelect: () => picked.push("delete") },
+      ]}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Actions for Fix the login redirect" }));
+  const menu = screen.getByRole("menu");
+
+  const group = within(menu).getByRole("group", { name: "Worktree feat-36" });
+  expect(within(group).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+    "Forget worktree",
+    "Delete worktreeD",
+  ]);
+  expect(group.contains(within(menu).getByRole("menuitem", { name: "Delete session" }))).toBe(false);
+  expect(menu.textContent).toBe("Delete sessionWorktree feat-36Forget worktreeDelete worktreeD");
+
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+  expect(document.activeElement).toBe(within(group).getByRole("menuitem", { name: "Delete worktree" }));
+  fireEvent.keyDown(document.body, { key: "d" });
+  expect(picked).toEqual(["delete"]);
+});
+
 test("Tab closes a menu without moving focus itself, and its items are not in the Tab order", () => {
   const picked: string[] = [];
   render(

@@ -15,8 +15,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use grove_core::{
-    Agent, AgentPanel, AgentSpec, AgentState, Core, CoreConfig, CoreError, CoreEvent, Layout, Mode,
-    NewWorktree, PanelKind, ProfileSettings, RemoveOpts, RepoSettings, SessionId, Workspace,
+    Agent, AgentPanel, AgentSpec, AgentState, Core, CoreConfig, CoreError, CoreEvent, DiffBase,
+    Layout, Mode, NewWorktree, PanelKind, ProfileSettings, RemoveOpts, RepoSettings, SessionId,
+    Workspace,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -205,6 +206,7 @@ fn arranged(chat: Vec<AgentPanel>) -> Workspace {
         panels: vec![PanelKind::Diff, PanelKind::Logs],
         selected: Some(PanelKind::Logs),
         terminal: false,
+        diff_base: DiffBase::Head,
     }
 }
 
@@ -215,6 +217,7 @@ fn built_in(chat: Vec<AgentPanel>) -> Workspace {
         panels: vec![PanelKind::Files, PanelKind::Diff],
         selected: Some(PanelKind::Files),
         terminal: true,
+        diff_base: DiffBase::Head,
     }
 }
 
@@ -339,6 +342,7 @@ fn the_repos_layout_overrides_win_over_the_profiles() {
         panels: vec![PanelKind::Browser],
         selected: Some(PanelKind::Browser),
         terminal: true,
+        diff_base: DiffBase::Head,
     };
 
     assert_eq!(
@@ -461,6 +465,7 @@ fn two_sessions_in_one_place_keep_different_layouts_across_a_restart() {
         panels: vec![PanelKind::Browser],
         selected: None,
         terminal: true,
+        diff_base: DiffBase::Head,
         chat: vec![panel(Agent::Codex, second, true)],
     };
 
@@ -473,6 +478,46 @@ fn two_sessions_in_one_place_keep_different_layouts_across_a_restart() {
 
     assert_eq!(core.workspace(first).unwrap(), of_first);
     assert_eq!(core.workspace(second).unwrap(), of_second);
+}
+
+// The diff base is the user's choice. grove-mcp's workspace names none, so an agent's change
+// keeps it, and undoing that change keeps the one the user picked since.
+#[test]
+fn an_agents_workspace_change_and_its_undo_keep_the_diff_base_the_user_chose() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let (core, _events, repo) = core_with_repo(dir.path());
+    let agent = session(&core, &repo, Agent::Claude);
+    let on_whole_branch = Workspace {
+        diff_base: DiffBase::MergeBase,
+        ..core.workspace(agent).unwrap()
+    };
+    block_on(core.set_workspace(agent, on_whole_branch.clone(), None)).unwrap();
+
+    let mut changed = workspace_get(dir.path(), agent);
+    assert!(changed.get("diff_base").is_none(), "{changed}");
+    changed["terminal"] = json!(false);
+    let reply = workspace_set(dir.path(), agent, &changed);
+
+    assert!(reply.get("result").is_some(), "{reply}");
+    let terminal_closed = Workspace {
+        terminal: false,
+        ..on_whole_branch.clone()
+    };
+    assert_eq!(core.workspace(agent).unwrap(), terminal_closed);
+    let back_on_uncommitted = Workspace {
+        diff_base: DiffBase::Head,
+        ..terminal_closed
+    };
+    block_on(core.set_workspace(agent, back_on_uncommitted, None)).unwrap();
+
+    block_on(core.undo_workspace(agent)).unwrap();
+
+    let undone = Workspace {
+        diff_base: DiffBase::Head,
+        ..on_whole_branch
+    };
+    assert_eq!(core.workspace(agent).unwrap(), undone);
 }
 
 // The agent's command is gone at the restart, so its session does not come back, and a new
@@ -957,7 +1002,7 @@ fn a_deleted_sessions_workspace_never_reaches_a_new_session_that_gets_its_id() {
         let only_this_repo = repos.is_some_and(|repos| {
             repos.len() == 1 && repos[0]["main_worktree"]["path"] == json!(repo)
         });
-        state["version"] == json!(10) && only_this_repo && saved_records(state).is_empty()
+        state["version"] == json!(11) && only_this_repo && saved_records(state).is_empty()
     });
     assert!(!saved.to_string().contains("workspace"), "{saved}");
     // No session is saved, so after a restart the ids start over.
@@ -1176,11 +1221,11 @@ fn agent_record(session: u64, agent: &str) -> Value {
            "resume_id": null, "cols": 80, "rows": 24})
 }
 
-// What the migration to version 10 leaves in the state file: no workspace on a worktree, and
-// one on each agent session.
-fn assert_saved_as_version_10(dir: &Path, sessions: &[SessionId]) {
+// What the migration from before version 10 leaves in the state file, saved as this grove's
+// version: no workspace on a worktree, and one on each agent session.
+fn assert_saved_with_a_workspace_per_session(dir: &Path, sessions: &[SessionId]) {
     let all_saved = |state: &Value| sessions.iter().all(|&s| saved_chat(state, s).is_some());
-    let saved = wait_saved(dir, |state| state["version"] == 10 && all_saved(state));
+    let saved = wait_saved(dir, |state| state["version"] == 11 && all_saved(state));
     let repo = &saved["repos"][0];
     assert!(repo["main_worktree"].get("workspace").is_none(), "{saved}");
     assert!(
@@ -1226,7 +1271,7 @@ fn a_version_8_state_file_gives_each_session_of_a_worktree_a_copy_of_its_tabs() 
     );
     // The workspace of the worktree with no session is dropped.
     assert_eq!(core.starting_workspace(&linked).unwrap(), built_in(vec![]));
-    assert_saved_as_version_10(dir.path(), &[id(1), id(2)]);
+    assert_saved_with_a_workspace_per_session(dir.path(), &[id(1), id(2)]);
 }
 
 // Version 9 kept ended sessions too. An ended one gets its copy like any other, and a session
@@ -1262,7 +1307,7 @@ fn a_version_9_state_file_gives_ended_sessions_their_copy_and_drops_a_workspace_
         core.workspace(new).unwrap(),
         built_in(vec![panel(Agent::Claude, new, true)])
     );
-    assert_saved_as_version_10(dir.path(), &[id(3), id(4), new]);
+    assert_saved_with_a_workspace_per_session(dir.path(), &[id(3), id(4), new]);
 }
 
 // A file from before version 10 whose one workspace showed a session, its subagent, the subagent
@@ -1305,7 +1350,7 @@ fn a_subagents_panel_moves_to_its_top_parents_workspace(version: u32) {
     }
     let all = json!([1, 3, 2, 4]);
     let saved = wait_saved(dir.path(), |state| {
-        state["version"] == 10 && saved_chat(state, id(1)).map(Value::from) == Some(all.clone())
+        state["version"] == 11 && saved_chat(state, id(1)).map(Value::from) == Some(all.clone())
     });
     // Each subagent keeps a copy with its own panel, for when its parent is deleted.
     for session in [2, 3, 4] {
@@ -1327,6 +1372,56 @@ fn a_version_9_state_file_keeps_each_subagents_panel_in_its_top_parents_workspac
 fn a_version_8_state_file_keeps_each_subagents_panel_in_its_top_parents_workspace() {
     let _serial = serial();
     a_subagents_panel_moves_to_its_top_parents_workspace(8);
+}
+
+// Version 10 kept each session's workspace with no diff base, and its Diff panel opened on
+// uncommitted changes.
+#[test]
+fn a_version_10_state_file_opens_each_sessions_diff_on_head() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let repo = new_repo(dir.path(), "repo");
+    let mut record = agent_record(1, "claude");
+    record["workspace"] = json!({
+        "chat": [{"agent": "claude", "shown": true, "session": 1}],
+        "panels": ["diff", "logs"], "selected": "logs", "terminal": false,
+    });
+    let state = json!({"version": 10, "repos": [{
+        "main_worktree": {
+            "path": repo, "branch": "main", "display_name": "main", "issue_link": null,
+            "base_branch": "main", "sessions": [record],
+        },
+        "linked_worktrees": [], "profile": null, "overrides": {},
+    }]});
+    let home = dir.path().join("home");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join("state.json"), state.to_string()).unwrap();
+
+    let (core, _events) = start(dir.path());
+
+    // The rest of its workspace is as the file had it.
+    let restored = arranged(vec![panel(Agent::Claude, id(1), true)]);
+    assert_eq!(restored.diff_base, DiffBase::Head);
+    assert_eq!(core.workspace(id(1)).unwrap(), restored);
+    let saved = wait_saved(dir.path(), |state| state["version"] == 11);
+    assert_eq!(
+        saved_records(&saved)[0]["workspace"]["diff_base"],
+        "head",
+        "{saved}"
+    );
+    // The choice made now is in the file, and comes back from it.
+    let chosen = Workspace {
+        diff_base: DiffBase::MergeBase,
+        ..restored
+    };
+    block_on(core.set_workspace(id(1), chosen.clone(), None)).unwrap();
+    let saved = wait_saved(dir.path(), |state| {
+        saved_records(state)[0]["workspace"]["diff_base"] == "merge_base"
+    });
+    assert_eq!(saved["version"], 11, "{saved}");
+    drop(core);
+    let (core, _events) = start(dir.path());
+    assert_eq!(core.workspace(id(1)).unwrap(), chosen);
 }
 
 #[test]
@@ -1354,7 +1449,7 @@ fn a_state_file_from_before_workspaces_starts_each_session_from_the_layout() {
     let agent = session(&core, &repo, Agent::Claude);
     let changed = arranged(vec![panel(Agent::Claude, agent, true)]);
     block_on(core.set_workspace(agent, changed, None)).unwrap();
-    wait_saved(dir.path(), |state| state["version"] == 10);
+    wait_saved(dir.path(), |state| state["version"] == 11);
 }
 
 #[test]

@@ -1,7 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { type ComponentProps, useState } from "react";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 
-import type { AgentState, AgentStateChanged, FileDiff, SessionId } from "./bridge";
+import type { AgentState, AgentStateChanged, DiffBase, FileDiff, SessionId } from "./bridge";
 import { DiffView } from "./DiffView";
 import { type FakeBridge, fakeBridge, type FakeChange, type FakeDiffs } from "./fakeBridge";
 import type { MonacoDiffProps } from "./MonacoDiff";
@@ -111,6 +112,15 @@ const worktree = "/code/grove-wt/feat-40";
 
 const repos = { [worktree]: [{ path: worktree, branch: "feat-40", isMain: true }] };
 
+/**
+ * The diff view as the window holds it: it starts on HEAD, as a new agent session's workspace does,
+ * and shows each base it asks for, as the workspace keeps it.
+ */
+function Diff(props: Omit<ComponentProps<typeof DiffView>, "base" | "onBase">) {
+  const [base, setBase] = useState<DiffBase>("Head");
+  return <DiffView {...props} base={base} onBase={setBase} />;
+}
+
 /** Renders the diff view of `worktree`, which grove tracks from here on. */
 async function renderDiff(
   bridge: FakeBridge,
@@ -118,7 +128,7 @@ async function renderDiff(
   onSent: (session: SessionId) => void = () => {},
 ) {
   if (!(await bridge.listWorktrees()).some((w) => w.path === worktree)) await bridge.addRepo(worktree);
-  return render(<DiffView bridge={bridge} worktree={worktree} agentStates={agentStates} onSent={onSent} />);
+  return render(<Diff bridge={bridge} worktree={worktree} agentStates={agentStates} onSent={onSent} />);
 }
 
 function change(
@@ -218,14 +228,14 @@ test("a file asked for from outside opens on the HEAD base, expanded and scrolle
   const onRevealed = vi.fn();
   const scrolledTo = watchScrolls();
   const props = { bridge, worktree, agentStates: {}, onSent: () => {}, onRevealed };
-  const view = render(<DiffView {...props} reveal={null} />);
+  const view = render(<Diff {...props} reveal={null} />);
   await screen.findByText("new b");
   fireEvent.click(within(section("b.rs")).getByRole("button", { name: /b\.rs/ }));
   const bases = screen.getByRole("group", { name: "Diff base" });
   fireEvent.click(within(bases).getByRole("button", { name: "Merge base" }));
   await screen.findByText("new c");
 
-  view.rerender(<DiffView {...props} reveal="b.rs" />);
+  view.rerender(<Diff {...props} reveal="b.rs" />);
 
   await screen.findByText("new b");
   expect(within(bases).getByRole("button", { name: "HEAD" }).getAttribute("aria-pressed")).toBe("true");
@@ -251,9 +261,9 @@ async function revealable(diffs: FakeDiffs) {
   const bridge = fakeBridge(repos, diffs);
   await bridge.addRepo(worktree);
   const props = { bridge, worktree, agentStates: {}, onSent: () => {} };
-  const view = render(<DiffView {...props} reveal={null} />);
+  const view = render(<Diff {...props} reveal={null} />);
   await screen.findByRole("listitem", { name: "a.rs" });
-  return { bridge, reveal: (path: string) => view.rerender(<DiffView {...props} reveal={path} />) };
+  return { bridge, reveal: (path: string) => view.rerender(<Diff {...props} reveal={path} />) };
 }
 
 const twoFiles = (): FakeDiffs => ({
@@ -308,7 +318,7 @@ test("a revealed file that is not in the HEAD diff is dropped, so it does not sc
   expect(scrolledTo).toEqual([]);
 });
 
-test("the Diff opens on the base it is asked for, and a new ask switches to it again", async () => {
+test("the Diff shows the base it is given, and a pick only asks for the new base", async () => {
   const diffs: FakeDiffs = {
     [worktree]: {
       Head: [change({ newPath: "a.rs", added: 1, removed: 1 }, "staged a\n", "saved a\n")],
@@ -317,28 +327,26 @@ test("the Diff opens on the base it is asked for, and a new ask switches to it a
   };
   const bridge = fakeBridge(repos, diffs);
   await bridge.addRepo(worktree);
-  const view = (request: number) => (
-    <DiffView
-      bridge={bridge}
-      worktree={worktree}
-      agentStates={{}}
-      onSent={() => {}}
-      opened={{ base: "MergeBase", request }}
-    />
+  const picked = vi.fn();
+  const view = (base: DiffBase) => (
+    <DiffView bridge={bridge} worktree={worktree} agentStates={{}} onSent={() => {}} base={base} onBase={picked} />
   );
-  const { rerender } = render(view(1));
+  const { rerender } = render(view("MergeBase"));
 
   await screen.findByText("base a");
   const bases = screen.getByRole("group", { name: "Diff base" });
   expect(within(bases).getByRole("button", { name: "Merge base" }).getAttribute("aria-pressed")).toBe("true");
 
+  // The view only asks for the base the user picks. The session's workspace keeps it.
   fireEvent.click(within(bases).getByRole("button", { name: "HEAD" }));
+  expect(picked.mock.calls).toEqual([["Head"]]);
+  rerender(view("Head"));
   await screen.findByText("staged a");
 
-  // The same ask again keeps the user's choice. A new one goes back to the merge base.
-  rerender(view(1));
+  // The same base again keeps the user's choice. A new ask goes back to the merge base.
+  rerender(view("Head"));
   expect(within(bases).getByRole("button", { name: "HEAD" }).getAttribute("aria-pressed")).toBe("true");
-  rerender(view(2));
+  rerender(view("MergeBase"));
   await screen.findByText("base a");
   expect(within(bases).getByRole("button", { name: "Merge base" }).getAttribute("aria-pressed")).toBe("true");
 });

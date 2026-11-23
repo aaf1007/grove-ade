@@ -22,7 +22,7 @@ use std::{env, thread};
 
 use grove_core::{
     Agent, AgentSpec, Core, CoreConfig, CoreEvent, DiffBase, FileDiff, LineKind, Mode,
-    NewReviewComment, NewWorktree, PanelSpec, RemoveOpts, Reply, RequestId, SessionId,
+    NewReviewComment, NewWorktree, PanelSpec, RemoveOpts, Reply, RequestId, SessionId, Workspace,
 };
 use serde_json::{Value, json};
 use tokio::sync::broadcast::error::RecvError;
@@ -258,15 +258,21 @@ fn handle(
             json!("killed")
         }
         "diff" => {
-            let base = match text("base")?.as_str() {
-                "head" => DiffBase::Head,
-                "merge_base" => DiffBase::MergeBase,
-                _ => return Err("base is head or merge_base".into()),
-            };
+            let base = diff_base(&text("base")?)?;
             let files = runtime.block_on(core.diff(&path("worktree")?, base))?;
             json!(files.iter().map(file_diff).collect::<Vec<_>>())
         }
         "workspace" => json!(format!("{:?}", core.workspace(session()?)?)),
+        // As the user picking a base in the Diff panel: the session's workspace keeps it.
+        "set_diff_base" => {
+            let session = session()?;
+            let workspace = Workspace {
+                diff_base: diff_base(&text("base")?)?,
+                ..core.workspace(session)?
+            };
+            runtime.block_on(core.set_workspace(session, workspace, None))?;
+            json!("set")
+        }
         "starting_workspace" => {
             json!(format!(
                 "{:?}",
@@ -315,6 +321,15 @@ fn handle(
         "sessions" => json!(format!("{:?}", core.sessions(&path("worktree")?)?)),
         _ => return Err(format!("unknown cmd {cmd}").into()),
     })
+}
+
+/// The diff base named `head` or `merge_base`.
+fn diff_base(name: &str) -> Result<DiffBase, Failure> {
+    match name {
+        "head" => Ok(DiffBase::Head),
+        "merge_base" => Ok(DiffBase::MergeBase),
+        _ => Err("base is head or merge_base".into()),
+    }
 }
 
 /// A file's diff as JSON, with each line as text after a `+`, `-` or space, as `git diff` shows it.
