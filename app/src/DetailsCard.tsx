@@ -1,9 +1,11 @@
 import {
   AppWindow,
   Bot,
+  ChartPie,
   ChevronDown,
   FileDiff as FileDiffIcon,
   FolderOpen,
+  Gauge,
   GitBranch,
   Laptop,
   type LucideIcon,
@@ -19,12 +21,14 @@ import type {
   AgentSessionRecord,
   AgentStateChanged,
   Bridge,
+  ContextReadingChanged,
   DiffBase,
   Editor,
   FileDiff,
   Mode,
   SessionId,
   RunSession,
+  UsageReading,
   Worktree,
 } from "./bridge";
 import type { ModelChoice } from "./Picker";
@@ -389,6 +393,8 @@ export function DetailsCard({
               />
             </li>
           )}
+          {session && <UsageLimitsRow bridge={bridge} agent={session.agent} />}
+          {session && <ContextWindowRow bridge={bridge} session={session.session} onError={setError} />}
         </ul>
         {alert && (
           <p role="alert" className="details-error">
@@ -428,6 +434,135 @@ export function useDetailsRoom(chatArea: HTMLElement | null, panels: number): bo
     return () => sizes.disconnect();
   }, [chatArea]);
   return width !== null && width - DETAILS_WIDTH >= Math.max(panels, 1) * CHAT_MIN_WIDTH;
+}
+
+/**
+ * The plan limits of the focused session's agent: a line per limit window with its percent used
+ * and when it resets, or that the account has none. When the latest read failed, the last good
+ * reading stays with how long ago it was read. No row before the first reading, and when the
+ * agent cannot give one.
+ */
+function UsageLimitsRow({ bridge, agent }: { bridge: Bridge; agent: Agent }) {
+  const [readings, setReadings] = useState<Partial<Record<Agent, UsageReading | null>>>({});
+  // The time a reading's age counts to: when the latest reading came, then each tick after it.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(
+    () =>
+      bridge.onUsageReading((change) => {
+        setNow(Date.now());
+        setReadings((known) => ({ ...known, [change.agent]: change.reading }));
+      }),
+    [bridge],
+  );
+  const reading = readings[agent];
+  // A reading left from a failed read shows its age, so the row draws again as the age grows.
+  const aging = reading?.latestReadFailed ?? false;
+  useEffect(() => {
+    if (!aging) return;
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [aging]);
+  if (!reading) return null;
+  const { limits } = reading;
+  const notes = [
+    limits.kind === "NoPlanLimits" && "No plan limits",
+    reading.latestReadFailed && `last read ${age(now - reading.readAtUnixMs)}`,
+  ].filter(Boolean);
+  return (
+    <li aria-label="Usage limits">
+      <div className="details-row">
+        <RowContent
+          icon={Gauge}
+          label="Usage limits"
+          end={notes.length > 0 && <span className="details-muted">{notes.join(" · ")}</span>}
+        />
+      </div>
+      {limits.kind === "Windows" &&
+        limits.windows.map((window) => (
+          <div key={window.name} role="group" aria-label={window.name} className="details-subrow">
+            <span>{window.name}</span>
+            <span className="details-end details-muted">
+              {window.resetsAtUnixMs === null
+                ? `${window.percentUsed}%`
+                : `${window.percentUsed}% · resets ${clockTime(window.resetsAtUnixMs)}`}
+            </span>
+          </div>
+        ))}
+    </li>
+  );
+}
+
+/**
+ * How full the focused session's context window is, as its agent reported it after its last turn,
+ * with a line for the tokens the session has used so far. No row before the first report, so none
+ * in terminal mode.
+ */
+function ContextWindowRow({
+  bridge,
+  session,
+  onError,
+}: {
+  bridge: Bridge;
+  session: SessionId;
+  onError(error: string): void;
+}) {
+  const [reported, setReported] = useState<ContextReadingChanged | null>(null);
+  useEffect(() => {
+    // A report that comes while the core is asked for the last one is the newer of the two.
+    let heard = false;
+    let current = true;
+    const stop = bridge.onContextReading((change) => {
+      if (change.session !== session) return;
+      heard = true;
+      setReported(change);
+    });
+    bridge.contextReading(session).then(
+      (reading) => current && !heard && reading && setReported({ session, reading }),
+      (e: unknown) => current && onError(String(e)),
+    );
+    return () => {
+      current = false;
+      stop();
+    };
+  }, [bridge, session, onError]);
+  // A reading of the session focused before never shows for this one.
+  if (reported?.session !== session) return null;
+  const { sessionTotalTokens, contextWindow } = reported.reading;
+  const fullness =
+    contextWindow && contextWindow.sizeTokens > 0
+      ? `${Math.round((100 * contextWindow.usedTokens) / contextWindow.sizeTokens)}% · ${tokens(contextWindow.usedTokens)} of ${tokens(contextWindow.sizeTokens)}`
+      : null;
+  return (
+    <li aria-label="Context window">
+      <div className="details-row">
+        <RowContent
+          icon={ChartPie}
+          label="Context window"
+          end={fullness && <span className="details-muted">{fullness}</span>}
+        />
+      </div>
+      <div role="group" aria-label="Session tokens" className="details-subrow">
+        <span>Session tokens</span>
+        <span className="details-end details-muted">{tokens(sessionTotalTokens)}</span>
+      </div>
+    </li>
+  );
+}
+
+const TOKENS = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
+
+/** A count of tokens in short: 950, 84k, 30.5k, 1.2M. */
+function tokens(count: number): string {
+  return TOKENS.format(count).replace("K", "k");
+}
+
+/** How long ago something was, as "12 min ago", from a span in milliseconds. */
+function age(elapsedMs: number): string {
+  const minutes = Math.floor(elapsedMs / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours} h ago` : `${Math.floor(hours / 24)} d ago`;
 }
 
 /** A row's icon, its label, and what sits at its right edge. */

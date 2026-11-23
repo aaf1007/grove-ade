@@ -239,6 +239,48 @@ export interface AccountChanged {
   account: Account | null;
 }
 
+/** One window of an agent's plan limits, such as the 5-hour one. */
+export interface UsageWindow {
+  /** The name to show, such as "5-hour" or "Weekly". */
+  name: string;
+  /** How much of the window is used, 0 to 100. */
+  percentUsed: number;
+  /** When the window starts over. null when the agent does not say. */
+  resetsAtUnixMs: number | null;
+}
+
+/** What an agent's account is limited by: nothing, as with an API key, or its plan's windows. */
+export type PlanLimits = { kind: "NoPlanLimits" } | { kind: "Windows"; windows: UsageWindow[] };
+
+/** An agent's plan limits as of its last good read. */
+export interface UsageReading {
+  limits: PlanLimits;
+  /** When the agent gave `limits`. */
+  readAtUnixMs: number;
+  /** A later read failed, so `limits` may be out of date. */
+  latestReadFailed: boolean;
+}
+
+/** An agent's usage reading, as `UsageReadingChanged` in `app/src-tauri/src/main.rs` sends it. null when the agent cannot give one. */
+export interface UsageReadingChanged {
+  agent: Agent;
+  reading: UsageReading | null;
+}
+
+/** A chat-mode session's tokens and context use, as its agent reported them after its last turn. */
+export interface ContextReading {
+  /** Every token the conversation has used so far, input and output. */
+  sessionTotalTokens: number;
+  /** How full the context window is. null when the agent does not say. */
+  contextWindow: { usedTokens: number; sizeTokens: number } | null;
+}
+
+/** A session's context reading, as `ContextReadingChanged` in `app/src-tauri/src/main.rs` sends it. */
+export interface ContextReadingChanged {
+  session: SessionId;
+  reading: ContextReading;
+}
+
 /** How a turn ended. A failed turn has the agent's own name for the error, such as "rate_limit". */
 export type TurnOutcome =
   | { outcome: "Completed" | "Interrupted" }
@@ -478,6 +520,18 @@ export interface Bridge {
    * too. Returns the unsubscribe.
    */
   onAccount(listener: (change: AccountChanged) => void): () => void;
+  /**
+   * Calls `listener` with each agent's usage reading as it changes, the latest before the call
+   * too. Returns the unsubscribe.
+   */
+  onUsageReading(listener: (change: UsageReadingChanged) => void): () => void;
+  /**
+   * The agent session's context reading. null before its first turn ends, and for a session that
+   * is not in chat mode.
+   */
+  contextReading(session: SessionId): Promise<ContextReading | null>;
+  /** Calls `listener` each time a session reports a context reading, after a turn. Returns the unsubscribe. */
+  onContextReading(listener: (change: ContextReadingChanged) => void): () => void;
   /** Calls `listener` each time an agent session's state changes. Returns the unsubscribe. */
   onAgentState(listener: (change: AgentStateChanged) => void): () => void;
   /** Every agent session of every tracked worktree, ended ones too. */
@@ -699,6 +753,13 @@ export const tauriBridge: Bridge = {
   modelChoice: (session) => invoke("model_choice", { session }),
   // An agent reports its login once, when a session starts, which can be before a reload.
   onAccount: (listener) => listenAndList("account", "accounts", listener),
+  // Read when a session starts and after each turn, which can be before a reload.
+  onUsageReading: (listener) => listenAndList("usage-reading", "usage_readings", listener),
+  contextReading: (session) => invoke("context_reading", { session }),
+  onContextReading(listener) {
+    const unlisten = listen<ContextReadingChanged>("context-reading", (event) => listener(event.payload));
+    return () => void unlisten.then((stop) => stop());
+  },
   onAgentState(listener) {
     const unlisten = listen<AgentStateChanged>("agent-state", (event) => listener(event.payload));
     return () => void unlisten.then((stop) => stop());
