@@ -13,7 +13,7 @@ use crate::chat::ModelChoice;
 use crate::error::with_causes;
 use crate::session::{Kind, Probe};
 use crate::state::SavedWorkspace;
-use crate::{Agent, Core, CoreEvent, Mode, Result, SessionId, Warning};
+use crate::{Agent, Core, Mode, Result, SessionId, Warning};
 
 /// A session in a worktree, as `Core::sessions` lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,8 +220,7 @@ impl Core {
                             worktree: worktree.clone(),
                             reason: with_causes(&e),
                         };
-                        // Having no receivers is fine.
-                        let _ = self.events.send(CoreEvent::Warning(warning));
+                        self.warnings.raise(warning);
                     }
                 }
             }

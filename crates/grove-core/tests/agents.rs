@@ -2450,3 +2450,50 @@ fn a_failed_session_leaves_the_queue_when_its_worktree_is_forgotten() {
 
     assert_eq!(s.queue(), Vec::new());
 }
+
+#[test]
+fn a_codex_hook_clears_only_its_sessions_warning_in_a_shared_worktree() {
+    let mut s = setup_codex_wrapped(
+        json!([{"wait_input":"\r"}]),
+        "export FAKE_CODEX_HOOK_TRUST=untrusted",
+    );
+    let first = s.spawn(None);
+    let second = s.spawn(None);
+    for _ in 0..2 {
+        while !matches!(
+            next_event(&mut s.events),
+            CoreEvent::Warning(Warning::CodexHooksNotTrusted { .. })
+        ) {}
+    }
+    let hooks = || {
+        s.core
+            .warnings()
+            .into_iter()
+            .filter_map(|entry| match entry.warning {
+                Warning::CodexHooksNotTrusted { session, .. } => Some((session, entry.id)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let warnings = hooks();
+    assert_eq!(warnings.len(), 2);
+    let first_id = warnings
+        .iter()
+        .find(|(session, _)| *session == first)
+        .unwrap()
+        .1;
+    let second_id = warnings
+        .iter()
+        .find(|(session, _)| *session == second)
+        .unwrap()
+        .1;
+    s.run_hook(first, "SessionStart-startup", "first-conversation");
+    while !matches!(next_event(&mut s.events), CoreEvent::WarningCleared { id } if id == first_id) {
+    }
+    assert_eq!(hooks(), [(second, second_id)]);
+    s.core.kill(second).unwrap();
+    while !matches!(next_event(&mut s.events), CoreEvent::WarningCleared { id } if id == second_id)
+    {
+    }
+    assert!(hooks().is_empty());
+}

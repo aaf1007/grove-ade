@@ -11,7 +11,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{conversation_only, now_unix_ms, times, untimed};
+use common::{conversation_only, now_unix_ms, times, untimed, write_script};
 use grove_core::{
     AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, Core, CoreConfig, CoreEvent,
     InputKind, Mode, ModelInfo, Question, QuestionOption, Reply, RequestId, SessionId,
@@ -78,18 +78,14 @@ fn setup_with_account(steps: Value, account: Value) -> Setup {
     let wrapper = dir.path().join("codex");
     let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/fake-agents/codex");
     let script = format!(
-        "#!/bin/sh\nexport FAKE_CODEX_SCENARIO='{0}' FAKE_CODEX_APP_SERVER_SCENARIO='{0}' FAKE_CODEX_LOG='{1}' FAKE_CODEX_ACCOUNT=\"$(cat '{2}')\" FAKE_CODEX_SKILLS='{4}'\nexec '{3}' \"$@\"\n",
+        "export FAKE_CODEX_SCENARIO='{0}' FAKE_CODEX_APP_SERVER_SCENARIO='{0}' FAKE_CODEX_LOG='{1}' FAKE_CODEX_ACCOUNT=\"$(cat '{2}')\" FAKE_CODEX_SKILLS='{4}'\nexec '{3}' \"$@\"",
         scenario.display(),
         log.display(),
         account_file.display(),
         fake.display(),
         skills.display(),
     );
-    fs::write(&wrapper, script).unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    write_script(&wrapper, &script);
     let mut cfg = CoreConfig::new(dir.path().join("home"));
     cfg.codex_command = wrapper;
     let (core, events) = Core::start(cfg).unwrap();

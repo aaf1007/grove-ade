@@ -85,7 +85,7 @@ impl Core {
             .map_err(|e| CoreError::io("run git in", repo)(io::Error::other(e)))??;
 
         // Keep the list repo by repo: the new worktree goes after the last one of its repo.
-        let failed = {
+        {
             let mut tracked = self.tracked();
             let start = tracked.iter().position(|w| w.is_main && w.path == repo);
             let end = start
@@ -100,14 +100,9 @@ impl Core {
             match watch {
                 Ok(watch) => {
                     self.watches().insert(added.path.clone(), watch);
-                    None
                 }
-                Err(e) => Some(watch::not_started(&added.path, &e)),
+                Err(e) => self.warnings.raise(watch::not_started(&added.path, &e)),
             }
-        };
-        // Once tracked, so a retry finds the worktree.
-        if let Some(warning) = failed {
-            let _ = self.events.send(CoreEvent::Warning(warning));
         }
         self.save_state().await?;
         let setup = self.start_setup(repo, &added.path)?;
@@ -165,6 +160,7 @@ impl Core {
         let (needed, unused) = self.check_watcher(worktree, |needed, watches| {
             if matches!(needed, Ok(true)) {
                 watches.insert(worktree.to_path_buf(), watch);
+                self.warnings.clear_watcher(worktree);
                 (needed, None)
             } else {
                 (needed, Some(watch))

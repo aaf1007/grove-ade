@@ -20,7 +20,7 @@ use tokio::sync::broadcast::{self, error::TryRecvError};
 use tokio::sync::mpsc::unbounded_channel;
 
 mod common;
-use common::{conversation_only, grove_hook, untimed};
+use common::{conversation_only, grove_hook, untimed, write_script};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -88,10 +88,10 @@ fn setup_tuned(
     let (tui_log, chat_log) = (path("tui.log"), path("chat.log"));
     let wrapper = |name: &str, lines: String, fake: PathBuf| {
         let wrapper = path(name);
-        let script = format!("#!/bin/sh\n{lines}\nexec '{}' \"$@\"\n", fake.display());
-        fs::write(&wrapper, script).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(
+            &wrapper,
+            &format!("{lines}\nexec '{}' \"$@\"", fake.display()),
+        );
         wrapper
     };
     let mut cfg = CoreConfig::new(path("home"));

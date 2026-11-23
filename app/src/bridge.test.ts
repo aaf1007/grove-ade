@@ -2,17 +2,18 @@ import { expect, test, vi } from "vitest";
 
 import { parseFrame, parseSnapshot, tauriBridge, type WarningSent } from "./bridge";
 
-// Stands in for Tauri: `sent` is what the `warnings` command returns, `emit` sends a `warning`
-// event while something listens, and `listenFails` makes `listen` reject.
+// The warnings command reads the active list. The event requests a fresh read.
 const tauri = vi.hoisted(() => ({
-  sent: [] as unknown[],
+  sent: [] as unknown[] | Promise<unknown[]>,
   listenFails: false,
+  read: vi.fn(),
   emit: undefined as ((payload: unknown) => void) | undefined,
 }));
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {},
   invoke: async (command: string) => {
     if (command !== "warnings") throw `unexpected command ${command}`;
+    tauri.read();
     return tauri.sent;
   },
 }));
@@ -26,7 +27,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async (event: string, handler: (event: { payload: unknown }) => void) => {
-    if (event !== "warning") throw `unexpected event ${event}`;
+    if (event !== "warnings-changed") throw `unexpected event ${event}`;
     if (tauri.listenFails) throw "no event plugin";
     tauri.emit = (payload) => handler({ payload });
     return () => (tauri.emit = undefined);
@@ -63,29 +64,43 @@ test("a snapshot from the core is its seq in 8 big-endian bytes, its cols and ro
   expect([...snapshot.bytes]).toEqual([0x1b, 0x5b, 0x48]);
 });
 
-test("a warning listener gets the warnings sent before it listened, then the new ones", async () => {
+test("a warning listener receives the active list at start and after each change", async () => {
   const atStart: WarningSent = { id: 0, kind: "LoginShellEnv", reason: "timed out" };
-  const later: WarningSent = { id: 1, kind: "LoginShellEnv", reason: "no environment" };
+  const later: WarningSent = { id: 1, kind: "SessionNotRestored", worktree: "/w", reason: "gone" };
   tauri.sent = [atStart];
-  const got: WarningSent[] = [];
-
-  const stop = tauriBridge.onWarning((warning) => got.push(warning));
-  await vi.waitFor(() => expect(got).toEqual([atStart]));
-  tauri.emit!(later);
+  const got: WarningSent[][] = [];
+  const stop = tauriBridge.onWarnings((warnings) => got.push(warnings));
+  await vi.waitFor(() => expect(got).toEqual([[atStart]]));
+  tauri.sent = [atStart, later];
+  tauri.emit!(null);
+  await vi.waitFor(() => expect(got).toEqual([[atStart], [atStart, later]]));
   stop();
   await vi.waitFor(() => expect(tauri.emit).toBeUndefined());
+});
 
-  expect(got).toEqual([atStart, later]);
+test("a clear during the initial warning list read wins over its late reply", async () => {
+  tauri.read.mockClear();
+  let finish!: (warnings: WarningSent[]) => void;
+  tauri.sent = new Promise<WarningSent[]>((resolve) => { finish = resolve; });
+  const got: WarningSent[][] = [];
+  const stop = tauriBridge.onWarnings((warnings) => got.push(warnings));
+  await vi.waitFor(() => expect(tauri.read).toHaveBeenCalledTimes(1));
+  tauri.sent = [];
+  tauri.emit!(null);
+  await vi.waitFor(() => expect(got).toEqual([[]]));
+  finish([{ id: 1, kind: "WatcherNotStarted", worktree: "/gone", reason: "missing" }]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(got).toEqual([[]]);
+  stop();
 });
 
 test("a warning listener still gets the earlier warnings when listening fails", async () => {
   const atStart: WarningSent = { id: 0, kind: "LoginShellEnv", reason: "timed out" };
   tauri.sent = [atStart];
   tauri.listenFails = true;
-  const got: WarningSent[] = [];
-
-  const stop = tauriBridge.onWarning((warning) => got.push(warning));
-  await vi.waitFor(() => expect(got).toEqual([atStart]));
+  const got: WarningSent[][] = [];
+  const stop = tauriBridge.onWarnings((warnings) => got.push(warnings));
+  await vi.waitFor(() => expect(got).toEqual([[atStart]]));
   stop();
   tauri.listenFails = false;
 });

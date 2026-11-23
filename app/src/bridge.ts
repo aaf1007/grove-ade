@@ -501,11 +501,8 @@ export interface Bridge {
    * forward. Returns the unsubscribe.
    */
   onNotificationClicked(listener: (clicked: NotificationClicked) => void): () => void;
-  /**
-   * Calls `listener` with each warning from the core, those sent before the call too. Returns the
-   * unsubscribe. A warning can come more than once, with the same id.
-   */
-  onWarning(listener: (warning: WarningSent) => void): () => void;
+  /** Lists the active warnings at startup and whenever the core changes them. */
+  onWarnings(listener: (warnings: WarningSent[]) => void): () => void;
   /** Starts the worktree's watcher after a `WatcherNotStarted` warning. Fails with the new cause. */
   retryWatcher(worktree: string): Promise<void>;
   /** Tells the core the session's panel got focus, so a `Done` agent session becomes `Idle`. */
@@ -726,7 +723,27 @@ export const tauriBridge: Bridge = {
     return () => void unlisten.then((stop) => stop());
   },
   // The core sends some before the UI listens, such as the login shell's at start.
-  onWarning: (listener) => listenAndList("warning", "warnings", listener),
+  onWarnings(listener) {
+    let subscribed = true;
+    let latest = 0;
+    async function refresh() {
+      if (!subscribed) return;
+      const request = ++latest;
+      try {
+        const active = await invoke<WarningSent[]>("warnings");
+        if (subscribed && request === latest) listener(active);
+      } catch (error) {
+        console.warn("could not list warnings:", error);
+      }
+    }
+    const unlisten = listen("warnings-changed", refresh);
+    void unlisten.catch((error: unknown) => console.warn("could not listen for warnings:", error))
+      .then(refresh);
+    return () => {
+      subscribed = false;
+      void unlisten.then((stop) => stop(), () => {});
+    };
+  },
   retryWatcher: (worktree) => invoke("retry_watcher", { worktree }),
   focus: (session) => invoke("focus", { session }),
   write: (session, bytes) => invoke("write", { session, bytes: Array.from(bytes) }),

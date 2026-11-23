@@ -431,10 +431,12 @@ fn a_retry_once_the_cause_is_gone_watches_the_worktree() {
     let repo = new_repo(dir.path());
     let linked = linked_worktree(&repo);
     let (core, mut events, away) = restored_with_an_unwatched_worktree(dir.path(), &repo, &linked);
+    let id = watcher_id(&core, &linked);
     put_back(&away, &linked);
 
     block_on(core.retry_watcher(&linked)).unwrap();
 
+    assert!(!core.warnings().iter().any(|entry| entry.id == id));
     // The diff may have changed while nothing watched it.
     wait_diff_changed(&mut events, &linked, LIVENESS);
     fs::write(linked.join("a.txt"), "two\n").unwrap();
@@ -931,4 +933,85 @@ fn a_failed_delete_whose_watcher_cannot_start_again_sends_one_warning() {
         matches!(&retried, Err(CoreError::Git2 { path, .. }) if *path == topic),
         "{retried:?}"
     );
+}
+
+fn watcher_id(core: &Core, path: &Path) -> usize {
+    let warnings = core.warnings();
+    let ids: Vec<_> = warnings
+        .iter()
+        .filter_map(|entry| match &entry.warning {
+            Warning::WatcherNotStarted { worktree, .. } if worktree == path => Some(entry.id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids.len(), 1, "{warnings:?}");
+    ids[0]
+}
+
+#[test]
+fn removing_a_worktree_clears_only_its_watcher_warning() {
+    let _serial = serial();
+    for opts in [RemoveOpts::Forget, RemoveOpts::ForgetRepo, DELETE] {
+        let dir = short_temp_dir();
+        let repo = new_repo(dir.path());
+        let linked = linked_worktree(&repo);
+        let other = repo.with_file_name("other");
+        git(
+            &repo,
+            &["worktree", "add", "-b", "other", other.to_str().unwrap()],
+        );
+        let away = hide_git_file(&linked, dir.path());
+        let other_git = other.join(".git");
+        fs::rename(&other_git, dir.path().join("other.git")).unwrap();
+        let (core, mut events) = start(dir.path());
+        block_on(core.add_repo(&repo)).unwrap();
+        let id = watcher_id(&core, &linked);
+        let other_id = watcher_id(&core, &other);
+        put_back(&away, &linked);
+        let path = if opts == RemoveOpts::ForgetRepo {
+            &repo
+        } else {
+            &linked
+        };
+        block_on(core.remove_worktree(path, opts)).unwrap();
+        assert!(!core.warnings().iter().any(|entry| entry.id == id));
+        assert!(
+            std::iter::from_fn(|| events.try_recv().ok())
+                .any(|e| matches!(e, CoreEvent::WarningCleared { id: cleared } if cleared == id))
+        );
+        assert_eq!(
+            core.warnings().iter().any(|entry| entry.id == other_id),
+            opts != RemoveOpts::ForgetRepo
+        );
+    }
+}
+
+#[test]
+fn a_failed_delete_keeps_one_warning_per_cause_until_its_watcher_starts() {
+    let _serial = serial();
+    let dir = short_temp_dir();
+    let repo = new_repo(dir.path());
+    let linked = linked_worktree(&repo);
+    let (core, _, away) = restored_with_an_unwatched_worktree(dir.path(), &repo, &linked);
+    let initial = watcher_id(&core, &linked);
+    put_back(&away, &linked);
+    set_cleanup(&core, &repo, "mv .git hidden-git; exit 1".into());
+    assert!(matches!(
+        block_on(core.remove_worktree(&linked, DELETE)),
+        Err(CoreError::CleanupFailed { .. })
+    ));
+    assert_eq!(watcher_id(&core, &linked), initial);
+    put_back(&linked.join("hidden-git"), &linked);
+    set_cleanup(&core, &repo, "exit 1".into());
+    assert!(matches!(
+        block_on(core.remove_worktree(&linked, DELETE)),
+        Err(CoreError::CleanupFailed { .. })
+    ));
+    assert!(!core.warnings().iter().any(|entry| entry.id == initial));
+    set_cleanup(&core, &repo, "mv .git hidden-git; exit 1".into());
+    assert!(matches!(
+        block_on(core.remove_worktree(&linked, DELETE)),
+        Err(CoreError::CleanupFailed { .. })
+    ));
+    assert_ne!(watcher_id(&core, &linked), initial);
 }
