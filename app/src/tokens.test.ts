@@ -211,6 +211,41 @@ test.each(
   expect(contrast(resolve(values, text), resolve(values, ground))).toBeGreaterThanOrEqual(4.5);
 });
 
+// A sidebar row's grounds: the sidebar, and the hover and selected fills over it. The age text shows
+// at rest and on the selected row, as the menu button takes its place on hover. The marks show on
+// all three, and as marks they need 3:1 (WCAG 1.4.11).
+const rowGrounds = ["sidebar", "row-selected", "hover"];
+const onRows: [string, string[], number][] = [
+  ["muted", rowGrounds.slice(0, 2), 4.5],
+  ["working", rowGrounds, 3],
+  ["accent-text", rowGrounds, 3],
+  ["failed", rowGrounds, 3],
+];
+
+test.each(
+  Object.entries(everyTheme).flatMap(([theme, values]) =>
+    onRows.flatMap(([text, grounds, minimum]) => grounds.map((ground) => ({ theme, text, ground, minimum, values }))),
+  ),
+)("$text on a sidebar row's $ground has $minimum:1 contrast in $theme", ({ text, ground, minimum, values }) => {
+  expect(contrast(resolve(values, text), overSidebar(values, ground))).toBeGreaterThanOrEqual(minimum);
+});
+
+// A fill as it shows over the sidebar: a solid one as it is, a see-through one blended over it.
+function overSidebar(values: Record<string, string>, token: string): string {
+  const fill = /^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/.exec(values[`--${token}`] ?? "");
+  if (!fill) return resolve(values, token);
+  const sidebar = resolve(values, "sidebar");
+  const alpha = Number(fill[4]);
+  return `#${[1, 2, 3]
+    .map((channel) => {
+      const under = parseInt(sidebar.slice(channel * 2 - 1, channel * 2 + 1), 16);
+      return Math.round(Number(fill[channel]) * alpha + under * (1 - alpha))
+        .toString(16)
+        .padStart(2, "0");
+    })
+    .join("")}`;
+}
+
 // The four surface steps: sidebar, chat area, raised (the panel area, dialogs and menus) and code.
 // Each must read as its own region, so sorted by lightness each step sits a set distance from the next.
 const surfaces = ["sidebar", "bg", "panel", "code-bg"];
