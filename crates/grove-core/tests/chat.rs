@@ -9,9 +9,10 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use grove_core::{
-    AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, Core, CoreConfig, CoreError,
-    CoreEvent, InputKind, Mode, ModelInfo, Question, QuestionOption, RemoveOpts, Reply, RequestId,
-    SessionId, SlashCommand, SpawnSpec, StateSource, TurnOutcome,
+    AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, ContextReading, ContextWindow, Core,
+    CoreConfig, CoreError, CoreEvent, InputKind, Mode, ModelInfo, PlanLimits, Question,
+    QuestionOption, RemoveOpts, Reply, RequestId, SessionId, SlashCommand, SpawnSpec, StateSource,
+    TurnOutcome, UsageReading, UsageWindow,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -202,6 +203,25 @@ impl Setup {
         }
     }
 
+    /// The next usage reading the core sends for Claude, skipping other events.
+    fn next_usage_reading(&mut self) -> Option<UsageReading> {
+        loop {
+            if let CoreEvent::UsageReading { agent, reading } = self.next_event() {
+                assert_eq!(agent, Agent::Claude);
+                return reading;
+            }
+        }
+    }
+
+    /// The next context reading the core sends, skipping other events.
+    fn next_context_reading(&mut self) -> (SessionId, ContextReading) {
+        loop {
+            if let CoreEvent::ContextReading { session, reading } = self.next_event() {
+                return (session, reading);
+            }
+        }
+    }
+
     /// Fails if an agent state comes within `wait`.
     fn no_state_for(&mut self, wait: Duration) {
         let until = Instant::now() + wait;
@@ -227,12 +247,11 @@ impl Setup {
 
 fn chat_spec(agent: Agent, prompt: Option<&str>) -> AgentSpec {
     AgentSpec {
-        agent,
+        agent: Some(agent),
         mode: Mode::Chat,
         prompt: prompt.map(str::to_owned),
         cols: 120,
         rows: 40,
-        panel: None,
     }
 }
 
@@ -1162,6 +1181,96 @@ fn removing_the_worktree_ends_its_chat_session() {
     assert_eq!(
         s.next_state(),
         (session, AgentState::Exited, StateSource::Protocol)
+    );
+}
+
+/// Keeps the core from applying a process exit to its agent session for a second. The core
+/// reads every waiting connection before it applies an exit, and gives each of these two
+/// half a second to send a message that never comes.
+fn delay_agent_exits(socket: &Path) -> Vec<std::os::unix::net::UnixStream> {
+    (0..2)
+        .map(|_| std::os::unix::net::UnixStream::connect(socket).unwrap())
+        .collect()
+}
+
+impl Setup {
+    /// What the core has sent about how `session` ended since its `SessionExited`: each of
+    /// its agent states, and each change to the list of agent sessions.
+    fn ending_of(&mut self, session: SessionId) -> Vec<Ending> {
+        self.wait_exit(session);
+        let mut ending = Vec::new();
+        loop {
+            match self.events.try_recv() {
+                Ok(CoreEvent::AgentState {
+                    session: s,
+                    state,
+                    source,
+                }) if s == session => ending.push(Ending::State(state, source)),
+                Ok(CoreEvent::AgentSessionsChanged) => ending.push(Ending::ListChanged),
+                Ok(_) => {}
+                Err(TryRecvError::Empty) => return ending,
+                Err(e) => panic!("{e}"),
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Ending {
+    State(AgentState, StateSource),
+    ListChanged,
+}
+
+#[test]
+fn removing_the_worktree_ends_its_chat_session_once_when_the_exit_is_applied_late() {
+    let mut s = setup(then_wait(Vec::new()));
+    let repo = s.worktree.clone();
+    let session = s.spawn(None);
+    s.wait_log("file");
+    let _delay = delay_agent_exits(&s.cfg.socket);
+
+    block_on(s.core.remove_worktree(&repo, RemoveOpts::ForgetRepo)).unwrap();
+
+    // The session ends, which changes the list, and then its record goes, which changes it
+    // again.
+    assert_eq!(
+        s.ending_of(session),
+        [
+            Ending::State(AgentState::Exited, StateSource::Protocol),
+            Ending::ListChanged,
+            Ending::ListChanged,
+        ]
+    );
+}
+
+#[test]
+fn removing_the_worktree_keeps_how_a_chat_process_that_had_just_exited_ended() {
+    let mut s = setup(json!([{"wait_message": "user_message"}, {"exit": 3}]));
+    let repo = s.worktree.clone();
+    let session = s.spawn(None);
+    s.wait_log("file");
+    let _delay = delay_agent_exits(&s.cfg.socket);
+    // Read on a receiver of its own, so `ending_of` still finds the exit.
+    let mut exits = s.events.resubscribe();
+    s.core.send_message(session, "fail").unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !matches!(
+        exits.try_recv(),
+        Ok(CoreEvent::SessionExited { session: exited, .. }) if exited == session
+    ) {
+        assert!(Instant::now() < deadline, "the process did not exit");
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    block_on(s.core.remove_worktree(&repo, RemoveOpts::ForgetRepo)).unwrap();
+
+    assert_eq!(
+        s.ending_of(session),
+        [
+            Ending::State(AgentState::Failed, StateSource::Protocol),
+            Ending::ListChanged,
+            Ending::ListChanged,
+        ]
     );
 }
 
@@ -2165,4 +2274,159 @@ fn a_command_list_alone_sets_no_state_and_starts_no_turn_for_a_waiting_message()
     while !frames.messages().contains(&not_delivered("go")) {
         frames.next_frame(deadline, "the not delivered message");
     }
+}
+
+fn usage_line(windows: Value) -> Value {
+    json!({"send": {"type": "usage", "reading": "windows", "windows": windows}})
+}
+
+fn two_windows() -> Value {
+    json!([
+        {"name": "5-hour", "percent_used": 42, "resets_at_unix_ms": 1_763_560_921_500_u64},
+        {"name": "Weekly", "percent_used": 18, "resets_at_unix_ms": 1_763_992_800_000_u64},
+    ])
+}
+
+fn two_windows_read() -> PlanLimits {
+    PlanLimits::Windows(vec![
+        UsageWindow {
+            name: "5-hour".into(),
+            percent_used: 42,
+            resets_at_unix_ms: Some(1_763_560_921_500),
+        },
+        UsageWindow {
+            name: "Weekly".into(),
+            percent_used: 18,
+            resets_at_unix_ms: Some(1_763_992_800_000),
+        },
+    ])
+}
+
+#[test]
+fn a_usage_reading_with_two_windows_arrives_with_percent_and_reset_time() {
+    let mut s = setup(json!([
+        usage_line(two_windows()),
+        {"wait_message": "never"}
+    ]));
+    let before = now_unix_ms();
+    s.spawn(None);
+
+    let reading = s.next_usage_reading().expect("a reading");
+
+    assert_eq!(reading.limits, two_windows_read());
+    assert!(!reading.latest_read_failed);
+    assert!((before..=now_unix_ms()).contains(&reading.read_at_unix_ms));
+    assert_eq!(s.core.usage_reading(Agent::Claude), Some(reading));
+    assert_eq!(s.core.usage_reading(Agent::Codex), None);
+}
+
+#[test]
+fn an_account_without_plan_limits_reads_as_no_plan_limits() {
+    let mut s = setup(json!([
+        {"send": {"type": "usage", "reading": "no_plan_limits"}},
+        {"wait_message": "never"}
+    ]));
+    s.spawn(None);
+
+    let reading = s.next_usage_reading().expect("a reading");
+
+    assert_eq!(reading.limits, PlanLimits::NoPlanLimits);
+    assert!(!reading.latest_read_failed);
+}
+
+#[test]
+fn a_failed_read_keeps_the_last_good_reading_with_its_time_and_never_fails_a_turn() {
+    let mut steps = vec![usage_line(two_windows())];
+    steps.extend(turn(&["ok"]));
+    steps.push(json!({"send": {"type": "usage", "reading": "failed"}}));
+    steps.extend(turn(&["ok again"]));
+    let mut s = setup(then_wait(steps));
+    let session = s.spawn(Some("go"));
+    let good = s.next_usage_reading().expect("a reading");
+    assert_eq!(s.next_state().1, AgentState::Working);
+    assert_eq!(s.next_state().1, AgentState::Done);
+
+    let after_failure = s.next_usage_reading().expect("the last good reading");
+
+    assert_eq!(
+        after_failure,
+        UsageReading {
+            latest_read_failed: true,
+            ..good
+        }
+    );
+    assert_eq!(s.core.usage_reading(Agent::Claude), Some(after_failure));
+    // The session takes its next turn as before.
+    s.core.send_message(session, "more").unwrap();
+    assert_eq!(s.next_state().1, AgentState::Working);
+    assert_eq!(s.next_state().1, AgentState::Done);
+}
+
+#[test]
+fn a_failed_first_read_gives_no_reading() {
+    let mut s = setup(json!([
+        {"send": {"type": "usage", "reading": "failed"}},
+        {"send": {"type": "account", "account": null}},
+        {"wait_message": "never"}
+    ]));
+    s.spawn(None);
+
+    // The account comes after the failed read, so the read sent nothing before it.
+    loop {
+        match s.next_event() {
+            CoreEvent::UsageReading { reading, .. } => panic!("unexpected {reading:?}"),
+            CoreEvent::Account { .. } => break,
+            _ => {}
+        }
+    }
+    assert_eq!(s.core.usage_reading(Agent::Claude), None);
+}
+
+#[test]
+fn an_agent_that_cannot_read_usage_turns_its_reading_off() {
+    let mut s = setup(json!([
+        usage_line(two_windows()),
+        {"send": {"type": "usage", "reading": "unsupported"}},
+        {"wait_message": "never"}
+    ]));
+    s.spawn(None);
+    assert!(s.next_usage_reading().is_some());
+
+    assert_eq!(s.next_usage_reading(), None);
+    assert_eq!(s.core.usage_reading(Agent::Claude), None);
+}
+
+#[test]
+fn a_session_reports_its_tokens_and_context_use_after_each_turn() {
+    let mut steps = turn(&["ok"]);
+    steps.push(send(
+        json!({"type": "context", "session_total_tokens": 120_000,
+        "context_window": {"used_tokens": 84_000, "size_tokens": 200_000}}),
+    ));
+    steps.extend(turn(&["ok again"]));
+    // The agent could not say how full the window is.
+    steps.push(send(
+        json!({"type": "context", "session_total_tokens": 150_000, "context_window": null}),
+    ));
+    let mut s = setup(then_wait(steps));
+    let session = s.spawn(Some("go"));
+    assert_eq!(s.core.context_reading(session), None);
+
+    let first = ContextReading {
+        session_total_tokens: 120_000,
+        context_window: Some(ContextWindow {
+            used_tokens: 84_000,
+            size_tokens: 200_000,
+        }),
+    };
+    assert_eq!(s.next_context_reading(), (session, first.clone()));
+    assert_eq!(s.core.context_reading(session), Some(first));
+
+    s.core.send_message(session, "more").unwrap();
+    let second = ContextReading {
+        session_total_tokens: 150_000,
+        context_window: None,
+    };
+    assert_eq!(s.next_context_reading(), (session, second.clone()));
+    assert_eq!(s.core.context_reading(session), Some(second));
 }

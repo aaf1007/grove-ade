@@ -22,7 +22,7 @@ use std::{env, thread};
 
 use grove_core::{
     Agent, AgentSpec, Core, CoreConfig, CoreEvent, DiffBase, FileDiff, LineKind, Mode,
-    NewReviewComment, NewWorktree, PanelSpec, Reply, RequestId, SessionId,
+    NewReviewComment, NewWorktree, PanelSpec, RemoveOpts, Reply, RequestId, SessionId,
 };
 use serde_json::{Value, json};
 use tokio::sync::broadcast::error::RecvError;
@@ -166,6 +166,10 @@ fn handle(
             runtime.block_on(core.add_repo(&path("path")?))?;
             json!("added")
         }
+        "forget_repo" => {
+            runtime.block_on(core.remove_worktree(&path("path")?, RemoveOpts::ForgetRepo))?;
+            json!("forgotten")
+        }
         "worktrees" => {
             let worktrees = runtime.block_on(core.list_worktrees());
             json!(
@@ -184,10 +188,12 @@ fn handle(
             json!(added.worktree.path)
         }
         "spawn_agent" => {
-            let agent = match text("agent")?.as_str() {
-                "claude" => Agent::Claude,
-                "codex" => Agent::Codex,
-                _ => return Err("agent is claude or codex".into()),
+            // With no agent, the session starts with the one its profile layout names.
+            let agent = match request["agent"].as_str() {
+                None => None,
+                Some("claude") => Some(Agent::Claude),
+                Some("codex") => Some(Agent::Codex),
+                Some(_) => return Err("agent is claude or codex".into()),
             };
             let spec = AgentSpec {
                 agent,
@@ -195,7 +201,6 @@ fn handle(
                 prompt: request["prompt"].as_str().map(str::to_owned),
                 cols: 120,
                 rows: 40,
-                panel: None,
             };
             let session = core.spawn_agent(&path("worktree")?, spec)?;
             follow(core, log, session);
@@ -261,9 +266,15 @@ fn handle(
             let files = runtime.block_on(core.diff(&path("worktree")?, base))?;
             json!(files.iter().map(file_diff).collect::<Vec<_>>())
         }
-        "workspace" => json!(format!("{:?}", core.workspace(&path("worktree")?)?)),
+        "workspace" => json!(format!("{:?}", core.workspace(session()?)?)),
+        "starting_workspace" => {
+            json!(format!(
+                "{:?}",
+                core.starting_workspace(&path("worktree")?)?
+            ))
+        }
         "undo_workspace" => {
-            runtime.block_on(core.undo_workspace(&path("worktree")?))?;
+            runtime.block_on(core.undo_workspace(session()?))?;
             json!("undone")
         }
         "add_comment" => {

@@ -72,11 +72,11 @@ pub struct AgentDefaults {
     pub start_prompt: Option<String>,
 }
 
-/// The workspace a new worktree starts with.
+/// The workspace a new agent session starts with.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Layout {
-    /// The agent panels in the chat area, in order.
+    /// A new agent session starts with the first agent in the list. The rest are ignored.
     pub chat: Option<Vec<Agent>>,
     /// The panel area's tabs, in order.
     pub panels: Option<Vec<PanelKind>>,
@@ -465,7 +465,7 @@ impl Profiles {
     }
 
     /// The profile named `name`, or why its file is not valid, from the file `file_for` finds.
-    fn profile(&self, name: &str) -> Result<Profile> {
+    pub(crate) fn profile(&self, name: &str) -> Result<Profile> {
         found(&self.dir, &self.files(), name)
     }
 
@@ -689,28 +689,35 @@ impl Core {
         Ok(name)
     }
 
-    /// Writes the workspace of `worktree` into the layout of the profile its repo uses: the
-    /// agents of its shown agent panels, its tabs and whether the terminal is open. Hidden panels
-    /// and the selected tab are left out, as a layout has no place for them. A profile other
-    /// repos use changes for them too. Sends one `ProfilesChanged` with no `by`. NoRepoProfile
-    /// when the repo uses none.
-    pub async fn save_workspace_to_profile(&self, worktree: &Path) -> Result<()> {
-        let workspace = self.workspace(worktree)?;
-        let repo = repo_of(&self.tracked(), worktree)
-            .ok_or_else(|| CoreError::UnknownWorktree(worktree.to_path_buf()))?;
+    /// Writes the workspace agent session `session` shows in into the layout of the profile
+    /// its repo uses: the agent of the session the workspace belongs to, which a new session
+    /// then starts with, its tabs and whether the terminal is open. The other agent panels and
+    /// the selected tab are left out, as a layout has no place for them. A profile other repos
+    /// use changes for them too. Sends one `ProfilesChanged` with no `by`. NoRepoProfile when
+    /// the repo uses none.
+    pub async fn save_workspace_to_profile(&self, session: SessionId) -> Result<()> {
+        let (owner, agent, workspace) =
+            self.agents
+                .with_workspace(session, |owner, members, saved| {
+                    let own = members.iter().find(|member| member.session == owner);
+                    (
+                        owner,
+                        own.map(|member| member.agent),
+                        saved.workspace.clone(),
+                    )
+                })?;
+        let worktree = self
+            .agents
+            .worktree_of(owner)
+            .ok_or(CoreError::NotAnAgentSession(owner))?;
+        let repo = repo_of(&self.tracked(), &worktree)
+            .ok_or_else(|| CoreError::UnknownWorktree(worktree.clone()))?;
         let name = self
             .repo_settings(&repo)?
             .profile
             .ok_or(CoreError::NoRepoProfile(repo))?;
         let layout = Layout {
-            chat: Some(
-                workspace
-                    .chat
-                    .iter()
-                    .filter(|panel| panel.shown)
-                    .map(|panel| panel.agent)
-                    .collect(),
-            ),
+            chat: agent.map(|agent| vec![agent]),
             panels: Some(workspace.panels),
             terminal: Some(workspace.terminal),
         };

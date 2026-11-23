@@ -123,10 +123,9 @@ impl Core {
         self.end_sessions(vec![path.clone()]).await?;
         // The task owns the rest and the mark, so dropping this future cannot leave the worktree
         // removed from disk but still tracked and unmarked.
-        let (tracked, settings, workspaces, watches, comments, agents, events, state_file) = (
+        let (tracked, settings, watches, comments, agents, events, state_file) = (
             self.worktrees.clone(),
             self.repo_settings.clone(),
-            self.workspaces.clone(),
             self.watches.clone(),
             self.comments.clone(),
             self.agents.clone(),
@@ -173,14 +172,18 @@ impl Core {
             // Before it leaves the list, so a worktree added at the same path keeps its own.
             warnings.clear_watcher(&folder);
             comments.drop_worktree(&folder);
-            let sessions = agents.drop_records_in(std::slice::from_ref(&folder));
+            let dropped = agents.drop_records_in(std::slice::from_ref(&folder));
             // The worktree is gone by now, so a folder that stays is only left behind.
-            let _ = agents.remove_session_folders(&sessions);
-            if !sessions.is_empty() {
+            let _ = agents.remove_session_folders(&dropped.sessions);
+            if !dropped.sessions.is_empty() {
                 let _ = events.send(CoreEvent::AgentSessionsChanged);
             }
+            // A subagent that ran here leaves the workspace of its top parent elsewhere, and
+            // one that runs elsewhere may show in another workspace now.
+            for session in dropped.workspaces_changed {
+                let _ = events.send(CoreEvent::WorkspaceChanged { session, by: None });
+            }
             untrack(&mut lock(&tracked), |path| path == folder);
-            lock(&workspaces).remove(&folder);
             let outcome = match branch {
                 None => BranchOutcome::Untouched,
                 Some((name, merged)) if !delete_branch => BranchOutcome::Kept { name, merged },
@@ -196,7 +199,7 @@ impl Core {
                     }
                 }
             };
-            state_file.save(&tracked, &settings, &workspaces)?;
+            state_file.save(&tracked, &settings)?;
             Ok(outcome)
         })
         .await
@@ -238,10 +241,15 @@ impl Core {
     }
 
     // Kills every session in `worktrees` and waits until their `SessionExited` is sent, so every
-    // receiver has it before the worktree goes. Fails if they have not exited after EXIT_WAIT.
+    // receiver has it before the worktree goes. Then it waits until every agent session there
+    // has ended: the core applies a process exit to its agent session after `SessionExited`,
+    // and a record dropped in between would never get its last state. Fails if any of this
+    // is not done after EXIT_WAIT.
     async fn end_sessions(&self, worktrees: Vec<PathBuf>) -> Result<()> {
         // Subscribed before listing, so no exit is missed between the two.
         let exits = self.events.subscribe();
+        // Asked before any is killed, and it covers one whose process has already exited.
+        let agents_ended = self.agents.session_ends_in(&worktrees);
         let left: HashSet<SessionId> = self.sessions.in_worktrees(&worktrees).into_iter().collect();
         for &session in &left {
             // It fails only when the session already exited. Its event still comes.
@@ -251,7 +259,17 @@ impl Core {
         // The caller's runtime may have no timer, so wait on the core's.
         let waited = self
             .runtime
-            .spawn(wait_for_exits(exits, left, running, EXIT_WAIT))
+            .spawn(async move {
+                let deadline = tokio::time::Instant::now() + EXIT_WAIT;
+                let all_ended = async {
+                    for ended in agents_ended {
+                        // Closed means its record is gone, which leaves nothing to end.
+                        let _ = ended.await;
+                    }
+                };
+                wait_for_exits(exits, left, running, EXIT_WAIT).await
+                    && tokio::time::timeout_at(deadline, all_ended).await.is_ok()
+            })
             .await;
         match waited {
             Ok(true) => Ok(()),
@@ -301,33 +319,36 @@ impl Core {
             self.comments.drop_worktree(path);
             self.warnings.clear_watcher(path);
         }
-        let sessions = self.agents.drop_records_in(&paths);
+        let dropped = self.agents.drop_records_in(&paths);
+        let sessions = dropped.sessions;
         untrack(&mut self.tracked(), |path| paths.iter().any(|p| p == path));
         // Settings are keyed by main worktree, so this drops those of a forgotten repo.
         self.settings().retain(|repo, _| !paths.contains(repo));
-        self.workspaces()
-            .retain(|worktree, _| !paths.contains(worktree));
         let stopped: Vec<_> = {
             let mut watches = self.watches();
             paths.iter().filter_map(|p| watches.remove(p)).collect()
         };
         // Dropping a watch joins its thread, so do it off this tokio worker.
         let first = paths.first().cloned().unwrap_or_default();
-        let (state_file, tracked, settings, workspaces, agents) = (
+        let (state_file, tracked, settings, agents) = (
             self.state_file.clone(),
             self.worktrees.clone(),
             self.repo_settings.clone(),
-            self.workspaces.clone(),
             self.agents.clone(),
         );
         if !sessions.is_empty() {
             let _ = self.events.send(CoreEvent::AgentSessionsChanged);
         }
+        // A subagent that ran there leaves the workspace of its top parent elsewhere, and one
+        // that runs elsewhere may show in another workspace now.
+        for owner in dropped.workspaces_changed {
+            self.workspace_changed(owner);
+        }
         self.blocking(&first, move || {
             drop(stopped);
             // The worktrees are forgotten by now, so a folder that stays is only left behind.
             let _ = agents.remove_session_folders(&sessions);
-            state_file.save(&tracked, &settings, &workspaces)
+            state_file.save(&tracked, &settings)
         })
         .await
     }

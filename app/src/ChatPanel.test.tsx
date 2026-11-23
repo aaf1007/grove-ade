@@ -4,7 +4,9 @@ import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest"
 
 import type { Agent, AgentStateChanged, Question, Reply } from "./bridge";
 import { ChatPanel } from "./ChatPanel";
+import { Dialog } from "./Dialog";
 import { fakeBridge, type FakeBridge, type FakeChange, type FakeDiffs, type FakeMessage } from "./fakeBridge";
+import { shortcut, type ShortcutId } from "./shortcuts";
 import { tokensInDocument } from "./tokensInDocument";
 
 // TerminalPanel.test.tsx covers the terminal itself. The stub says which session it shows.
@@ -71,7 +73,7 @@ afterEach(() => {
 async function started(agent: Agent = "Claude"): Promise<FakeBridge> {
   const bridge = fakeBridge({ [worktree]: [{ path: worktree, branch: "feat-116", isMain: true }] });
   await bridge.addRepo(worktree);
-  await bridge.spawnAgent(worktree, agent, null);
+  await bridge.spawnAgent(worktree, agent);
   return bridge;
 }
 
@@ -311,6 +313,29 @@ test("three Read calls then two Bash calls fold into two rows, and each opens to
     within(screen.getByRole("list", { name })).getAllByRole("listitem").map((item) => item.textContent);
   expect(calls("Read 3 files")).toEqual(["src/a.ts", "src/b.ts", "/elsewhere/c.ts"]);
   expect(calls("Ran 2 commands")).toEqual(["npm test", "npm run lint"]);
+});
+
+test("a command in the worktree reads from the worktree's root in a folded row, as in a row of its own", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted" },
+      { type: "ToolCall", id: "1", tool: "Bash", input: { command: `${worktree}/scripts/check.sh` } },
+      { type: "ToolCall", id: "2", tool: "Read", input: { file_path: `${worktree}/a.ts` } },
+      { type: "ToolCall", id: "3", tool: "Bash", input: { command: `${worktree}/scripts/check.sh` } },
+      { type: "ToolCall", id: "4", tool: "Bash", input: { command: "npm test" } },
+    ),
+  );
+  nextFrame();
+
+  expect(screen.getByRole("button", { name: "Ran scripts/check.sh" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Ran 2 commands" }));
+
+  const lines = within(screen.getByRole("list", { name: "Ran 2 commands" })).getAllByRole("listitem");
+  expect(lines.map((line) => line.textContent)).toEqual(["scripts/check.sh", "npm test"]);
 });
 
 test("edits fold by file, and calls of other kinds stay apart", async () => {
@@ -704,7 +729,7 @@ async function withChanges(changes: FakeChange[], props: Partial<Parameters<type
   const diffs: FakeDiffs = { [worktree]: { Head: changes } };
   const bridge = fakeBridge({ [worktree]: [{ path: worktree, branch: "feat-116", isMain: true }] }, diffs);
   await bridge.addRepo(worktree);
-  await bridge.spawnAgent(worktree, "Claude", null);
+  await bridge.spawnAgent(worktree, "Claude");
   const view = await shownPanel(bridge, props);
   return { bridge, diffs, view };
 }
@@ -1473,6 +1498,33 @@ test("while an approval waits, a message from the composer declines it with that
   expect(composer().getAttribute("placeholder")).toBe("Ask Claude Code anything. @ files, / commands");
 });
 
+const CODEX_DECLINE_HINT = "Send text to decline, or press Decline. Codex takes no message with a decline";
+
+test("while a Codex approval waits, Enter in the empty composer sends nothing, and the hint points at Decline", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, {
+    agent: "Codex",
+    state: { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" },
+  });
+  act(() =>
+    bridge.messages(
+      "0",
+      { type: "TurnStarted" },
+      { type: "ApprovalRequested", request: "item_1", tool: "commandExecution", input: { command: "npm test" } },
+    ),
+  );
+  nextFrame();
+
+  expect(composer().getAttribute("placeholder")).toBe(CODEX_DECLINE_HINT);
+  fireEvent.keyDown(composer(), { key: "Enter" });
+  await settle();
+  expect(bridge.answered).toEqual([]);
+
+  fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+  await settle();
+  expect(bridge.answered).toEqual([{ session: "0", request: "item_1", reply: { type: "Deny", message: null } }]);
+});
+
 test("while a Codex approval waits, a message declines it without the message, which stays in the composer", async () => {
   const bridge = await started("Codex");
   await shownPanel(bridge, {
@@ -1488,7 +1540,7 @@ test("while a Codex approval waits, a message declines it without the message, w
   );
   nextFrame();
 
-  expect(composer().getAttribute("placeholder")).toBe("Send to decline. Codex takes no message with a decline");
+  expect(composer().getAttribute("placeholder")).toBe(CODEX_DECLINE_HINT);
   fireEvent.change(composer(), { target: { value: "use vitest instead" } });
   fireEvent.keyDown(composer(), { key: "Enter" });
   await settle();
@@ -1624,6 +1676,17 @@ test("a request whose turn ended shows as expired and sends nothing", async () =
   expect(screen.queryByRole("group", { name: "Claude Code is asking" })).toBeNull();
   expect(screen.getByText("Expired")).toBeTruthy();
   expect(screen.getByText("Expired: Which test runner?")).toBeTruthy();
+  expect(bridge.answered).toEqual([]);
+});
+
+test("a request with no questions whose turn ended reads as expired, with nothing after it", async () => {
+  const bridge = await asked({ type: "QuestionAsked", request: "toolu_02", questions: [] });
+
+  act(() => bridge.messages("0", { type: "TurnEnded", outcome: "Interrupted" }));
+  nextFrame();
+
+  expect(screen.queryByRole("group", { name: "Claude Code is asking" })).toBeNull();
+  expect(document.querySelector(".record.expired")!.textContent).toBe("Expired");
   expect(bridge.answered).toEqual([]);
 });
 
@@ -1976,7 +2039,7 @@ test("the panel reports its session's mode and model choice as they change", asy
 
 test("a panel that takes another session reports that session's mode", async () => {
   const bridge = await started();
-  await bridge.spawnAgent(worktree, "Claude", null);
+  await bridge.spawnAgent(worktree, "Claude");
   const props = {
     bridge,
     agent: "Claude" as const,
@@ -2093,9 +2156,9 @@ function noticeButtons() {
 }
 
 async function agentOpensLogs(bridge: FakeBridge, by = "0") {
-  const workspace = await bridge.workspace(worktree);
+  const workspace = await bridge.workspace(by);
   await act(async () =>
-    bridge.agentChangesWorkspace(worktree, by, { ...workspace, panels: [...workspace.panels, "Logs"], selected: "Logs" }),
+    bridge.agentChangesWorkspace(by, { ...workspace, panels: [...workspace.panels, "Logs"], selected: "Logs" }),
   );
 }
 
@@ -2116,11 +2179,15 @@ test("an agent's workspace change shows a notice above the composer that names t
 test("the notice says each thing the agent changed", async () => {
   const bridge = await started();
   await shownPanel(bridge);
-  const workspace = await bridge.workspace(worktree);
+  // A Codex subagent session whose panel is hidden, for the agent to show.
+  const codex = bridge.spawnSubagent(worktree, "Codex", "0");
+  const workspace = await bridge.workspace("0");
+  const hidden = workspace.chat.map((panel) => (panel.session === codex ? { ...panel, shown: false } : panel));
+  await act(() => bridge.setWorkspace("0", { ...workspace, chat: hidden }));
 
   await act(async () =>
-    bridge.agentChangesWorkspace(worktree, "0", {
-      chat: [...workspace.chat, { agent: "Codex", session: null, shown: true }],
+    bridge.agentChangesWorkspace("0", {
+      chat: workspace.chat,
       panels: ["Diff", "Logs"],
       selected: "Diff",
       terminal: false,
@@ -2135,13 +2202,13 @@ test("the notice says each thing the agent changed", async () => {
 test("Undo restores the workspace exactly, and the notice goes", async () => {
   const bridge = await started();
   await shownPanel(bridge);
-  const before = await bridge.workspace(worktree);
+  const before = await bridge.workspace("0");
   await agentOpensLogs(bridge);
 
   await act(async () => fireEvent.click(within(notice()!).getByRole("button", { name: "Undo" })));
 
-  expect(bridge.undone).toEqual([worktree]);
-  expect(await bridge.workspace(worktree)).toEqual(before);
+  expect(bridge.undone).toEqual(["0"]);
+  expect(await bridge.workspace("0")).toEqual(before);
   expect(notice()).toBeNull();
 });
 
@@ -2149,7 +2216,7 @@ test("a refused Undo says why and keeps the notice", async () => {
   const bridge = await started();
   await shownPanel(bridge);
   await agentOpensLogs(bridge);
-  await act(() => bridge.undoWorkspace(worktree));
+  await act(() => bridge.undoWorkspace("0"));
 
   await act(async () => fireEvent.click(within(notice()!).getByRole("button", { name: "Undo" })));
 
@@ -2165,7 +2232,7 @@ test("Keep leaves the workspace as the agent made it, and the notice goes", asyn
 
   expect(notice()).toBeNull();
   expect(bridge.undone).toEqual([]);
-  expect((await bridge.workspace(worktree)).panels).toContain("Logs");
+  expect((await bridge.workspace("0")).panels).toContain("Logs");
 });
 
 test("Save to profile shows when the repo uses a profile, and writes the workspace into it", async () => {
@@ -2177,19 +2244,22 @@ test("Save to profile shows when the repo uses a profile, and writes the workspa
   expect(noticeButtons()).toEqual(["Undo", "Keep", "Save to profile"]);
   await act(async () => fireEvent.click(within(notice()!).getByRole("button", { name: "Save to profile" })));
 
-  expect(bridge.savedToProfile).toEqual([worktree]);
+  expect(bridge.savedToProfile).toEqual(["0"]);
   expect(notice()).toBeNull();
 });
 
 test("a change the user made, or another agent session made, shows no notice", async () => {
   const bridge = await started();
   await shownPanel(bridge);
-  const workspace = await bridge.workspace(worktree);
+  const workspace = await bridge.workspace("0");
 
-  await act(() => bridge.setWorkspace(worktree, { ...workspace, terminal: false }));
+  await act(() => bridge.setWorkspace("0", { ...workspace, terminal: false }));
   expect(notice()).toBeNull();
 
-  await agentOpensLogs(bridge, "7");
+  // A subagent session changes the workspace this panel shows in.
+  const subagent = bridge.spawnSubagent(worktree, "Codex", "0");
+  await agentOpensLogs(bridge, subagent);
+  expect((await bridge.workspace("0")).panels).toContain("Logs");
   expect(notice()).toBeNull();
 });
 
@@ -2226,7 +2296,477 @@ test("an unanswered notice stays through a switch to terminal mode and back", as
   expect(notice()!.textContent).toContain("opened the Logs panel");
 
   await act(async () => fireEvent.click(within(notice()!).getByRole("button", { name: "Undo" })));
-  expect(bridge.undone).toEqual([worktree]);
+  expect(bridge.undone).toEqual(["0"]);
+});
+
+test("a subagent's panel shows the notice for its change to its parent's workspace, and Undo restores that one", async () => {
+  const bridge = await started();
+  const subagent = bridge.spawnSubagent(worktree, "Codex", "0");
+  const before = await bridge.workspace("0");
+  render(
+    <ChatPanel
+      bridge={bridge}
+      session={subagent}
+      agent="Codex"
+      worktree={worktree}
+      workspaceSession="0"
+      shown
+      state={undefined}
+      focusRequest={0}
+      onOpenDiff={() => {}}
+    />,
+  );
+  await act(async () => {});
+
+  await agentOpensLogs(bridge, subagent);
+
+  expect(notice()!.textContent).toContain("Codex changed this workspace:");
+  expect(notice()!.textContent).toContain("opened the Logs panel");
+  await act(async () => fireEvent.click(within(notice()!).getByRole("button", { name: "Undo" })));
+  expect(bridge.undone).toEqual(["0"]);
+  expect(await bridge.workspace("0")).toEqual(before);
+  expect(notice()).toBeNull();
+});
+
+// Presses a shortcut by the keys the list gives it, with focus on `target`. Says whether grove
+// took the key.
+function press(id: ShortcutId, target: Element, more: KeyboardEventInit = {}) {
+  const keys = shortcut(id).keys.split("+");
+  let taken = false;
+  act(() => {
+    taken = !fireEvent.keyDown(target, {
+      key: keys.at(-1),
+      metaKey: keys.includes("Meta"),
+      shiftKey: keys.includes("Shift"),
+      ...more,
+    });
+  });
+  return taken;
+}
+
+test("Esc during a turn sends one interrupt, as the stop button does", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+
+  expect(press("stopTurn", composer())).toBe(true);
+  // A held key repeats, and still stops the turn once.
+  press("stopTurn", composer(), { repeat: true });
+  // The Esc that ends an input method's composition is not grove's.
+  expect(press("stopTurn", composer(), { isComposing: true })).toBe(false);
+
+  expect(bridge.interrupted).toEqual(["0"]);
+});
+
+test.each<AgentStateChanged>([
+  working("Idle"),
+  working("Done"),
+  working("Failed"),
+  { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" },
+])("Esc stops nothing while the stop button does not show", async (state) => {
+  const bridge = await started();
+  await shownPanel(bridge, { state });
+
+  expect(press("stopTurn", composer())).toBe(false);
+
+  expect(bridge.interrupted).toEqual([]);
+});
+
+test("Esc closes the open picker first, and stops the turn only on the next press", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+  openPicker();
+
+  press("stopTurn", composer());
+
+  expect(screen.queryByRole("dialog", { name: "Agent and model" })).toBeNull();
+  expect(bridge.interrupted).toEqual([]);
+
+  press("stopTurn", composer());
+
+  expect(bridge.interrupted).toEqual(["0"]);
+});
+
+test("Esc closes the open command menu first, and stops the turn only on the next press", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+  act(() =>
+    bridge.messages("0", {
+      type: "Commands",
+      commands: [{ name: "init", description: "", argumentHint: "", invocation: "/init" }],
+    }),
+  );
+  nextFrame();
+  fireEvent.change(composer(), { target: { value: "/" } });
+  expect(screen.getByRole("listbox", { name: "Commands" })).toBeTruthy();
+
+  press("stopTurn", composer());
+
+  expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull();
+  expect(bridge.interrupted).toEqual([]);
+
+  press("stopTurn", composer());
+
+  expect(bridge.interrupted).toEqual(["0"]);
+});
+
+test("Esc stops no turn while a dialog is open", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+  render(
+    <Dialog label="Remove worktree" onSubmit={() => {}} onCancel={() => {}}>
+      <button type="submit">Remove</button>
+    </Dialog>,
+  );
+
+  expect(press("stopTurn", composer())).toBe(false);
+
+  expect(bridge.interrupted).toEqual([]);
+});
+
+test("Esc in terminal mode stays with the agent's TUI, and grove stops nothing", async () => {
+  const bridge = await started();
+  await bridge.setMode("0", "Terminal");
+  await shownPanel(bridge, { state: { session: "0", state: "Working", source: "Hook" } });
+
+  expect(press("stopTurn", terminal()!)).toBe(false);
+
+  expect(bridge.interrupted).toEqual([]);
+});
+
+test("Cmd-Shift-I opens the picker on the model list, where a digit picks that model", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex" });
+  composer().focus();
+
+  expect(press("pickModel", composer())).toBe(true);
+
+  const picker = screen.getByRole("dialog", { name: "Agent and model" });
+  expect(document.activeElement).toBe(option(picker, /^GPT-5.5Frontier/));
+
+  expect(press("pickItem", document.activeElement!, { key: "2" })).toBe(true);
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(bridge.modelsSet.at(-1)).toEqual({ session: "0", model: "gpt-5.5-mini", effort: "medium" });
+  expect(document.activeElement).toBe(composer());
+});
+
+test("Cmd-Shift-E opens the picker on the effort list, where a digit picks that effort", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex" });
+  composer().focus();
+
+  expect(press("pickEffort", composer())).toBe(true);
+
+  const efforts = within(screen.getByRole("dialog", { name: "Agent and model" })).getByRole("group", { name: "Effort" });
+  expect(document.activeElement).toBe(within(efforts).getByRole("button", { name: "medium" }));
+
+  expect(press("pickItem", document.activeElement!, { key: "3" })).toBe(true);
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(bridge.modelsSet.at(-1)).toEqual({ session: "0", model: "gpt-5.5", effort: "high" });
+  expect(document.activeElement).toBe(composer());
+});
+
+test("a digit types as usual while the picker is closed, or open after a click", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex" });
+  composer().focus();
+  const set = bridge.modelsSet.length;
+
+  expect(press("pickItem", composer(), { key: "2" })).toBe(false);
+  openPicker();
+  expect(press("pickItem", composer(), { key: "2" })).toBe(false);
+
+  expect(bridge.modelsSet).toHaveLength(set);
+  expect(screen.getByRole("dialog", { name: "Agent and model" })).toBeTruthy();
+});
+
+test("a digit past the end of the open list picks nothing and types nothing", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex" });
+  composer().focus();
+  const set = bridge.modelsSet.length;
+  press("pickModel", composer());
+
+  expect(press("pickItem", document.activeElement!, { key: "3" })).toBe(true);
+  // A digit that picks from an input method's candidates is not grove's.
+  expect(press("pickItem", document.activeElement!, { key: "2", isComposing: true })).toBe(false);
+
+  expect(bridge.modelsSet).toHaveLength(set);
+  expect(screen.getByRole("dialog", { name: "Agent and model" })).toBeTruthy();
+});
+
+test("an open picker moves to the other list, and Esc gives focus back to the composer", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex" });
+  composer().focus();
+  press("pickModel", composer());
+
+  press("pickEffort", document.activeElement!);
+  const efforts = within(screen.getByRole("dialog", { name: "Agent and model" })).getByRole("group", { name: "Effort" });
+  expect(document.activeElement).toBe(within(efforts).getByRole("button", { name: "medium" }));
+  press("pickItem", document.activeElement!, { key: "1" });
+  expect(bridge.modelsSet.at(-1)).toEqual({ session: "0", model: "gpt-5.5", effort: "low" });
+
+  press("pickModel", composer());
+  press("stopTurn", document.activeElement!);
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(document.activeElement).toBe(composer());
+});
+
+test("the effort list of a model that takes no effort has nothing to pick", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  fireEvent.click(option(openPicker(), /^Haiku 5.5/));
+  composer().focus();
+  const set = bridge.modelsSet.length;
+
+  press("pickEffort", composer());
+  const picker = screen.getByRole("dialog", { name: "Agent and model" });
+  expect(document.activeElement).toBe(picker);
+  expect(press("pickItem", picker, { key: "1" })).toBe(true);
+
+  expect(bridge.modelsSet).toHaveLength(set);
+});
+
+test("a picker opened on the model list while the models load lands on it once they are in", async () => {
+  const bridge = await started();
+  let list: (models: typeof bridge.agentModels.Claude) => void = () => {};
+  vi.spyOn(bridge, "models").mockReturnValueOnce(new Promise((resolve) => (list = resolve)));
+  await shownPanel(bridge);
+  composer().focus();
+
+  press("pickModel", composer());
+  const picker = screen.getByRole("dialog", { name: "Agent and model" });
+  expect(document.activeElement).toBe(picker);
+
+  await act(async () => list(bridge.agentModels.Claude));
+
+  expect(document.activeElement).toBe(option(picker, /^Default/));
+});
+
+test("Cmd-Shift-M switches the mode as the Chat and Terminal switch does, and back", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  composer().focus();
+
+  let taken = false;
+  await act(async () => {
+    taken = press("switchMode", composer());
+  });
+
+  expect(taken).toBe(true);
+  expect(bridge.modesSet).toEqual([{ session: "0", mode: "Terminal" }]);
+  expect(terminal()).toBeTruthy();
+  expect(modeButton("Terminal").getAttribute("aria-pressed")).toBe("true");
+
+  await act(async () => {
+    press("switchMode", terminal()!);
+  });
+
+  expect(bridge.modesSet.at(-1)).toEqual({ session: "0", mode: "Chat" });
+  expect(terminal()).toBeNull();
+  // Focus is in the composer again, so the next shortcut reaches the panel.
+  expect(document.activeElement).toBe(composer());
+});
+
+test.each<AgentStateChanged>([
+  working("Working"),
+  { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" },
+])("Cmd-Shift-M does nothing while the Chat and Terminal switch is off", async (state) => {
+  const bridge = await started();
+  await shownPanel(bridge, { state });
+  expect(modeButton("Terminal").disabled).toBe(true);
+
+  expect(press("switchMode", composer())).toBe(false);
+
+  expect(bridge.modesSet).toEqual([]);
+});
+
+test("Cmd-Shift-M does nothing while a switch is on its way, or before the panel knows the mode", async () => {
+  const bridge = await started();
+  const go = bridge.holdModeSwitches();
+  await shownPanel(bridge);
+  await act(async () => {
+    press("switchMode", composer());
+  });
+  expect(modeButton("Chat").disabled).toBe(true);
+
+  expect(press("switchMode", composer())).toBe(false);
+
+  await act(async () => go());
+  expect(bridge.modesSet).toEqual([{ session: "0", mode: "Terminal" }]);
+  cleanup();
+
+  vi.spyOn(bridge, "sessions").mockReturnValueOnce(new Promise(() => {}));
+  render(<Panel bridge={bridge} />);
+  await act(async () => {});
+  expect(press("switchMode", strip())).toBe(false);
+  expect(bridge.modesSet).toHaveLength(1);
+});
+
+test("the panel's shortcuts need focus in the panel", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+
+  for (const id of ["stopTurn", "pickModel", "pickEffort", "switchMode"] as const) {
+    expect(press(id, document.body)).toBe(false);
+  }
+
+  expect(bridge.interrupted).toEqual([]);
+  expect(bridge.modesSet).toEqual([]);
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+// A picker a shortcut opened holds focus. Once focus goes elsewhere the picker closes, so the
+// keys go where the user is.
+test.each(["the composer", "a text field outside the panel"])(
+  "a picker a shortcut opened closes when focus moves to %s, and takes no key from there",
+  async (place) => {
+    const bridge = await started("Codex");
+    await shownPanel(bridge, { agent: "Codex", state: working("Working") });
+    const field = place === "the composer" ? composer() : document.body.appendChild(document.createElement("input"));
+    composer().focus();
+    const set = bridge.modelsSet.length;
+    press("pickModel", composer());
+    expect(screen.getByRole("dialog", { name: "Agent and model" })).toBeTruthy();
+
+    act(() => field.focus());
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(press("pickItem", field, { key: "2" })).toBe(false);
+    expect(bridge.modelsSet).toHaveLength(set);
+    // Esc is the composer's again, and no one's in a field grove does not know.
+    expect(press("stopTurn", field)).toBe(place === "the composer");
+    expect(bridge.interrupted).toEqual(place === "the composer" ? ["0"] : []);
+    if (field !== composer()) field.remove();
+  },
+);
+
+test("a picker a shortcut opened in one panel takes no key from another panel", async () => {
+  const bridge = await started("Codex");
+  const other = await bridge.spawnAgent(worktree, "Codex");
+  render(
+    <>
+      <Panel bridge={bridge} agent="Codex" />
+      <ChatPanel
+        bridge={bridge}
+        session={other}
+        agent="Codex"
+        worktree={worktree}
+        shown
+        state={{ session: other, state: "Working", source: "Protocol" }}
+        focusRequest={0}
+        onOpenDiff={() => {}}
+      />
+    </>,
+  );
+  await act(async () => {});
+  const [first, second] = screen.getAllByRole("textbox", { name: "Message" });
+  first.focus();
+  const set = bridge.modelsSet.length;
+  press("pickModel", first);
+
+  act(() => second.focus());
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(press("pickItem", second, { key: "2" })).toBe(false);
+  expect(bridge.modelsSet).toHaveLength(set);
+  expect(press("stopTurn", second)).toBe(true);
+  expect(bridge.interrupted).toEqual([other]);
+});
+
+test("a dialog that opens over a picker a shortcut opened closes it and keeps its own keys", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex", state: working("Working") });
+  composer().focus();
+  const set = bridge.modelsSet.length;
+  press("pickModel", composer());
+  let cancelled = 0;
+
+  render(
+    <Dialog label="Keyboard shortcuts" onSubmit={() => {}} onCancel={() => cancelled++}>
+      <button type="submit">Done</button>
+    </Dialog>,
+  );
+
+  expect(screen.queryByRole("dialog", { name: "Agent and model" })).toBeNull();
+  const done = screen.getByRole("button", { name: "Done" });
+  expect(document.activeElement).toBe(done);
+  expect(press("pickItem", done, { key: "2" })).toBe(false);
+  expect(bridge.modelsSet).toHaveLength(set);
+  press("stopTurn", done);
+  expect(cancelled).toBe(1);
+  expect(bridge.interrupted).toEqual([]);
+});
+
+test("models that load after focus left the picker do not pull focus back", async () => {
+  const bridge = await started();
+  let list: (models: typeof bridge.agentModels.Claude) => void = () => {};
+  vi.spyOn(bridge, "models").mockReturnValueOnce(new Promise((resolve) => (list = resolve)));
+  await shownPanel(bridge);
+  composer().focus();
+  press("pickModel", composer());
+
+  act(() => composer().focus());
+  await act(async () => list(bridge.agentModels.Claude));
+
+  expect(document.activeElement).toBe(composer());
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("a switch to chat mode puts focus in the composer, unless focus moved out of the panel meanwhile", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  await switchTo("Terminal");
+
+  // A click on Chat, with focus nowhere once the TUI is gone.
+  await switchTo("Chat");
+  expect(document.activeElement).toBe(composer());
+
+  await switchTo("Terminal");
+  const go = bridge.holdModeSwitches();
+  await switchTo("Chat");
+  const search = document.body.appendChild(document.createElement("input"));
+  search.focus();
+  await act(async () => go());
+
+  expect(composer()).toBeTruthy();
+  expect(document.activeElement).toBe(search);
+  search.remove();
+});
+
+// WebKit can send the key that ends a composition with `isComposing` false and this key code.
+test("a key an input method took, marked only by key code 229, is no shortcut", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex", state: working("Working") });
+  composer().focus();
+  const set = bridge.modelsSet.length;
+
+  expect(press("stopTurn", composer(), { keyCode: 229 })).toBe(false);
+  expect(bridge.interrupted).toEqual([]);
+
+  press("pickModel", composer());
+  expect(press("pickItem", document.activeElement!, { key: "2", keyCode: 229 })).toBe(false);
+  expect(press("stopTurn", document.activeElement!, { keyCode: 229 })).toBe(false);
+  expect(bridge.modelsSet).toHaveLength(set);
+  expect(screen.getByRole("dialog", { name: "Agent and model" })).toBeTruthy();
+});
+
+// WebKit gives a click on a button to the nearest focusable thing around it, here the panel. The
+// click on the picker's button then toggles the popover, so that focus move must not close it first.
+test("focus that moves to the panel around the picker leaves the popover open", async () => {
+  const bridge = await started("Codex");
+  await shownPanel(bridge, { agent: "Codex" });
+  composer().focus();
+  press("pickModel", composer());
+
+  act(() => screen.getByRole("region", { name: "Panel 0" }).focus());
+
+  expect(screen.getByRole("dialog", { name: "Agent and model" })).toBeTruthy();
+  fireEvent.click(pickerButton());
+  expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 test("a page the agent shows is its own item, where the agent called the tool", async () => {

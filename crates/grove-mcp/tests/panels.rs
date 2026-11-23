@@ -455,12 +455,11 @@ fn deleting_a_worktree_closes_its_panels() {
     let mut s = setup(json!([{"wait_input": "\r"}]));
     let other = s.other_worktree();
     let spec = AgentSpec {
-        agent: Agent::Claude,
+        agent: Some(Agent::Claude),
         mode: Mode::Terminal,
         prompt: None,
         cols: 100,
         rows: 30,
-        panel: None,
     };
     let owner = s.core.spawn_agent(&other, spec).unwrap();
     let token = s.token("claude", owner);

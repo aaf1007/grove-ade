@@ -152,10 +152,10 @@ pub(crate) enum Request {
     PanelRead { panel: String, lines: usize },
     /// Close one of the calling session's panels and kill its processes.
     PanelClose { panel: String },
-    /// The workspace of the calling session's worktree.
+    /// The workspace the calling session shows in: its own, or its top parent's.
     WorkspaceGet,
-    /// Replace the workspace of the calling session's worktree. Read by `set_agent_workspace`,
-    /// so a workspace that is not valid gets a reply that says why.
+    /// Replace the workspace the calling session shows in. Read by `set_agent_workspace`, so a
+    /// workspace that is not valid gets a reply that says why.
     WorkspaceSet { workspace: Value },
     /// The profile of the calling session's repo.
     ProfileGet,

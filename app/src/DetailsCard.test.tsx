@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, expect, test, vi } from "vitest";
 
 import { DetailsCard, type FocusedSession } from "./DetailsCard";
+import type { UsageReading } from "./bridge";
 import { FAKE_MODELS, type FakeChange, fakeBridge } from "./fakeBridge";
 
 afterEach(() => {
@@ -298,7 +299,7 @@ test("the session block shows the focused session's title, its state in words si
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(2026, 10, 20, 9, 30));
   const bridge = await setup();
-  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const session = await bridge.spawnAgent(feature, "Claude");
   await bridge.sendMessage(session, "Fix the login bug\nthen run the tests");
   vi.setSystemTime(new Date(2026, 10, 20, 14, 5));
   const approval = { session, state: "NeedsInput", kind: "Approval", source: "Hook" } as const;
@@ -324,7 +325,7 @@ test("before any new state reaches the window, the session block shows the state
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(2026, 10, 20, 14, 5));
   const bridge = await setup();
-  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const session = await bridge.spawnAgent(feature, "Claude");
   bridge.agentStateChanged({ session, state: "Working", source: "Protocol" });
   await renderCard(bridge, { session: { ...claude, session, state: undefined } });
 
@@ -336,7 +337,7 @@ test("before any new state reaches the window, the session block shows the state
 
 test("a new state shows no since time until the core lists the time it was entered", async () => {
   const bridge = await setup();
-  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const session = await bridge.spawnAgent(feature, "Claude");
   const working = { session, state: "Working", source: "Protocol" } as const;
   bridge.agentStateChanged(working);
   const { rerender } = await renderCard(bridge, { session: { ...claude, session, state: working } });
@@ -356,7 +357,7 @@ test("a state entered on another day shows its date with its time", async () => 
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(2026, 10, 19, 14, 5));
   const bridge = await setup();
-  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const session = await bridge.spawnAgent(feature, "Claude");
   const idle = { session, state: "Idle", source: "Protocol" } as const;
   bridge.agentStateChanged(idle);
   vi.setSystemTime(new Date(2026, 10, 20, 9, 30));
@@ -369,7 +370,7 @@ test("a state entered on another day shows its date with its time", async () => 
 
 test("a listing of the agent sessions that fails after a later one succeeded says nothing", async () => {
   const bridge = await setup();
-  const session = await bridge.spawnAgent(feature, "Claude", null);
+  const session = await bridge.spawnAgent(feature, "Claude");
   const listings: { resolve: () => void; reject: () => void }[] = [];
   const list = bridge.agentSessions.bind(bridge);
   vi.spyOn(bridge, "agentSessions").mockImplementation(
@@ -470,4 +471,142 @@ test("a running run session keeps its row, Stop and port when the settings canno
   expect(within(row("Run dev")).getByRole("button", { name: "Stop dev" })).toBeTruthy();
   expect(within(row("Servers")).getByText(":5173 dev")).toBeTruthy();
   expect(screen.getByRole("alert").textContent).toBe("the profile cannot be read");
+});
+
+const fiveHourReset = new Date(2026, 10, 22, 14, 0);
+const weeklyReset = new Date(2026, 10, 27, 9, 30);
+const twoWindows: UsageReading = {
+  limits: {
+    kind: "Windows",
+    windows: [
+      { name: "5-hour", percentUsed: 42, resetsAtUnixMs: fiveHourReset.getTime() },
+      { name: "Weekly", percentUsed: 18, resetsAtUnixMs: weeklyReset.getTime() },
+    ],
+  },
+  readAtUnixMs: new Date(2026, 10, 22, 11, 48).getTime(),
+  latestReadFailed: false,
+};
+
+test("the usage limits row shows each window of the agent's plan with its percent and reset time", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 10, 22, 12, 0));
+  const bridge = await setup();
+  bridge.usageReadingChanged({ agent: "Claude", reading: twoWindows });
+  await renderCard(bridge);
+
+  const usage = within(row("Usage limits"));
+  expect(within(usage.getByRole("group", { name: "5-hour" })).getByText(`42% · resets ${clock(fiveHourReset)}`)).toBeTruthy();
+  expect(
+    within(usage.getByRole("group", { name: "Weekly" })).getByText(
+      `18% · resets ${day(weeklyReset)}, ${clock(weeklyReset)}`,
+    ),
+  ).toBeTruthy();
+  // A reading that is up to date says nothing of its age.
+  expect(usage.queryByText(/ago/)).toBeNull();
+});
+
+test("an account with no plan limits says so in the usage limits row", async () => {
+  const bridge = await setup();
+  bridge.usageReadingChanged({
+    agent: "Claude",
+    reading: { limits: { kind: "NoPlanLimits" }, readAtUnixMs: Date.now(), latestReadFailed: false },
+  });
+  await renderCard(bridge);
+
+  expect(within(row("Usage limits")).getByText("No plan limits")).toBeTruthy();
+  expect(within(row("Usage limits")).queryByRole("group")).toBeNull();
+});
+
+test("after a failed read the usage limits row keeps the last good reading and shows its age, which goes on counting", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+  vi.setSystemTime(new Date(2026, 10, 22, 12, 0));
+  const bridge = await setup();
+  bridge.usageReadingChanged({ agent: "Claude", reading: twoWindows });
+  await renderCard(bridge);
+
+  await act(async () => bridge.usageReadingChanged({ agent: "Claude", reading: { ...twoWindows, latestReadFailed: true } }));
+
+  const usage = within(row("Usage limits"));
+  expect(usage.getByText("last read 12 min ago")).toBeTruthy();
+  expect(within(usage.getByRole("group", { name: "5-hour" })).getByText(/^42% · resets/)).toBeTruthy();
+  expect(within(usage.getByRole("group", { name: "Weekly" })).getByText(/^18% · resets/)).toBeTruthy();
+
+  await act(async () => vi.advanceTimersByTime(3 * 60_000));
+  expect(usage.getByText("last read 15 min ago")).toBeTruthy();
+});
+
+test("the card has no usage limits row before a reading, for another agent's reading, or once the agent cannot give one", async () => {
+  const bridge = await setup();
+  bridge.usageReadingChanged({ agent: "Codex", reading: twoWindows });
+  await renderCard(bridge);
+  expect(rowNames()).not.toContain("Usage limits");
+
+  await act(async () => bridge.usageReadingChanged({ agent: "Claude", reading: twoWindows }));
+  expect(rowNames()).toContain("Usage limits");
+
+  await act(async () => bridge.usageReadingChanged({ agent: "Claude", reading: null }));
+  expect(rowNames()).not.toContain("Usage limits");
+});
+
+test("the context window row shows how full the focused session's context is and its tokens so far, after each turn", async () => {
+  const bridge = await setup();
+  const session = await bridge.spawnAgent(feature, "Claude");
+  const other = await bridge.spawnAgent(feature, "Claude");
+  await renderCard(bridge, { session: { ...claude, session } });
+  expect(rowNames()).not.toContain("Context window");
+
+  await act(async () =>
+    bridge.contextReadingChanged({
+      session,
+      reading: { sessionTotalTokens: 101_000, contextWindow: { usedTokens: 84_000, sizeTokens: 200_000 } },
+    }),
+  );
+  const context = within(row("Context window"));
+  expect(context.getByText("42% · 84k of 200k")).toBeTruthy();
+  expect(within(context.getByRole("group", { name: "Session tokens" })).getByText("101k")).toBeTruthy();
+
+  // Another session's reading leaves the row as it is.
+  await act(async () =>
+    bridge.contextReadingChanged({
+      session: other,
+      reading: { sessionTotalTokens: 5, contextWindow: { usedTokens: 5, sizeTokens: 200_000 } },
+    }),
+  );
+  expect(context.getByText("42% · 84k of 200k")).toBeTruthy();
+
+  await act(async () =>
+    bridge.contextReadingChanged({
+      session,
+      reading: { sessionTotalTokens: 1_240_000, contextWindow: { usedTokens: 950, sizeTokens: 1_000_000 } },
+    }),
+  );
+  expect(context.getByText("0% · 950 of 1M")).toBeTruthy();
+  expect(within(context.getByRole("group", { name: "Session tokens" })).getByText("1.2M")).toBeTruthy();
+});
+
+test("the context window row shows the reading a session reported before the card opened, and the focused session's own", async () => {
+  const bridge = await setup();
+  const first = await bridge.spawnAgent(feature, "Claude");
+  const second = await bridge.spawnAgent(feature, "Claude");
+  bridge.contextReadingChanged({
+    session: first,
+    reading: { sessionTotalTokens: 101_000, contextWindow: { usedTokens: 84_000, sizeTokens: 200_000 } },
+  });
+  const { rerender } = await renderCard(bridge, { session: { ...claude, session: first } });
+  expect(within(row("Context window")).getByText("42% · 84k of 200k")).toBeTruthy();
+
+  await act(async () => rerender({ session: { ...claude, session: second } }));
+
+  expect(rowNames()).not.toContain("Context window");
+});
+
+test("when the agent does not say how full the context is, the context window row shows the session's tokens alone", async () => {
+  const bridge = await setup();
+  const session = await bridge.spawnAgent(feature, "Codex");
+  bridge.contextReadingChanged({ session, reading: { sessionTotalTokens: 30_500, contextWindow: null } });
+  await renderCard(bridge, { session: { ...claude, agent: "Codex", session } });
+
+  const context = within(row("Context window"));
+  expect(within(context.getByRole("group", { name: "Session tokens" })).getByText("30.5k")).toBeTruthy();
+  expect(context.queryByText(/%/)).toBeNull();
 });

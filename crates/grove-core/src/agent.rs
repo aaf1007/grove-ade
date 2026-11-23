@@ -4,9 +4,11 @@ mod claude;
 mod codex;
 pub(crate) mod heuristic;
 mod records;
+mod workspaces;
 
 pub use records::AgentSessionInfo;
 use records::title_of;
+pub(crate) use workspaces::Member;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -33,13 +35,15 @@ use crate::panel_request::{self, Request, SessionToken};
 use crate::restore::AgentRecord;
 use crate::session::{GROVE_SESSION_ID, GROVE_SESSION_TOKEN, GROVE_SOCKET, Kind, ProcessExit};
 use crate::state::SaveRequests;
+use crate::usage::UsageReadings;
+use crate::workspace::Saved;
 use crate::{
-    Core, CoreConfig, CoreError, CoreEvent, CoreInner, LaunchArgs, PanelSpec, Result, SessionId,
-    SessionKind, SpawnSpec, Warning,
+    Core, CoreConfig, CoreError, CoreEvent, CoreInner, LaunchArgs, Layout, PanelSpec, Result,
+    SessionId, SessionKind, SpawnSpec, Warning, Workspace,
 };
 
 /// An agent CLI grove runs. Only Claude Code and Codex until after M7 (ADR 0007).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Agent {
     Claude,
@@ -67,7 +71,9 @@ pub enum Mode {
 /// A new agent session.
 #[derive(Debug, Clone)]
 pub struct AgentSpec {
-    pub agent: Agent,
+    /// None starts the first agent of the profile layout's `chat` list, or Claude Code when it
+    /// names none.
+    pub agent: Option<Agent>,
     pub mode: Mode,
     /// The first prompt. In terminal mode it goes in argv, never typed into the PTY. In chat
     /// mode it is the first message.
@@ -75,10 +81,6 @@ pub struct AgentSpec {
     /// The terminal size in cells. Chat mode has no terminal and ignores it.
     pub cols: u16,
     pub rows: u16,
-    /// The agent panel to start it in: an index into the worktree's `chat` as `workspace`
-    /// returns it. None, or a panel that already has a session, puts it in a new shown panel
-    /// after the last one.
-    pub panel: Option<usize>,
 }
 
 /// Who is logged in to an agent, as it reports it. grove never sees the credentials.
@@ -262,6 +264,7 @@ pub(crate) struct Agents {
     // Each change to what a restart brings back asks for a save.
     saves: SaveRequests,
     max_live_subagents_per_parent: usize,
+    pub(crate) usage: UsageReadings,
 }
 
 struct Tracked {
@@ -276,6 +279,9 @@ struct Tracked {
     switching: bool,
     // Told when the process `set_mode` ended has exited and its hooks are applied.
     exited: Option<oneshot::Sender<()>>,
+    // Told when the session ends, for the removal of its worktree, which drops its record
+    // only after that.
+    ended_for_removal: Option<oneshot::Sender<()>>,
     // None until a Codex session's first SessionStart.
     resume_id: Option<String>,
     // None until `set_model`. The agent's default runs until then.
@@ -308,9 +314,12 @@ struct Tracked {
     title: Option<String>,
     // When it started, to the millisecond, as the state file keeps it.
     created: SystemTime,
+    // Its workspace. A subagent's shows only once no parent of it is listed any more.
+    workspace: Saved,
 }
 
 impl Tracked {
+    // Its workspace is grove's own layout with no agent panel, until the caller sets it.
     fn new(
         agent: Agent,
         worktree: &Path,
@@ -326,6 +335,7 @@ impl Tracked {
             chat: None,
             switching: false,
             exited: None,
+            ended_for_removal: None,
             resume_id,
             model: None,
             token: None,
@@ -340,11 +350,12 @@ impl Tracked {
             parent: None,
             title: None,
             created: now_to_the_millisecond(),
+            workspace: Saved::restored(Workspace::from_layout(Layout::default())),
         }
     }
 
-    // The session as the state file kept it.
-    fn of_record(worktree: &Path, record: AgentRecord) -> Tracked {
+    // The session as the state file kept it, with `workspace`.
+    fn of_record(worktree: &Path, record: AgentRecord, workspace: Workspace) -> Tracked {
         let size = (record.cols, record.rows);
         let mut tracked = Tracked::new(record.agent, worktree, record.mode, size, record.resume_id);
         tracked.model = record.model;
@@ -354,6 +365,7 @@ impl Tracked {
             tracked.created = UNIX_EPOCH + Duration::from_millis(created);
         }
         tracked.ended = record.ended;
+        tracked.workspace = Saved::restored(workspace);
         tracked
     }
 
@@ -371,6 +383,7 @@ impl Tracked {
             title: self.title.clone(),
             created_unix_ms: created.and_then(|since| u64::try_from(since.as_millis()).ok()),
             ended: self.ended,
+            workspace: Some((&self.workspace.workspace).into()),
         }
     }
 }
@@ -434,6 +447,21 @@ impl Agents {
             .collect()
     }
 
+    /// A receiver for each agent session in `worktrees` that has not ended, told once it
+    /// ends. One whose record is dropped first closes its receiver. A worktree has one removal
+    /// at a time, so a new call only replaces what a removal that gave up left behind.
+    pub(crate) fn session_ends_in(&self, worktrees: &[PathBuf]) -> Vec<oneshot::Receiver<()>> {
+        lock(&self.live)
+            .values_mut()
+            .filter(|tracked| !tracked.ended && worktrees.contains(&tracked.worktree))
+            .map(|tracked| {
+                let (ended, told) = oneshot::channel();
+                tracked.ended_for_removal = Some(ended);
+                told
+            })
+            .collect()
+    }
+
     pub(crate) fn new(
         cfg: &CoreConfig,
         saves: SaveRequests,
@@ -459,6 +487,7 @@ impl Agents {
             last_focused: Mutex::default(),
             saves,
             max_live_subagents_per_parent: cfg.max_live_subagents_per_parent,
+            usage: UsageReadings::default(),
         }
     }
 
@@ -559,15 +588,12 @@ impl Agents {
             let _ = exited.send(());
             return;
         }
-        tracked.ended = true;
         let state = if exit.killed || exit.code == Some(0) {
             AgentState::Exited
         } else {
             AgentState::Failed
         };
-        tracked.set(exit.session, state, tracked.source(), events);
-        // After its state, so a list read on this event has both.
-        let _ = events.send(CoreEvent::AgentSessionsChanged);
+        tracked.end(exit.session, state, events);
     }
 
     /// A state a chat-mode session's protocol reported, for as long as its process runs.
@@ -631,6 +657,23 @@ impl Tracked {
         }
     }
 
+    // Its process is gone for good, and `state` is how it ended.
+    fn end(
+        &mut self,
+        session: SessionId,
+        state: AgentState,
+        events: &broadcast::Sender<CoreEvent>,
+    ) {
+        self.ended = true;
+        self.set(session, state, self.source(), events);
+        // After its state, so a list read on this event has both.
+        let _ = events.send(CoreEvent::AgentSessionsChanged);
+        if let Some(ended) = self.ended_for_removal.take() {
+            // The removal may have given up.
+            let _ = ended.send(());
+        }
+    }
+
     fn set(
         &mut self,
         session: SessionId,
@@ -658,38 +701,35 @@ impl Tracked {
 impl Core {
     /// Starts an agent session in a tracked worktree, in `spec.mode`. Its hooks and MCP config
     /// are passed at launch from files under the home folder in both modes (ADR 0010).
-    /// It goes in agent panel `spec.panel` and the workspace is saved, so a reload never finds
-    /// it without a panel. A panel past the last one is refused and starts nothing.
+    /// It gets a workspace of its own: its project's profile layout with its own agent panel,
+    /// saved with it.
     pub fn spawn_agent(&self, worktree: &Path, spec: AgentSpec) -> Result<SessionId> {
-        let (agent, panel) = (spec.agent, spec.panel);
-        let ended = self.check_agent_panel(worktree, panel)?;
-        let session = self.spawn_agent_under(worktree, spec, None)?;
-        self.place_agent(worktree, session, agent, panel, &ended);
-        Ok(session)
+        self.spawn_agent_under(worktree, spec, None)
     }
 
-    /// `spawn_agent` without a panel, for a subagent of `parent` when there is one.
+    /// `spawn_agent`, for a subagent of `parent` when there is one. A subagent also gets a
+    /// shown agent panel in the workspace of its top parent, with one `WorkspaceChanged`.
     fn spawn_agent_under(
         &self,
         worktree: &Path,
         spec: AgentSpec,
         parent: Option<SessionId>,
     ) -> Result<SessionId> {
-        self.check_tracked(worktree)?;
+        // Fails for a worktree grove does not track, and while its project's profile is not
+        // valid. Nothing is started or tracked yet.
+        let layout = self.starting_layout(worktree)?;
+        let first_in_layout = layout.chat.as_ref().and_then(|chat| chat.first().copied());
+        let agent = spec.agent.or(first_in_layout).unwrap_or(Agent::Claude);
         let session = self.sessions.new_id();
         let resume_id = new_uuid()?;
         // Codex picks its own id. Its first SessionStart reports it, or in chat mode the thread
         // it starts.
-        let known = (spec.agent == Agent::Claude).then(|| resume_id.clone());
-        let mut tracked = Tracked::new(
-            spec.agent,
-            worktree,
-            spec.mode,
-            (spec.cols, spec.rows),
-            known,
-        );
+        let known = (agent == Agent::Claude).then(|| resume_id.clone());
+        let mut tracked = Tracked::new(agent, worktree, spec.mode, (spec.cols, spec.rows), known);
         tracked.parent = parent;
         tracked.title = spec.prompt.as_deref().and_then(title_of);
+        tracked.workspace =
+            Saved::restored(Workspace::from_layout(layout).with_panel(session, agent));
         {
             let mut live = lock(&self.agents.live);
             // A parent deleted since it asked spawns nothing, so no record names a parent
@@ -706,7 +746,7 @@ impl Core {
             live.insert(session, tracked);
         }
         let start = AgentStart {
-            agent: spec.agent,
+            agent,
             mode: spec.mode,
             resume_id: &resume_id,
             resume: false,
@@ -717,16 +757,26 @@ impl Core {
         };
         self.start_agent(session, worktree, start)
             .inspect_err(|_| self.untrack(session))?;
+        if parent.is_some() {
+            self.show_agent_panel(session, agent);
+        }
         Ok(session)
     }
 
-    /// Brings back the agent session of `record` after a restart. One that had ended comes back
-    /// ended and `Exited`, with no process. Any other starts again in its mode, on its saved
-    /// model: it resumes its conversation with the same integration as its first launch, or
-    /// starts a new conversation when no id was captured.
-    pub(crate) fn restore_agent(&self, worktree: &Path, record: AgentRecord) -> Result<()> {
+    /// Brings back the agent session of `record` after a restart, with its workspace. One the
+    /// state file kept no workspace for starts from its project's profile layout. One that had
+    /// ended comes back ended and `Exited`, with no process. Any other starts again in its
+    /// mode, on its saved model: it resumes its conversation with the same integration as its
+    /// first launch, or starts a new conversation when no id was captured.
+    pub(crate) fn restore_agent(&self, worktree: &Path, mut record: AgentRecord) -> Result<()> {
         let (session, mode, ended) = (record.id, record.mode, record.ended);
-        let mut tracked = Tracked::of_record(worktree, record);
+        let workspace = match record.workspace.take() {
+            Some(saved) => saved.into(),
+            None => {
+                Workspace::from_layout(self.layout_of(worktree)?).with_panel(session, record.agent)
+            }
+        };
+        let mut tracked = Tracked::of_record(worktree, record, workspace);
         if ended {
             // Whatever it ended on, it waits on nobody now, so it stays out of the attention
             // queue.
@@ -743,8 +793,9 @@ impl Core {
 
     /// Starts a subagent for agent session `parent`: a new agent session in chat mode, in
     /// `worktree` or else the parent's own, at the parent's size (ADR 0006, 0013). Another worktree
-    /// of the parent's repo nests under the parent's, as `nest_worktree` allows. Sends
-    /// `PanelRequested` with the parent. Returns the new session and its worktree.
+    /// of the parent's repo nests under the parent's, as `nest_worktree` allows. Its agent panel
+    /// shows in the workspace of its top parent. Sends `PanelRequested` with the parent.
+    /// Returns the new session and its worktree.
     pub(crate) fn spawn_subagent(
         &self,
         parent: SessionId,
@@ -773,12 +824,11 @@ impl Core {
         // Nested before the spawn, so the list is right by the new session's first state.
         let nested = worktree != parent_worktree && self.nest_worktree(&worktree, &parent_worktree);
         let spec = AgentSpec {
-            agent,
+            agent: Some(agent),
             mode: Mode::Chat,
             prompt: Some(prompt),
             cols,
             rows,
-            panel: None,
         };
         let session = self
             .spawn_agent_under(&worktree, spec, Some(parent))
@@ -1152,16 +1202,9 @@ impl Drop for Switch<'_> {
         // Its process is gone and none took its place. An exit still to come ends it as any
         // exit does.
         if !self.started && tracked.exited.take().is_none() {
-            tracked.ended = true;
-            tracked.set(
-                self.session,
-                AgentState::Exited,
-                tracked.source(),
-                self.events,
-            );
+            tracked.end(self.session, AgentState::Exited, self.events);
             // `begin` may have had it saved as running.
             self.agents.saves.request();
-            let _ = self.events.send(CoreEvent::AgentSessionsChanged);
         }
     }
 }
@@ -1615,59 +1658,6 @@ mod tests {
             .map(|e| e.warning)
             .collect();
         assert_eq!(left, [hooks(running)]);
-    }
-
-    #[test]
-    fn a_session_that_ends_during_a_start_does_not_shift_the_new_sessions_panel() {
-        let home = tempfile::tempdir().unwrap();
-        let repo = home.path().join("repo");
-        let git = std::process::Command::new("git")
-            .args(["init", "-q"])
-            .arg(&repo)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .status()
-            .unwrap();
-        assert!(git.success());
-        let (core, _events) = Core::start(CoreConfig::new(home.path().join("home"))).unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(core.add_repo(&repo)).unwrap();
-        let worktree = runtime.block_on(core.list_worktrees())[0].path.clone();
-        let (ending, started) = (SessionId(50), SessionId(51));
-        let tracked = Tracked::new(Agent::Claude, &worktree, Mode::Terminal, (80, 24), None);
-        lock(&core.agents.live).insert(ending, tracked);
-        let panel = |session| crate::AgentPanel {
-            agent: Agent::Claude,
-            session,
-            shown: true,
-        };
-        let mut workspace = core.workspace(&worktree).unwrap();
-        workspace.chat = vec![panel(Some(ending)), panel(None), panel(None)];
-        runtime
-            .block_on(core.set_workspace(&worktree, workspace, None))
-            .unwrap();
-
-        // As `spawn_agent` does, with `ending` ending while the new process starts.
-        let ended = core.check_agent_panel(&worktree, Some(1)).unwrap();
-        if let Some(tracked) = lock(&core.agents.live).get_mut(&ending) {
-            tracked.ended = true;
-        }
-        core.place_agent(&worktree, started, Agent::Claude, Some(1), &ended);
-
-        let saved = core
-            .workspaces()
-            .get(&worktree)
-            .unwrap()
-            .workspace
-            .chat
-            .clone();
-        assert_eq!(
-            saved,
-            [panel(Some(ending)), panel(Some(started)), panel(None)]
-        );
     }
 
     #[test]

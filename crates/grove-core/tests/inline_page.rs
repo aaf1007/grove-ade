@@ -166,12 +166,11 @@ impl Setup {
     fn agent(&self, mode: Mode) -> Caller<'_> {
         let prompt = (mode == Mode::Chat).then(|| "draw the build workflow".to_owned());
         let spec = AgentSpec {
-            agent: Agent::Claude,
+            agent: Some(Agent::Claude),
             mode,
             prompt,
             cols: 120,
             rows: 40,
-            panel: None,
         };
         let session = self.core.spawn_agent(&self.worktree, spec).unwrap();
         let log = match mode {

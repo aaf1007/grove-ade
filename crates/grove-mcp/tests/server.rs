@@ -149,6 +149,33 @@ fn the_workspace_and_profile_tools_take_nothing_or_one_object() {
 }
 
 #[test]
+fn the_workspace_tools_say_the_workspace_is_the_sessions_and_a_subagent_shares_its_parents() {
+    let list = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
+    let [init, initialized] = initialize();
+
+    let (replies, _) = run(&SESSION, &[init, initialized, list]);
+
+    let tools = replies[1]["result"]["tools"].as_array().unwrap();
+    for tool in ["workspace_get", "workspace_set"] {
+        let found = tools.iter().find(|t| t["name"] == tool).unwrap();
+        let text = found["description"].as_str().unwrap();
+        assert!(text.contains("this session's workspace"), "{tool}: {text}");
+        assert!(text.contains("A subagent session"), "{tool}: {text}");
+        assert!(!text.contains("worktree"), "{tool}: {text}");
+    }
+    let set = input_schema(&replies[1], "workspace_set");
+    let shape = set["properties"]["workspace"]["description"]
+        .as_str()
+        .unwrap();
+    // An agent panel always names a session.
+    assert!(shape.contains("\"session\": <id>,"), "{shape}");
+    assert!(
+        shape.contains("this workspace's session or a subagent"),
+        "{shape}"
+    );
+}
+
+#[test]
 fn the_html_show_tool_takes_a_title_and_html_or_a_path_and_an_optional_height() {
     let list = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
     let [init, initialized] = initialize();

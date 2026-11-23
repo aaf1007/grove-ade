@@ -129,6 +129,18 @@ button.details-row:focus-visible,
   white-space: nowrap;
 }
 
+/* A line under a row that holds more than one value, such as a window of the usage limits: its
+   name starts under the row's label, and its value sits at the right edge. */
+.details-subrow {
+  display: flex;
+  height: 26px;
+  align-items: center;
+  gap: var(--space-12);
+  padding: 0 var(--space-16) 0 calc(var(--space-16) + var(--icon) + var(--space-12));
+  font: var(--text-meta);
+  white-space: nowrap;
+}
+
 .details-path {
   display: flex;
   min-width: 0;
