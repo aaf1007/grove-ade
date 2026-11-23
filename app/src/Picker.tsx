@@ -115,7 +115,8 @@ const LIST_ITEMS: Record<PickerList, string> = {
 
 /**
  * The button in the composer's footer, with the agent's mark, the model and its effort, and its popover: the agent, until `agentLocked`, then the model
- * and its effort. Picking an agent or a model closes it. Picking an effort leaves it open.
+ * and its effort. Picking an agent or a model closes it. Picking an effort leaves it open, unless
+ * a digit picked it. Escape closes it.
  */
 export function Picker({
   agent,
@@ -150,8 +151,9 @@ export function Picker({
 
   useImperativeHandle(ref, () => ({
     openOn(wanted) {
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement && !pop.current?.contains(focused)) opener.current = focused;
       if (!open) {
-        opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         setEntering(openedByPointer());
         setHeld(models === null);
       }

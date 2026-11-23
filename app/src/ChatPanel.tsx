@@ -33,7 +33,14 @@ import type {
 import { AgentMarkdown } from "./AgentMarkdown";
 import "./ChatPanel.css";
 import { takeCommands, useCommandMenu } from "./CommandMenu";
-import { AgentMark, type ModelChoice, Picker, type PickerHandle, type PickerList, useModelChoice } from "./Picker";
+import {
+  AgentMark,
+  type ModelChoice,
+  Picker,
+  type PickerHandle,
+  type PickerList,
+  useModelChoice,
+} from "./Picker";
 import { type PanelShortcut, pressedShortcut } from "./shortcuts";
 import { AGENT_NAMES, byRepo } from "./Sidebar";
 import { TerminalPanel } from "./TerminalPanel";
@@ -202,11 +209,16 @@ export function ChatPanel({
     stopTurn: () => chat.current?.stopTurn() ?? false,
     pickModel: () => chat.current?.openPicker("model") ?? false,
     pickEffort: () => chat.current?.openPicker("effort") ?? false,
+    switchMode: () => {
+      if (blocked) return false;
+      switchTo(modeSwitch.mode === "Chat" ? "Terminal" : "Chat");
+      return true;
+    },
   };
 
-  // A held key repeats, and acts once.
+  // A held key repeats, and acts once. A key an input method composes with is not a shortcut.
   function onShortcutKey(event: KeyboardEvent) {
-    if (event.repeat) return;
+    if (event.repeat || event.nativeEvent.isComposing) return;
     const pressed = pressedShortcut(event.nativeEvent, "agentPanel");
     if (pressed && shortcutActions[pressed.id]()) event.preventDefault();
   }
@@ -747,6 +759,13 @@ function ChatView({
     focusedRequest.current = focusRequest;
     (approvalCard.current ?? composer.current!).focus();
   }, [focusRequest, shown, historyLoaded]);
+
+  // The view a mode switch opens takes the keyboard, as the TUI does in terminal mode.
+  const focusAfterSwitch = useEffectEvent(() => {
+    if (resumed && shown) composer.current!.focus();
+  });
+
+  useEffect(() => focusAfterSwitch(), []);
 
   // The composer grows with the draft up to its CSS max-height, then scrolls. A hidden panel
   // has no size, so it measures again once shown, and again when its width changes the wrapping.

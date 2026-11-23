@@ -2253,6 +2253,8 @@ test("Esc during a turn sends one interrupt, as the stop button does", async () 
   expect(press("stopTurn", composer())).toBe(true);
   // A held key repeats. The turn is still stopped once.
   press("stopTurn", composer(), { repeat: true });
+  // The Esc that ends an input method's composition is not grove's.
+  expect(press("stopTurn", composer(), { isComposing: true })).toBe(false);
 
   expect(bridge.interrupted).toEqual(["0"]);
 });
@@ -2389,6 +2391,8 @@ test("a digit past the end of the open list picks nothing and types nothing", as
   press("pickModel", composer());
 
   expect(press("pickItem", document.activeElement!, { key: "3" })).toBe(true);
+  // A digit that picks from an input method's candidates is not grove's.
+  expect(press("pickItem", document.activeElement!, { key: "2", isComposing: true })).toBe(false);
 
   expect(bridge.modelsSet).toHaveLength(set);
   expect(screen.getByRole("dialog", { name: "Agent and model" })).toBeTruthy();
@@ -2430,7 +2434,7 @@ test("the effort list of a model that takes no effort has nothing to pick", asyn
 
 test("a picker opened on the model list while the models load lands on it once they are in", async () => {
   const bridge = await started();
-  let list = (_: typeof bridge.agentModels.Claude) => {};
+  let list: (models: typeof bridge.agentModels.Claude) => void = () => {};
   vi.spyOn(bridge, "models").mockReturnValueOnce(new Promise((resolve) => (list = resolve)));
   await shownPanel(bridge);
   composer().focus();
@@ -2442,4 +2446,77 @@ test("a picker opened on the model list while the models load lands on it once t
   await act(async () => list(bridge.agentModels.Claude));
 
   expect(document.activeElement).toBe(option(picker, /^Default/));
+});
+
+test("Cmd-Shift-M switches the mode as the Chat and Terminal switch does, and back", async () => {
+  const bridge = await started();
+  await shownPanel(bridge);
+  composer().focus();
+
+  let taken = false;
+  await act(async () => {
+    taken = press("switchMode", composer());
+  });
+
+  expect(taken).toBe(true);
+  expect(bridge.modesSet).toEqual([{ session: "0", mode: "Terminal" }]);
+  expect(terminal()).toBeTruthy();
+  expect(modeButton("Terminal").getAttribute("aria-pressed")).toBe("true");
+
+  await act(async () => {
+    press("switchMode", terminal()!);
+  });
+
+  expect(bridge.modesSet.at(-1)).toEqual({ session: "0", mode: "Chat" });
+  expect(terminal()).toBeNull();
+  // The keyboard is in the composer again, so the next shortcut reaches the panel.
+  expect(document.activeElement).toBe(composer());
+});
+
+test.each<AgentStateChanged>([
+  working("Working"),
+  { session: "0", state: "NeedsInput", kind: "Approval", source: "Protocol" },
+])("Cmd-Shift-M does nothing while the Chat and Terminal switch is off", async (state) => {
+  const bridge = await started();
+  await shownPanel(bridge, { state });
+  expect(modeButton("Terminal").disabled).toBe(true);
+
+  expect(press("switchMode", composer())).toBe(false);
+
+  expect(bridge.modesSet).toEqual([]);
+});
+
+test("Cmd-Shift-M does nothing while a switch is on its way, or before the panel knows the mode", async () => {
+  const bridge = await started();
+  const go = bridge.holdModeSwitches();
+  await shownPanel(bridge);
+  await act(async () => {
+    press("switchMode", composer());
+  });
+  expect(modeButton("Chat").disabled).toBe(true);
+
+  expect(press("switchMode", composer())).toBe(false);
+
+  await act(async () => go());
+  expect(bridge.modesSet).toEqual([{ session: "0", mode: "Terminal" }]);
+  cleanup();
+
+  vi.spyOn(bridge, "sessions").mockReturnValueOnce(new Promise(() => {}));
+  render(<Panel bridge={bridge} />);
+  await act(async () => {});
+  expect(press("switchMode", strip())).toBe(false);
+  expect(bridge.modesSet).toHaveLength(1);
+});
+
+test("the panel's shortcuts need focus in the panel", async () => {
+  const bridge = await started();
+  await shownPanel(bridge, { state: working("Working") });
+
+  for (const id of ["stopTurn", "pickModel", "pickEffort", "switchMode"] as const) {
+    expect(press(id, document.body)).toBe(false);
+  }
+
+  expect(bridge.interrupted).toEqual([]);
+  expect(bridge.modesSet).toEqual([]);
+  expect(screen.queryByRole("dialog")).toBeNull();
 });

@@ -18,7 +18,7 @@ export interface WindowShortcut extends ShortcutText {
 
 /** A key that works with focus in an agent panel, on that panel's agent session. */
 export interface PanelShortcut extends ShortcutText {
-  id: "stopTurn" | "pickModel" | "pickEffort";
+  id: "stopTurn" | "pickModel" | "pickEffort" | "switchMode";
   when: "agentPanel";
 }
 
@@ -32,16 +32,19 @@ export interface PickerShortcut extends ShortcutText {
 export type Shortcut = WindowShortcut | PanelShortcut | PickerShortcut;
 export type ShortcutId = Shortcut["id"];
 
+const TURN = "Turn and composer";
+
 export const SHORTCUTS: readonly Shortcut[] = [
   { id: "newSession", keys: "Meta+N", label: "New session", group: "Agent sessions", when: "unclaimed" },
   { id: "search", keys: "Meta+K", label: "Search", group: "Agent sessions", when: "unclaimed" },
   // Plain Ctrl-J is a newline in a terminal, so Cmd-J is free to come first.
   { id: "jump", keys: "Meta+J", label: "Needs you", group: "Agent sessions", when: "anywhere" },
   // In chat mode only. In terminal mode Esc belongs to the agent's TUI.
-  { id: "stopTurn", keys: "Escape", label: "Stop the turn", group: "Turn and composer", when: "agentPanel" },
-  { id: "pickModel", keys: "Shift+Meta+I", label: "Open the model list", group: "Turn and composer", when: "agentPanel" },
-  { id: "pickEffort", keys: "Shift+Meta+E", label: "Open the effort list", group: "Turn and composer", when: "agentPanel" },
-  { id: "pickItem", keys: "1-9", label: "Pick an item from the open list", group: "Turn and composer", when: "pickerList" },
+  { id: "stopTurn", keys: "Escape", label: "Stop the turn", group: TURN, when: "agentPanel" },
+  { id: "pickModel", keys: "Shift+Meta+I", label: "Open the model list", group: TURN, when: "agentPanel" },
+  { id: "pickEffort", keys: "Shift+Meta+E", label: "Open the effort list", group: TURN, when: "agentPanel" },
+  { id: "switchMode", keys: "Shift+Meta+M", label: "Switch chat mode and terminal mode", group: TURN, when: "agentPanel" },
+  { id: "pickItem", keys: "1-9", label: "Pick an item from the open list", group: TURN, when: "pickerList" },
   { id: "showShortcuts", keys: "Meta+/", label: "Keyboard shortcuts", group: "Help", when: "unclaimed" },
 ];
 
@@ -65,7 +68,7 @@ function parse(keys: string): { modifiers: string[]; key: string } {
 
 const DIGITS = "1-9";
 
-// Keys the sheet shows by another name than the list gives them.
+// Keys a hint shows by another name than the list gives them.
 const KEY_NAMES: Record<string, string> = { Escape: "Esc", [DIGITS]: "1 to 9" };
 
 /** The keys as macOS menus show them, such as "⌘N". */
@@ -93,11 +96,11 @@ export function matchesKeys(keys: string, event: KeyboardEvent): boolean {
 
 /**
  * The shortcut of the list that `event` presses where `when` holds. None once something took the
- * key, while an input method composes with it, or while a dialog is open.
+ * key, or while a dialog is open.
  */
 export function pressedShortcut(event: KeyboardEvent, when: WindowShortcut["when"]): WindowShortcut | undefined;
 export function pressedShortcut(event: KeyboardEvent, when: PanelShortcut["when"]): PanelShortcut | undefined;
 export function pressedShortcut(event: KeyboardEvent, when: Shortcut["when"]): Shortcut | undefined {
-  if (event.defaultPrevented || event.isComposing || document.querySelector('[aria-modal="true"]')) return undefined;
+  if (event.defaultPrevented || document.querySelector('[aria-modal="true"]')) return undefined;
   return SHORTCUTS.find((shortcut) => shortcut.when === when && matchesKeys(shortcut.keys, event));
 }
