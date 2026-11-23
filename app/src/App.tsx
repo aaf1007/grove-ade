@@ -8,6 +8,7 @@ import type {
   AgentStateChanged,
   AttentionEntry,
   Bridge,
+  DiffBase,
   DockIcon,
   Mode,
   NotificationClicked,
@@ -20,7 +21,7 @@ import { ChatPanel } from "./ChatPanel";
 import { useLoginDoubt } from "./loginDoubt";
 import { useSetting } from "./settings";
 import { DetailsCard, type FocusedSession, type RunTab, useDetailsRoom } from "./DetailsCard";
-import { type DiffOpened, DiffView } from "./DiffView";
+import { DiffView } from "./DiffView";
 import { FilesPanel } from "./FilesPanel";
 import { useLayout } from "./layout";
 import { PanelTabs, tabId } from "./PanelTabs";
@@ -196,8 +197,6 @@ export function App({ bridge }: { bridge: Bridge }) {
   // Whether the user opened Details. It shows while the chat area has room for it.
   const [detailsOpen, setDetailsOpen] = useSetting("grove.detailsOpen", false, (open) => typeof open === "boolean");
   const [chatLane, setChatLane] = useState<HTMLElement | null>(null);
-  // The base the Details card last asked each worktree's Diff to open on.
-  const [diffOpened, setDiffOpened] = useState<Record<string, DiffOpened>>({});
   // The attention queue, head first, as the core last listed it.
   const [attentionQueue, setAttentionQueue] = useState<AttentionEntry[]>([]);
   // The last jump's session, and a count that grows with each jump so its panel takes focus again.
@@ -466,7 +465,10 @@ export function App({ bridge }: { bridge: Bridge }) {
         if (focus) focusSession({ session, worktree, agent });
         else showAgent(known({ session, worktree, agent: agent ?? "Claude", panel: session }));
         if (!own || !shown) return;
-        if (!sameLayout(shown, own)) void changeWorkspace({ session }, (now) => ({ ...shown, chat: now.chat }));
+        // Its Diff still opens on uncommitted changes, whatever base the place showed.
+        if (!sameLayout(shown, own)) {
+          void changeWorkspace({ session }, (now) => ({ ...shown, chat: now.chat, diffBase: now.diffBase }));
+        }
         forgetWorkspace({ worktree });
       },
     );
@@ -573,9 +575,9 @@ export function App({ bridge }: { bridge: Bridge }) {
     else if (place) void changeWorkspace({ worktree: place }, update);
   }
 
-  // Opening a panel shows the panel area too.
-  function open(panel: MenuPanel) {
-    changeShown((shown) => openPanel(shown, panel));
+  // Opening a panel shows the panel area too. With `diffBase`, the Diff shows that base.
+  function open(panel: MenuPanel, diffBase?: DiffBase) {
+    changeShown((shown) => openPanel(diffBase ? { ...shown, diffBase } : shown, panel));
     if (!layout.panelsOpen) togglePanels();
   }
 
@@ -786,13 +788,7 @@ export function App({ bridge }: { bridge: Bridge }) {
                 runs={runs[selected] ?? []}
                 session={detailsSession}
                 onStartRun={(name) => void startRun(selected, name)}
-                onOpenDiff={(base) => {
-                  setDiffOpened((asks) => ({
-                    ...asks,
-                    [selected]: { base, request: (asks[selected]?.request ?? 0) + 1 },
-                  }));
-                  open("Diff");
-                }}
+                onOpenDiff={(base) => open("Diff", base)}
                 onOpenProfile={() => open("Profile")}
               />
             )}
@@ -906,14 +902,17 @@ export function App({ bridge }: { bridge: Bridge }) {
               aria-labelledby={tabId("Diff", "tab")}
               hidden={workspace?.selected !== "Diff"}
             >
-              {/* Keyed, so another worktree starts with its own base, file and cursor. */}
+              {/* Keyed, so another worktree starts with its own file and cursor. The base is the one
+                  the workspace shown keeps, so each agent session has its own. */}
               {selected && workspace?.panels.includes("Diff") && (
                 <DiffView
                   key={selected}
                   bridge={bridge}
                   worktree={selected}
+                  base={workspace.diffBase}
+                  // The workspace shown keeps the base, so an agent session's Diff comes back on it.
+                  onBase={(diffBase) => changeShown((shown) => ({ ...shown, diffBase }))}
                   agentStates={agentStates}
-                  opened={diffOpened[selected]}
                   reveal={diffReveal?.worktree === selected ? diffReveal.path : null}
                   onRevealed={() => setDiffReveal(null)}
                   onSent={(session) => {

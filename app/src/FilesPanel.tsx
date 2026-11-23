@@ -56,7 +56,7 @@ export function FilesPanel({ bridge, worktree }: { bridge: Bridge; worktree: str
       (diff) => {
         if (!current) return;
         const found = new Map<string, Mark>();
-        for (const file of diff) {
+        for (const file of diff ?? []) {
           const mark = MARKS[file.status];
           if (mark) found.set(file.newPath, mark);
         }

@@ -448,6 +448,7 @@ test("a new session runs the agent the core picks from the profile's layout, and
     panels: ["Diff", "Logs"],
     selected: "Logs",
     terminal: true,
+    diffBase: "Head",
   });
 });
 

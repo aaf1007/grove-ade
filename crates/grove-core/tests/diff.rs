@@ -730,6 +730,44 @@ fn diffing_a_worktree_grove_does_not_track_fails() {
     );
 }
 
+// A plain folder has no diff. No session can run in one until issue #60, so the folder here is a
+// tracked checkout whose `.git` is gone, which grove tracks the same way.
+#[test]
+fn a_tracked_place_that_is_not_a_git_repo_has_no_diff_on_either_base() {
+    let dir = short_temp_dir();
+    let repo = new_repo(dir.path(), &[("a.txt", "one\n")]);
+    let (core, _events) = start(dir.path());
+    block_on(core.add_repo(&repo)).unwrap();
+    fs::remove_dir_all(repo.join(".git")).unwrap();
+    fs::write(repo.join("a.txt"), "two\n").unwrap();
+    let file = FileDiff {
+        status: FileStatus::Modified,
+        old_path: "a.txt".into(),
+        new_path: "a.txt".into(),
+        binary: false,
+        hunks: Vec::new(),
+    };
+
+    for base in [DiffBase::Head, DiffBase::MergeBase] {
+        let diff = block_on(core.diff(&repo, base));
+        let versions = block_on(core.file_versions(&repo, base, &file));
+
+        assert!(
+            matches!(&diff, Err(CoreError::NotARepo { path, .. }) if *path == repo),
+            "{base:?}: {diff:?}"
+        );
+        assert!(
+            matches!(&versions, Err(CoreError::NotARepo { path, .. }) if *path == repo),
+            "{base:?}: {versions:?}"
+        );
+    }
+    let marks = block_on(core.line_changes(&repo, Path::new("a.txt")));
+    assert!(
+        matches!(&marks, Err(CoreError::NotARepo { path, .. }) if *path == repo),
+        "{marks:?}"
+    );
+}
+
 #[test]
 fn file_versions_never_read_outside_the_worktree() {
     let dir = short_temp_dir();

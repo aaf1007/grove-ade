@@ -195,7 +195,7 @@ export function DetailsCard({
     if (base === undefined) return;
     let current = true;
     bridge.diff(worktree, base === null ? "Head" : "MergeBase").then(
-      (files) => current && setDiff({ base, result: { files } }),
+      (files) => current && setDiff({ base, result: { files: files ?? [] } }),
       (e: unknown) => current && setDiff({ base, result: { error: String(e) } }),
     );
     return () => {

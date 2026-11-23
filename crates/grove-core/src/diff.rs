@@ -13,15 +13,18 @@ use git2::{
     AttrCheckFlags, AttrValue, Commit, Delta, DiffFindOptions, DiffLineType, DiffOptions,
     ErrorCode, Patch, Repository,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{Core, CoreError, Result, worktree};
 
 type GitResult<T> = std::result::Result<T, git2::Error>;
 
-/// What a diff compares the worktree against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a diff compares the worktree against. The Diff panel opens on `Head`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DiffBase {
     /// All uncommitted changes, staged or not, plus untracked files. The same as `git diff HEAD`.
+    #[default]
     Head,
     /// Everything since the branch left the worktree's base branch, committed or not, plus
     /// untracked files. The same as `git diff $(git merge-base <base> HEAD)`, with `origin/<base>`
@@ -104,7 +107,8 @@ pub struct FileVersions {
 }
 
 impl Core {
-    /// The diff of the worktree at `worktree` against `base`, file by file in path order.
+    /// The diff of the worktree at `worktree` against `base`, file by file in path order. Fails
+    /// with `NotARepo` when the folder is not a git repo, which has no diff.
     pub async fn diff(&self, worktree: &Path, base: DiffBase) -> Result<Vec<FileDiff>> {
         let start = self.diff_start(worktree, base)?;
         let dir = worktree.to_path_buf();
@@ -116,7 +120,8 @@ impl Core {
     }
 
     /// Both versions of `file`, from a diff of the worktree at `worktree` against `base`. Reads
-    /// only its status, paths and binary flag.
+    /// only its status, paths and binary flag. Fails with `NotARepo` when the folder is not a
+    /// git repo.
     pub async fn file_versions(
         &self,
         worktree: &Path,
@@ -180,7 +185,7 @@ impl Core {
 // Opens the repo on every call, so nothing goes stale between calls. It blocks while git2 and git
 // work.
 pub(crate) fn diff_from(worktree: &Path, start: &Start) -> Result<Vec<FileDiff>> {
-    let repo = Repository::open(worktree).map_err(CoreError::git2(worktree))?;
+    let repo = open(worktree)?;
     let from = start_commit(&repo, worktree, start)?;
     let (mut files, routed) = git2_diff(&repo, &from).map_err(CoreError::git2(worktree))?;
     if !routed.paths.is_empty() {
@@ -189,6 +194,18 @@ pub(crate) fn diff_from(worktree: &Path, start: &Start) -> Result<Vec<FileDiff>>
     }
     files.sort_by(|a, b| a.new_path.as_os_str().cmp(b.new_path.as_os_str()));
     Ok(files)
+}
+
+// The repo whose checkout `worktree` is. A folder that is not one, such as a plain folder, has
+// no diff, and says so with `NotARepo`.
+fn open(worktree: &Path) -> Result<Repository> {
+    Repository::open(worktree).map_err(|e| match e.code() {
+        ErrorCode::NotFound => CoreError::NotARepo {
+            path: worktree.to_path_buf(),
+            reason: e.message().to_owned(),
+        },
+        _ => CoreError::git2(worktree)(e),
+    })
 }
 
 // The commit a diff starts from: HEAD, or the merge base of the base branch and HEAD. The base
@@ -427,9 +444,10 @@ fn versions(worktree: &Path, start: &Start, file: &FileDiff) -> Result<FileVersi
     for path in [&file.old_path, &file.new_path] {
         check_inside(path)?;
     }
+    let repo = open(worktree)?;
     let old = match file.status {
         FileStatus::Added | FileStatus::Untracked => None,
-        _ => Some(start_blob(worktree, start, &file.old_path)?),
+        _ => Some(start_blob(&repo, worktree, start, &file.old_path)?),
     };
     let new = match file.status {
         FileStatus::Deleted => None,
@@ -452,14 +470,13 @@ pub(crate) fn check_inside(path: &Path) -> Result<()> {
     }
 }
 
-fn start_blob(worktree: &Path, start: &Start, path: &Path) -> Result<Vec<u8>> {
-    let repo = Repository::open(worktree).map_err(CoreError::git2(worktree))?;
-    let from = start_commit(&repo, worktree, start)?;
+fn start_blob(repo: &Repository, worktree: &Path, start: &Start, path: &Path) -> Result<Vec<u8>> {
+    let from = start_commit(repo, worktree, start)?;
     let read = || {
         let blob = from
             .tree()?
             .get_path(path)?
-            .to_object(&repo)?
+            .to_object(repo)?
             .peel_to_blob()?;
         Ok(blob.content().to_vec())
     };
