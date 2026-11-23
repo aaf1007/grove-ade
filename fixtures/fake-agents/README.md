@@ -264,6 +264,9 @@ has one JSON object per line: `t`, the seconds since the recording started,
 - A `core` line is waited for, as `wait_message` waits for its `type`. The
   clock restarts when it comes, so a slow user never makes later lines rush.
 - `t` never goes back. The path is taken as given, from the fake's folder.
+- When the step stops, the fake logs `replay_times`: when it heard each `core`
+  line and when it had sent each `sidecar` line. In the same record,
+  `replay_send_starts` gives the time just before each completed sidecar write.
 
 The fake checks the recording with the rest of the scenario, before the first
 step runs. Repeat the step to play a recording more than once. The whole
@@ -407,5 +410,6 @@ fake started, and `pid`, then one of these:
 | `hook_skipped`, `trust` | `codex` only. For a `hook` step while hooks are not trusted. |
 | `error` | Before a failure exit. Same text as on stderr. |
 | `signal` | Before a `signal` step. |
+| `replay_times`, `replay_send_starts` | `claude-sidecar` only. When a `replay` step stops, even on a failure. The first list has one Unix time in seconds per recording line the step got through, in order: when the fake heard a `core` line, or when it had sent a `sidecar` line. The second has one start time per completed sidecar write, in send order. |
 | `mcp_call`, `reply`, `server_exit`, `stderr` | After an `mcp_call` step: the tool, the server's JSON-RPC reply to the call, its exit code and its stderr. `mcp_call` and `error` instead when the server could not start. |
 | `exit` | Last, with the exit code. Missing when a signal ended the fake. |
