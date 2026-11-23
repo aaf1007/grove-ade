@@ -214,6 +214,7 @@ L=$(wc -l < <run>/evidence/session-0.log)
 |---|---|---|
 | `ping` | | the core's HOME and pid |
 | `add_repo` | `path` | tracks a repo |
+| `forget_repo` | `path` | ends the sessions of a repo and stops tracking it, with the disk left alone |
 | `worktrees` | | the tracked worktrees |
 | `create_worktree` | `repo`, `branch` | a new worktree on a new branch, prints its path |
 | `spawn_agent` | `worktree`, `agent=claude\|codex`, `mode=chat\|terminal`, optional `prompt` | starts an agent session on the fake, prints its id |
