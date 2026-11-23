@@ -137,8 +137,8 @@ argument in the command.
 
 `codex app-server` reads JSON-RPC messages from stdin, one per line, and
 writes its own the same way. It answers these requests itself, in the shapes
-`codex app-server generate-ts` gives for 0.158.0, cut down to the fields grove
-reads:
+`codex app-server generate-ts` gives for 0.158.0 (`thread/fork` and
+`thread/unsubscribe`: 0.170.0), cut down to the fields grove reads:
 
 - `initialize` gets `userAgent`, `codexHome`, `platformFamily` and
   `platformOs`. A second one gets error -32600 `Already initialized`.
@@ -155,6 +155,13 @@ reads:
   its [record](#record) as its `turns`. Either is followed by a
   `thread/started` notification. The fake runs one thread, so a second one
   gets an error.
+- `thread/fork` of that thread gets a new thread with a new UUID, no turns,
+  `forkedFromId` and the `ephemeral` and `approvalPolicy` it was given,
+  followed by a `thread/started` notification. A fork takes `turn/start` and
+  `turn/interrupt` like the thread, one turn at a time, and its turns leave the
+  thread's own turn, model and text as they are.
+- `thread/unsubscribe` of a fork gets `unsubscribed` and a `thread/closed`
+  notification, and the fork is gone. Any other thread gets `notLoaded`.
 - `model/list` gets two models, `gpt-5.5` (the default, efforts `low`,
   `medium` and `high`, `medium` by default) and `gpt-5.5-mini` (efforts `low`
   and `medium`, `low` by default), and no next cursor.
@@ -180,7 +187,8 @@ takes only the `send`, `wait_message`, `record`, `sleep` and `exit` steps:
   client such as an approval. Placeholders fill as for the other fakes, plus
   `{{thread_id}}` and `{{turn_id}}`, the thread and the latest turn, and
   `{{model}}` and `{{effort}}`, what the latest turn runs with, and
-  `{{text}}`, the latest turn's first text input.
+  `{{text}}`, the latest turn's first text input. For the latest fork:
+  `{{fork_thread_id}}`, `{{fork_turn_id}}` and `{{fork_text}}`.
 - `wait_message` waits for the client's next request with that method, or for
   its next reply to a request with `"response"`. A request the fake rejected
   never counts. A test reads what a reply says from the log.

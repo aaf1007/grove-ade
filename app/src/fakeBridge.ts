@@ -119,6 +119,14 @@ export interface FakeBridge extends Bridge {
   sent: { session: SessionId; text: string }[];
   /** Every `interrupt` call, in order. */
   interrupted: SessionId[];
+  /** Every `askSideQuestion` call, in order. Its place in the list, from 1, is the side question's id. */
+  sideQuestions: { session: SessionId; question: string }[];
+  /** Every `endSideQuestion` call, in order. */
+  endedSideQuestions: { session: SessionId; sideQuestion: number }[];
+  /** Sends the messages to the session's open side question as one frame, as its fork's answer comes. */
+  sideMessages(session: SessionId, ...messages: FakeMessage[]): void;
+  /** Makes each side question from now on get `text` as its whole answer at once, as a fork that answers. */
+  answerSideQuestionsWith(text: string): void;
   /** Every `answer` call the fake core took, in order. */
   answered: { session: SessionId; request: string; reply: Reply }[];
   /** What `models` lists for each agent. Tests may change it before a session starts. */
@@ -324,6 +332,11 @@ export function fakeBridge(
   const spawnedAgents: FakeBridge["spawnedAgents"] = [];
   const sent: FakeBridge["sent"] = [];
   const interrupted: SessionId[] = [];
+  const sideQuestions: FakeBridge["sideQuestions"] = [];
+  const endedSideQuestions: FakeBridge["endedSideQuestions"] = [];
+  // Each session's open side question, and where its answer goes.
+  const sideSinks = new Map<SessionId, { sideQuestion: number; onMessages: (messages: AgentMessage[]) => void }>();
+  let sideAnswer: string | null = null;
   const answered: FakeBridge["answered"] = [];
   const agentModels: FakeBridge["agentModels"] = { ...FAKE_MODELS };
   const modelsSet: FakeBridge["modelsSet"] = [];
@@ -845,6 +858,27 @@ export function fakeBridge(
       chat(session);
       interrupted.push(session);
     },
+    // As in the core, a new side question takes the place of the session's earlier one.
+    async askSideQuestion(session, question, onMessages) {
+      chat(session);
+      sideQuestions.push({ session, question });
+      const sideQuestion = sideQuestions.length;
+      sideSinks.set(session, { sideQuestion, onMessages });
+      // As from the core, the answer's frames can come before the id does.
+      if (sideAnswer !== null) {
+        const answer: FakeMessage[] = [
+          { type: "TurnStarted" },
+          { type: "TextDelta", text: sideAnswer },
+          { type: "TurnEnded", outcome: "Completed" },
+        ];
+        onMessages(answer.map(withTime));
+      }
+      return sideQuestion;
+    },
+    async endSideQuestion(session, sideQuestion) {
+      endedSideQuestions.push({ session, sideQuestion });
+      if (sideSinks.get(session)?.sideQuestion === sideQuestion) sideSinks.delete(session);
+    },
     // As in the core: only a request of the current turn that has no answer yet, with a reply that fits it.
     async answer(session, request, reply) {
       const history = chat(session);
@@ -935,6 +969,14 @@ export function fakeBridge(
       accountListeners.forEach((listener) => listener(change));
     },
     messages: (session, ...messages) => addMessages(session, messages.map(withTime)),
+    sideMessages(session, ...messages) {
+      const open = sideSinks.get(session);
+      if (!open) throw `session ${session} has no open side question`;
+      open.onMessages(messages.map(withTime));
+    },
+    answerSideQuestionsWith(text) {
+      sideAnswer = text;
+    },
     opened,
     revealed,
     openedLinks,
@@ -946,6 +988,8 @@ export function fakeBridge(
     spawnedAgents,
     sent,
     interrupted,
+    sideQuestions,
+    endedSideQuestions,
     answered,
     agentModels,
     modelsSet,

@@ -11,12 +11,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use grove_core::{
     AccountInfo, Agent, AgentMessage, AgentSpec, AgentState, Core, CoreConfig, CoreError,
     CoreEvent, InputKind, Mode, ModelInfo, Question, QuestionOption, RemoveOpts, Reply, RequestId,
-    SessionId, SlashCommand, SpawnSpec, StateSource, TurnOutcome,
+    SessionId, SideQuestionId, SlashCommand, SpawnSpec, StateSource, TurnOutcome,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::sync::broadcast::{self, error::TryRecvError};
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 mod common;
 use common::{grove_hook, now_unix_ms, times, untimed, write_script};
@@ -246,8 +246,19 @@ struct Frames {
 
 impl Frames {
     fn subscribe(core: &Core, session: SessionId) -> (Vec<AgentMessage>, Frames) {
-        let (sink, mut rx) = unbounded_channel();
+        let (sink, rx) = unbounded_channel();
         let history = untimed(core.subscribe(session, sink).unwrap());
+        (history, Frames::of(rx))
+    }
+
+    /// Asks a side question, and returns its id and the frames of its answer.
+    fn ask(core: &Core, session: SessionId, question: &str) -> (SideQuestionId, Frames) {
+        let (sink, rx) = unbounded_channel();
+        let id = core.ask_side_question(session, question, sink).unwrap();
+        (id, Frames::of(rx))
+    }
+
+    fn of(mut rx: UnboundedReceiver<Vec<AgentMessage>>) -> Frames {
         let (stamped, arrivals) = mpsc::channel();
         // Ends once the core drops the sink.
         thread::spawn(move || {
@@ -257,11 +268,10 @@ impl Frames {
                 }
             }
         });
-        let frames = Frames {
+        Frames {
             arrivals,
             frames: Vec::new(),
-        };
-        (history, frames)
+        }
     }
 
     /// Takes the frames that have come.
@@ -2255,4 +2265,210 @@ fn a_command_list_alone_sets_no_state_and_starts_no_turn_for_a_waiting_message()
     while !frames.messages().contains(&not_delivered("go")) {
         frames.next_frame(deadline, "the not delivered message");
     }
+}
+
+/// A message of side question `id`'s fork, from the fake sidecar.
+fn side(id: u64, message: Value) -> Value {
+    send(json!({"type": "side", "id": id, "message": message}))
+}
+
+/// The session's own conversation so far. Its panel's sink is replaced.
+fn conversation(core: &Core, session: SessionId) -> Vec<AgentMessage> {
+    untimed(core.subscribe(session, unbounded_channel().0).unwrap())
+}
+
+/// What `agent_sessions` lists: each session, its title and its agent state.
+fn listed(core: &Core) -> Vec<(SessionId, String, Option<AgentState>)> {
+    let sessions = core.agent_sessions();
+    sessions
+        .into_iter()
+        .map(|info| (info.session, info.title, info.state))
+        .collect()
+}
+
+#[test]
+fn a_side_question_is_answered_in_a_fork_and_leaves_the_session_as_it_was() {
+    let mut steps = turn(&["done"]);
+    steps.extend([
+        json!({"wait_message": "side_question"}),
+        side(0, json!({"type": "turn_start"})),
+        side(0, json!({"type": "text_delta", "text": "For"})),
+        side(0, json!({"type": "text_delta", "text": "ty-two"})),
+        side(0, json!({"type": "turn_end"})),
+    ]);
+    let mut s = setup(then_wait(steps));
+    let session = s.spawn(Some("build it"));
+    assert_eq!(s.next_state().1, AgentState::Working);
+    assert_eq!(s.next_state().1, AgentState::Done);
+    let before = (
+        conversation(&s.core, session),
+        s.core.resume_id(session),
+        listed(&s.core),
+    );
+
+    let (id, mut answer) = Frames::ask(&s.core, session, "what is 6 x 7?");
+    answer.until_turn_end();
+
+    assert_eq!(
+        answer.messages(),
+        [started(), delta("For"), delta("ty-two"), ended()]
+    );
+    assert_eq!(
+        s.wait_sent("side_question", 1),
+        [json!({"type": "side_question", "id": id, "text": "what is 6 x 7?"})]
+    );
+    s.no_state_for(Duration::from_millis(100));
+    let after = (
+        conversation(&s.core, session),
+        s.core.resume_id(session),
+        listed(&s.core),
+    );
+    assert_eq!(after, before);
+    assert_eq!(
+        after.2,
+        [(session, "build it".to_owned(), Some(AgentState::Done))]
+    );
+    // A save after the side question holds nothing of it.
+    s.core.set_model(session, "haiku", None).unwrap();
+    let state = s.cfg.home.join("state.json");
+    let deadline = Instant::now() + TIMEOUT;
+    let saved = loop {
+        let saved = fs::read_to_string(&state).unwrap_or_default();
+        if saved.contains("haiku") {
+            break saved;
+        }
+        assert!(Instant::now() < deadline, "the model was never saved");
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert!(
+        !saved.contains("6 x 7"),
+        "the state file has the side question"
+    );
+    assert!(!saved.contains("ty-two"), "the state file has the answer");
+}
+
+#[test]
+fn a_side_question_asked_during_a_turn_leaves_the_turn_running() {
+    let s = setup(then_wait(vec![
+        json!({"wait_message": "user_message"}),
+        send(json!({"type": "turn_start"})),
+        send(json!({"type": "text_delta", "text": "working"})),
+        json!({"wait_message": "side_question"}),
+        side(0, json!({"type": "turn_start"})),
+        side(0, json!({"type": "text_delta", "text": "aside"})),
+        side(0, json!({"type": "turn_end"})),
+        // The turn goes on only once the test has read the state.
+        json!({"wait_message": "end_side_question"}),
+        send(json!({"type": "text_delta", "text": " on it"})),
+        send(json!({"type": "turn_end"})),
+    ]));
+    let session = s.spawn(None);
+    let (_, mut frames) = Frames::subscribe(&s.core, session);
+    s.core.send_message(session, "go").unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !frames.messages().contains(&delta("working")) {
+        frames.next_frame(deadline, "the turn's first text");
+    }
+
+    let (id, mut answer) = Frames::ask(&s.core, session, "how far along?");
+    answer.until_turn_end();
+    let state_after_the_answer = listed(&s.core)[0].2;
+    s.core.end_side_question(session, id);
+    frames.until_turn_end();
+
+    assert_eq!(state_after_the_answer, Some(AgentState::Working));
+    assert_eq!(answer.messages(), [started(), delta("aside"), ended()]);
+    assert_eq!(
+        frames.messages(),
+        [
+            user("go"),
+            started(),
+            delta("working"),
+            delta(" on it"),
+            ended()
+        ]
+    );
+}
+
+#[test]
+fn ending_a_side_question_ends_its_fork_and_closes_its_sink() {
+    let s = setup(then_wait(vec![
+        json!({"wait_message": "side_question"}),
+        side(0, json!({"type": "turn_start"})),
+        side(0, json!({"type": "text_delta", "text": "so far"})),
+        json!({"wait_message": "end_side_question"}),
+        side(0, json!({"type": "text_delta", "text": " too late"})),
+        side(0, json!({"type": "turn_end"})),
+    ]));
+    let session = s.spawn(None);
+    let (id, mut answer) = Frames::ask(&s.core, session, "why?");
+    let deadline = Instant::now() + TIMEOUT;
+    while !answer.messages().contains(&delta("so far")) {
+        answer.next_frame(deadline, "the answer's first text");
+    }
+
+    s.core.end_side_question(session, id);
+    // A second end, as when the popover closes after the answer, does nothing.
+    s.core.end_side_question(session, id);
+
+    answer.until_closed();
+    assert_eq!(answer.messages(), [started(), delta("so far")]);
+    assert_eq!(
+        s.wait_sent("end_side_question", 1),
+        [json!({"type": "end_side_question", "id": id})]
+    );
+    assert_eq!(conversation(&s.core, session), []);
+}
+
+#[test]
+fn a_new_side_question_takes_the_place_of_the_one_before() {
+    let s = setup(then_wait(vec![
+        json!({"wait_message": "side_question"}),
+        side(0, json!({"type": "turn_start"})),
+        json!({"wait_message": "side_question"}),
+        side(0, json!({"type": "text_delta", "text": "stale"})),
+        side(1, json!({"type": "turn_start"})),
+        side(1, json!({"type": "text_delta", "text": "fresh"})),
+        side(1, json!({"type": "turn_end"})),
+    ]));
+    let session = s.spawn(None);
+    let (first, mut stale) = Frames::ask(&s.core, session, "one?");
+    let deadline = Instant::now() + TIMEOUT;
+    stale.next_frame(deadline, "the first answer's start");
+
+    let (second, mut fresh) = Frames::ask(&s.core, session, "two?");
+    fresh.until_turn_end();
+
+    assert_ne!(first, second);
+    stale.until_closed();
+    assert_eq!(stale.messages(), [started()]);
+    assert_eq!(fresh.messages(), [started(), delta("fresh"), ended()]);
+}
+
+#[test]
+fn a_side_question_the_process_never_answers_ends_failed_and_none_can_be_asked_after() {
+    let mut s = setup(json!([
+        {"wait_message": "side_question"},
+        side(0, json!({"type": "turn_start"})),
+        {"exit": 1},
+    ]));
+    let session = s.spawn(None);
+
+    let (_, mut answer) = Frames::ask(&s.core, session, "still there?");
+    answer.until_turn_end();
+    s.wait_exit(session);
+
+    let messages = answer.messages();
+    assert_eq!(messages[0], started());
+    assert!(
+        matches!(
+            &messages[1],
+            AgentMessage::TurnEnded { outcome: TurnOutcome::Failed { kind, .. }, .. } if kind == "exited"
+        ),
+        "{messages:?}"
+    );
+    assert!(matches!(
+        s.core.ask_side_question(session, "again?", unbounded_channel().0),
+        Err(CoreError::SessionNotRunning(id)) if id == session
+    ));
 }

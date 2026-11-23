@@ -32,6 +32,7 @@ Own login, Own config, Approval round trip, Question and Interrupt pass for Clau
 | Mode switch | Switch an agent session to terminal mode and back three times. Every message is still there, in order, and the conversation goes on. |
 | Resume | Quit grove during an `Idle` chat session, reopen it, and send a message. The agent remembers the conversation. |
 | Two panels | Two agent sessions in one worktree, side by side, stream at the same time without mixing messages. |
+| Side question | During a turn of a chat-mode session of each agent, Cmd-; asks a side question and the answer streams into the popover. The turn goes on, and the conversation, the agent state and the session list stay as they were. After a switch to terminal mode, the agent's own record has neither the question nor the answer. |
 
 ## Diff correctness
 | Test | Pass |

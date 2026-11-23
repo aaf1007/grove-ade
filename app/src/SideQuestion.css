@@ -1,0 +1,72 @@
+/* The side question popover: over the composer and as wide as it. */
+.side-question {
+  position: absolute;
+  z-index: 20;
+  right: 0;
+  bottom: calc(100% + var(--space-6));
+  left: 0;
+  display: flex;
+  max-height: 50vh;
+  flex-direction: column;
+  border-radius: var(--radius-xl);
+  background: var(--panel);
+  box-shadow: var(--ring), var(--shadow-menu);
+}
+
+.side-question-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-6) var(--space-2) var(--space-12);
+  font: var(--text-label);
+}
+
+.side-question-head span {
+  flex: 1;
+  color: var(--faint);
+  font: var(--text-meta);
+}
+
+/* The question and its answer scroll, and the input stays in view. */
+.side-question-thread {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-12);
+  overflow-y: auto;
+}
+
+.side-question-thread p {
+  margin: 0;
+}
+
+.side-question-asked {
+  color: var(--muted);
+  font: var(--text-body);
+  overflow-wrap: anywhere;
+}
+
+.side-question-thread [role="status"] {
+  color: var(--faint);
+  font: var(--text-meta);
+}
+
+.side-question-thread [role="alert"] {
+  color: var(--failed);
+  font: var(--text-meta);
+}
+
+.side-question input {
+  padding: var(--space-10) var(--space-12);
+  border: 0;
+  border-top: 1px solid var(--line-soft);
+  outline: 0;
+  background: none;
+  color: var(--fg);
+  font: var(--text-body);
+}
+
+.side-question input::placeholder {
+  color: var(--muted);
+}

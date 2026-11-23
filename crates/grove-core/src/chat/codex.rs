@@ -1,22 +1,24 @@
 //! Codex in chat mode: the core speaks `codex app-server`'s JSON-RPC on stdio, one message per
 //! line, and maps it to the same messages the Claude sidecar sends. Checked against the
-//! protocol `codex app-server generate-ts` prints for Codex CLI 0.158.0.
+//! protocol `codex app-server generate-ts` prints for Codex CLI 0.158.0, and `thread/fork` and
+//! `thread/unsubscribe` against 0.170.0.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::{
-    FromAgent, ModelInfo, Question, QuestionOption, Reply, RequestId, SlashCommand, TurnError,
+    FromAgent, ModelInfo, Question, QuestionOption, Reply, RequestId, SideQuestionId, SlashCommand,
+    TurnError,
 };
 use crate::AccountInfo;
 
 /// What the core knows of its connection to one app server. The chat's lock guards it.
 pub(super) struct AppServer {
     next_id: u64,
-    // The method of each request the core sent that has no reply yet, by id.
-    sent: HashMap<u64, &'static str>,
+    // Each request the core sent that has no reply yet, by id.
+    sent: HashMap<u64, Sent>,
     // The thread to go on with, for `thread/resume`. None starts a new one.
     resume: Option<String>,
     thread: Thread,
@@ -32,6 +34,34 @@ pub(super) struct AppServer {
     // What `set_model` chose, for every `turn/start` from then on. None leaves Codex's own.
     model: Option<String>,
     effort: Option<String>,
+    // The open side question's fork.
+    fork: Option<Fork>,
+    // Every fork thread this connection made. A message that names one never reaches the
+    // session's own conversation, also after its side question ended.
+    forks: HashSet<String>,
+}
+
+/// What a request the core sent was for.
+enum Sent {
+    /// The session's own thread, by method.
+    Session(&'static str),
+    /// A side question's fork, by method.
+    Fork {
+        side_question: SideQuestionId,
+        method: &'static str,
+    },
+}
+
+/// The fork of the session's thread that answers a side question.
+struct Fork {
+    side_question: SideQuestionId,
+    question: String,
+    // None until `thread/fork` replies.
+    thread: Option<String>,
+    // The fork's running turn, which `turn/interrupt` names.
+    turn: Option<String>,
+    // The answer has text, so the next agent message starts a new paragraph.
+    has_text: bool,
 }
 
 enum Thread {
@@ -74,7 +104,60 @@ impl AppServer {
             turn: None,
             model: None,
             effort: None,
+            fork: None,
+            forks: HashSet::new(),
         }
+    }
+
+    /// The lines that fork the session's thread for side question `id` and end the fork of the
+    /// one before. The fork cannot write, asks for no approval and is never saved. Its turn
+    /// starts when the fork's reply comes. Fails with the reason while the session has no thread.
+    pub(super) fn ask_side_question(
+        &mut self,
+        id: SideQuestionId,
+        question: &str,
+    ) -> std::result::Result<Vec<Vec<u8>>, String> {
+        let mut lines = match &self.fork {
+            Some(fork) => self.end_side_question(fork.side_question),
+            None => Vec::new(),
+        };
+        let Thread::Started { id: thread } = &self.thread else {
+            return Err("Codex has not started the conversation yet.".into());
+        };
+        // Without its turns, which the reply would otherwise repeat in full.
+        let params = json!({"threadId": thread, "ephemeral": true, "approvalPolicy": "never",
+            "sandbox": "read-only", "excludeTurns": true});
+        lines.push(self.fork_request(id, "thread/fork", params));
+        self.fork = Some(Fork {
+            side_question: id,
+            question: question.to_owned(),
+            thread: None,
+            turn: None,
+            has_text: false,
+        });
+        Ok(lines)
+    }
+
+    /// The lines that end side question `id`'s fork: its turn stops and the server lets the
+    /// thread go. None when it has ended. A fork still being made ends when its reply comes.
+    pub(super) fn end_side_question(&mut self, id: SideQuestionId) -> Vec<Vec<u8>> {
+        let Some(fork) = self.fork.take_if(|fork| fork.side_question == id) else {
+            return Vec::new();
+        };
+        let Some(thread) = fork.thread else {
+            return Vec::new();
+        };
+        let mut lines = Vec::new();
+        if let Some(turn) = fork.turn {
+            let params = json!({"threadId": thread, "turnId": turn});
+            lines.push(self.fork_request(id, "turn/interrupt", params));
+        }
+        lines.push(self.unsubscribe(id, &thread));
+        lines
+    }
+
+    fn unsubscribe(&mut self, id: SideQuestionId, thread: &str) -> Vec<u8> {
+        self.fork_request(id, "thread/unsubscribe", json!({"threadId": thread}))
     }
 
     /// The first line, which the core writes before any other.
@@ -150,9 +233,27 @@ impl AppServer {
                 method: Some(method),
                 params,
                 ..
-            } => match server_request(&method, &id, params) {
-                Ok(request) => vec![request],
-                Err((code, message)) => {
+            } => match (
+                self.names_fork(&params),
+                server_request(&method, &id, params),
+            ) {
+                // A side question changes nothing and asks nothing, so its fork is declined.
+                (
+                    true,
+                    Ok(FromAgent::ApprovalRequest {
+                        reply_to: Some(reply_to),
+                        ..
+                    })
+                    | Ok(FromAgent::QuestionRequest {
+                        reply_to: Some(reply_to),
+                        ..
+                    }),
+                ) => {
+                    writes.push(reply_to.line(&Reply::Deny { message: None }));
+                    Vec::new()
+                }
+                (_, Ok(request)) => vec![request],
+                (_, Err((code, message))) => {
                     writes.push(line_of(
                         json!({"id": id, "error": {"code": code, "message": message}}),
                     ));
@@ -171,17 +272,154 @@ impl AppServer {
                 method: Some(method),
                 params,
                 ..
+            } if self.names_fork(&params) => self.fork_notification(&method, &params, &mut writes),
+            Message {
+                id: None,
+                method: Some(method),
+                params,
+                ..
             } => self.notification(&method, params, &mut writes),
             _ => Vec::new(),
         };
         (incoming, writes)
     }
 
+    /// Whether a message from the server is about a side question's fork, by its `threadId`.
+    fn names_fork(&self, params: &Value) -> bool {
+        params["threadId"]
+            .as_str()
+            .is_some_and(|thread| self.forks.contains(thread))
+    }
+
     fn request(&mut self, method: &'static str, params: Value) -> Vec<u8> {
+        self.send(Sent::Session(method), method, params)
+    }
+
+    fn fork_request(
+        &mut self,
+        side_question: SideQuestionId,
+        method: &'static str,
+        params: Value,
+    ) -> Vec<u8> {
+        let sent = Sent::Fork {
+            side_question,
+            method,
+        };
+        self.send(sent, method, params)
+    }
+
+    fn send(&mut self, sent: Sent, method: &str, params: Value) -> Vec<u8> {
         let id = self.next_id;
         self.next_id += 1;
-        self.sent.insert(id, method);
+        self.sent.insert(id, sent);
         line_of(json!({"id": id, "method": method, "params": params}))
+    }
+
+    /// The reply to a request for a side question's fork. It never changes the session's own
+    /// thread or turns.
+    fn fork_response(
+        &mut self,
+        side_question: SideQuestionId,
+        method: &'static str,
+        result: Option<Value>,
+        error: Option<RpcError>,
+        writes: &mut Vec<Vec<u8>>,
+    ) -> Vec<FromAgent> {
+        let result = result.unwrap_or_default();
+        let forked = result["thread"]["id"].as_str();
+        let failure = match (method, error) {
+            // An interrupt or an unsubscribe that came too late changes nothing.
+            ("thread/fork" | "turn/start", Some(error)) => Some(error.message),
+            ("thread/fork", None) if forked.is_none() => Some("the reply has no thread id".into()),
+            (_, Some(_)) => return Vec::new(),
+            (_, None) => None,
+        };
+        let open = self
+            .fork
+            .as_mut()
+            .filter(|fork| fork.side_question == side_question);
+        if let Some(message) = failure {
+            // The side question got no answer, and its fork, if it was made, is let go.
+            let thread = open.and_then(|fork| fork.thread.clone());
+            if let Some(thread) = thread {
+                writes.push(self.unsubscribe(side_question, &thread));
+            }
+            self.fork
+                .take_if(|fork| fork.side_question == side_question);
+            let failed = FromAgent::TurnEnd {
+                interrupted: false,
+                error: Some(TurnError {
+                    kind: method.to_owned(),
+                    message,
+                }),
+                time_unix_ms: None,
+            };
+            return vec![side(side_question, failed)];
+        }
+        match (method, forked, open) {
+            ("thread/fork", Some(thread), Some(fork)) => {
+                fork.thread = Some(thread.to_owned());
+                let params = json!({"threadId": thread, "input": text_input(&fork.question)});
+                self.forks.insert(thread.to_owned());
+                writes.push(self.fork_request(side_question, "turn/start", params));
+            }
+            // Its side question ended while the fork was made.
+            ("thread/fork", Some(thread), None) => {
+                self.forks.insert(thread.to_owned());
+                writes.push(self.unsubscribe(side_question, thread));
+            }
+            ("turn/start", _, Some(fork)) if fork.turn.is_none() => {
+                fork.turn = result["turn"]["id"].as_str().map(str::to_owned);
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// A notification that names a fork's thread. One for a side question that has ended is
+    /// dropped. The answer shows the fork's text, and none of its tool calls.
+    fn fork_notification(
+        &mut self,
+        method: &str,
+        params: &Value,
+        writes: &mut Vec<Vec<u8>>,
+    ) -> Vec<FromAgent> {
+        let thread = params["threadId"].as_str();
+        let Some(fork) = self
+            .fork
+            .as_mut()
+            .filter(|fork| fork.thread.as_deref() == thread)
+        else {
+            return Vec::new();
+        };
+        let id = fork.side_question;
+        let message = match method {
+            "turn/started" => {
+                fork.turn = params["turn"]["id"].as_str().map(str::to_owned);
+                FromAgent::TurnStart { time_unix_ms: None }
+            }
+            "item/started" if params["item"]["type"] == "agentMessage" && fork.has_text => {
+                FromAgent::TextDelta {
+                    text: "\n\n".into(),
+                }
+            }
+            "item/agentMessage/delta" => {
+                let Some(text) = params["delta"].as_str() else {
+                    return Vec::new();
+                };
+                fork.has_text = true;
+                FromAgent::TextDelta { text: text.into() }
+            }
+            "turn/completed" => {
+                // The answer is whole, so the server lets the fork go.
+                let thread = fork.thread.clone().unwrap_or_default();
+                self.fork = None;
+                writes.push(self.unsubscribe(id, &thread));
+                turn_end(&params["turn"])
+            }
+            _ => return Vec::new(),
+        };
+        vec![side(id, message)]
     }
 
     fn start_thread(&mut self) -> Vec<u8> {
@@ -198,11 +436,18 @@ impl AppServer {
         error: Option<RpcError>,
         writes: &mut Vec<Vec<u8>>,
     ) -> Vec<FromAgent> {
-        let Some((request, method)) = id
+        let Some((request, sent)) = id
             .as_u64()
             .and_then(|id| Some((id, self.sent.remove(&id)?)))
         else {
             return Vec::new();
+        };
+        let method = match sent {
+            Sent::Session(method) => method,
+            Sent::Fork {
+                side_question,
+                method,
+            } => return self.fork_response(side_question, method, result, error, writes),
         };
         // The reply to the request of the turn that has not ended yet.
         let current_turn = self.turn_start == Some(request);
@@ -329,19 +574,7 @@ impl AppServer {
                 self.turn_start = None;
                 self.turn_starting = false;
                 writes.extend(self.next_turn());
-                let turn = &params["turn"];
-                let error = (turn["status"] == "failed").then(|| TurnError {
-                    kind: error_kind(&turn["error"]["codexErrorInfo"]),
-                    message: turn["error"]["message"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned(),
-                });
-                vec![FromAgent::TurnEnd {
-                    interrupted: turn["status"] == "interrupted",
-                    error,
-                    time_unix_ms: None,
-                }]
+                vec![turn_end(&params["turn"])]
             }
             _ => Vec::new(),
         }
@@ -371,6 +604,30 @@ impl ReplyTo {
             (Kind::Answers(_), _) => json!({"answers": {}}),
         };
         line_of(json!({"id": self.id, "result": result}))
+    }
+}
+
+/// A message of side question `id`'s fork.
+fn side(id: SideQuestionId, message: FromAgent) -> FromAgent {
+    FromAgent::Side {
+        id,
+        message: Box::new(message),
+    }
+}
+
+/// How a `turn/completed` notification's turn ended.
+fn turn_end(turn: &Value) -> FromAgent {
+    let error = (turn["status"] == "failed").then(|| TurnError {
+        kind: error_kind(&turn["error"]["codexErrorInfo"]),
+        message: turn["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+    });
+    FromAgent::TurnEnd {
+        interrupted: turn["status"] == "interrupted",
+        error,
+        time_unix_ms: None,
     }
 }
 
@@ -871,6 +1128,132 @@ mod tests {
 
         assert_eq!(before_reply, None);
         assert_eq!(interrupt["params"]["turnId"], "t2");
+    }
+
+    const SIDE: SideQuestionId = SideQuestionId(0);
+
+    /// The message of the side question that `incoming` holds, and nothing else.
+    fn side_turn_error(incoming: &[FromAgent]) -> (&str, &str) {
+        let [FromAgent::Side { id: SIDE, message }] = incoming else {
+            panic!("no side message");
+        };
+        let FromAgent::TurnEnd {
+            error: Some(TurnError { kind, message }),
+            ..
+        } = &**message
+        else {
+            panic!("no failed turn end");
+        };
+        (kind, message)
+    }
+
+    #[test]
+    fn a_side_question_cannot_fork_a_thread_that_has_not_started() {
+        let mut server = AppServer::new(None);
+        handshake(&mut server);
+
+        let asked = server.ask_side_question(SIDE, "why?");
+
+        assert_eq!(
+            asked,
+            Err("Codex has not started the conversation yet.".into())
+        );
+    }
+
+    #[test]
+    fn a_fork_made_after_its_side_question_ended_is_let_go_and_starts_no_turn() {
+        let mut server = AppServer::new(None);
+        started(&mut server, "one");
+        let fork = sent(&server.ask_side_question(SIDE, "why?").unwrap()[0]);
+        let ended = server.end_side_question(SIDE);
+
+        let reply = json!({"id": fork["id"], "result": {"thread": {"id": "fork"}}});
+        let (incoming, writes) = server.read(reply.to_string().as_bytes());
+        let late = json!({"method": "turn/completed",
+            "params": {"threadId": "fork", "turn": {"status": "completed"}}});
+        let (after, _) = server.read(late.to_string().as_bytes());
+
+        assert!(ended.is_empty());
+        assert!(incoming.is_empty() && after.is_empty());
+        let [unsubscribe] = &writes[..] else {
+            panic!("want one line, got {}", writes.len());
+        };
+        let unsubscribe = sent(unsubscribe);
+        assert_eq!(unsubscribe["method"], "thread/unsubscribe");
+        assert_eq!(unsubscribe["params"], json!({"threadId": "fork"}));
+        // The session's own turn still runs.
+        assert_eq!(server.user_message("two"), None);
+    }
+
+    #[test]
+    fn a_fork_that_fails_ends_the_side_question_failed_and_leaves_the_sessions_turn_alone() {
+        let mut server = AppServer::new(None);
+        started(&mut server, "one");
+        let fork = sent(&server.ask_side_question(SIDE, "why?").unwrap()[0]);
+
+        let error = json!({"id": fork["id"], "error": {"code": -1, "message": "no rollout"}});
+        let (incoming, writes) = server.read(error.to_string().as_bytes());
+
+        assert_eq!(side_turn_error(&incoming), ("thread/fork", "no rollout"));
+        assert!(writes.is_empty());
+        assert_eq!(server.user_message("two"), None);
+    }
+
+    #[test]
+    fn a_fork_whose_turn_fails_to_start_ends_the_side_question_failed_and_is_let_go() {
+        let mut server = AppServer::new(None);
+        started(&mut server, "one");
+        let fork = sent(&server.ask_side_question(SIDE, "why?").unwrap()[0]);
+        let reply = json!({"id": fork["id"], "result": {"thread": {"id": "fork"}}});
+        let turn = sent(&server.read(reply.to_string().as_bytes()).1[0]);
+        assert_eq!(turn["params"]["threadId"], "fork");
+
+        let error = json!({"id": turn["id"], "error": {"code": -1, "message": "busy"}});
+        let (incoming, writes) = server.read(error.to_string().as_bytes());
+
+        assert_eq!(side_turn_error(&incoming), ("turn/start", "busy"));
+        assert_eq!(sent(&writes[0])["method"], "thread/unsubscribe");
+        assert!(server.end_side_question(SIDE).is_empty());
+    }
+
+    #[test]
+    fn a_forks_second_agent_message_starts_a_new_paragraph_and_its_tool_calls_are_not_shown() {
+        let mut server = AppServer::new(None);
+        started(&mut server, "one");
+        let fork = sent(&server.ask_side_question(SIDE, "why?").unwrap()[0]);
+        let reply = json!({"id": fork["id"], "result": {"thread": {"id": "fork"}}});
+        server.read(reply.to_string().as_bytes());
+        let mut texts = Vec::new();
+        let mut note = |method: &str, params: Value| {
+            let mut params = params;
+            params["threadId"] = "fork".into();
+            let line = json!({"method": method, "params": params}).to_string();
+            for message in server.read(line.as_bytes()).0 {
+                let FromAgent::Side { id: SIDE, message } = message else {
+                    panic!("a fork's message reached the session");
+                };
+                if let FromAgent::TextDelta { text } = *message {
+                    texts.push(text);
+                }
+            }
+        };
+
+        note(
+            "item/started",
+            json!({"item": {"type": "agentMessage", "id": "m1"}}),
+        );
+        note("item/agentMessage/delta", json!({"delta": "Looking."}));
+        note(
+            "item/started",
+            json!({"item": {"type": "commandExecution", "id": "c1", "command": "ls", "cwd": "/w"}}),
+        );
+        note(
+            "item/started",
+            json!({"item": {"type": "agentMessage", "id": "m2"}}),
+        );
+        note("item/agentMessage/delta", json!({"delta": "Found it."}));
+
+        assert_eq!(texts, ["Looking.", "\n\n", "Found it."]);
     }
 
     /// The `skills/list` request among `writes`.

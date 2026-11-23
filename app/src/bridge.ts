@@ -454,6 +454,18 @@ export interface Bridge {
   /** Asks the chat-mode session's agent to stop the turn. */
   interrupt(session: SessionId): Promise<void>;
   /**
+   * Asks the chat-mode session's agent a side question in a fork of its conversation, in place of
+   * any earlier side question of the session. The answer goes to `onMessages` a frame at a time
+   * and never joins the conversation. Returns the side question's id. Fails in terminal mode.
+   */
+  askSideQuestion(
+    session: SessionId,
+    question: string,
+    onMessages: (messages: AgentMessage[]) => void,
+  ): Promise<number>;
+  /** Ends the side question and its fork. Does nothing once it has ended. */
+  endSideQuestion(session: SessionId, sideQuestion: number): Promise<void>;
+  /**
    * Answers a pending approval or question of the chat-mode session. Fails when the request is no
    * longer pending or the reply does not fit it.
    */
@@ -690,6 +702,11 @@ export const tauriBridge: Bridge = {
   },
   sendMessage: (session, text) => invoke("send_message", { session, text }),
   interrupt: (session) => invoke("interrupt", { session }),
+  async askSideQuestion(session, question, onMessages) {
+    const answer = new Channel<AgentMessage[]>(onMessages);
+    return invoke("ask_side_question", { session, question, answer });
+  },
+  endSideQuestion: (session, sideQuestion) => invoke("end_side_question", { session, sideQuestion }),
   answer: (session, request, reply) => invoke("answer", { session, request, reply }),
   models: (session) => invoke("models", { session }),
   setModel: (session, model, effort) => invoke("set_model", { session, model, effort }),

@@ -101,6 +101,36 @@ later field winning.
 {"type":"set_model","model":"opus","effort":"high"}
 ```
 
+### `side_question`
+
+Asks a side question: a question answered in a fork of the conversation, which stays out of the
+conversation. `id` is the core's number for it. It works during a turn too.
+
+```json
+{"type":"side_question","id":1,"text":"which test covers the lexer?"}
+```
+
+- The fork is a second SDK `query()` with `resume` on the conversation's id, `forkSession: true`
+  and `persistSession: false`, so Claude writes no record for it. It runs with the session's
+  model and effort.
+- A conversation with no record yet has nothing to fork, so the question is asked with no
+  history.
+- The fork gets neither `--settings` nor `--mcp-config`. No grove hook fires for it and it has
+  no `grove-mcp`, so it sets no agent state and opens no panel.
+- The fork only reads. A `PreToolUse` hook denies every tool but `Read`, `Grep` and `Glob`, and
+  `canUseTool` denies every request, so it asks for no approval and no question.
+- One side question is open at a time. A new one ends the one before.
+- The fork ends when its answer is whole.
+
+### `end_side_question`
+
+Ends the side question `id` and closes its fork. Nothing more comes for it. With another `id`
+open, or none, it is skipped. End of stdin ends the open side question too.
+
+```json
+{"type":"end_side_question","id":1}
+```
+
 ## Sidecar to core
 
 ### `history`
@@ -262,6 +292,21 @@ for the error: the assistant message's `error` (such as `rate_limit`, `overloade
 ```json
 {"type":"turn_end","error":{"kind":"overloaded","message":"API Error: 529 overloaded"}}
 ```
+
+### `side`
+
+One message of the answer to side question `id`. `message` is a `turn_start`, a `text_delta` or
+a `turn_end`, as above. The core sends it to the side question's own stream. It never joins the
+conversation and never changes the agent state.
+
+```json
+{"type":"side","id":1,"message":{"type":"text_delta","text":"tests/lexer.rs covers it."}}
+```
+
+- The answer is text only. The fork's tool calls are not sent. Text after one starts a new
+  paragraph.
+- A `turn_end` is the last message for its `id`. Its `error` is as for a turn, with `kind`
+  `fork` when the fork could not start or ended with no result.
 
 ## Exit
 
